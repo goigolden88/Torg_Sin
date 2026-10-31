@@ -281,6 +281,29 @@ async function scenario(cdp: Cdp, size: (typeof SIZES)[number], server: RoomsSer
   await other.waitText('Ведущий отклонил заявку')
   await other.shot('12-otkloneno')
 
+  // «Попроситься снова»: форма с прежним именем, новая заявка; двойное нажатие — одна заявка (Р-13)
+  await other.click('Попроситься снова')
+  await other.waitText('Вход в комнату „Дача 2026“, ведущий — Аня')
+  const again = await other.value('.join input')
+  if (again !== 'Вера') throw new Error('В поле не прежнее имя: ' + again)
+  await other.shot('12a-poprositsya-snova')
+  await other.eval(`(() => {
+    const button = document.querySelector('.join button[type="submit"]')
+    button.click()
+    button.click()
+  })()`)
+  await other.waitText('Ждём, пока ведущий впустит')
+  await other.shot('12b-snova-ozhidanie')
+  await host.waitText('Заявки (1)')
+  await sleep(6000) // ещё один опрос ведущего: второй заявки не появилось
+  const requests = await host.eval<string>('document.body.innerText')
+  if (requests.includes('Заявки (2)')) throw new Error('Двойное нажатие дало две заявки')
+  await host.shot('12c-snova-zayavka')
+  await host.click('Впустить')
+  await other.waitText('Участники')
+  await other.waitText('Боря')
+  await other.shot('12d-snova-v-komnate')
+
   // Ссылка для другого устройства: ведущий выдаёт за Борю и отвязывает его старый телефон
   await host.waitText('Боря')
   await host.click('Ссылка для другого устройства')

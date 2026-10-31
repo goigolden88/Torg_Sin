@@ -17,8 +17,8 @@ const ROOM_NOT_SAVED = 'Ведущий впустил, но комната не 
 type Preview = { name: string; hostName: string }
 type Phase =
   | { kind: 'loading' }
-  | { kind: 'preview-failed'; text: string; offline: boolean }
-  | { kind: 'form'; preview: Preview }
+  | { kind: 'preview-failed'; text: string; offline: boolean; retry: () => void }
+  | { kind: 'form'; preview: Preview; name: string }
   | { kind: 'waiting'; join: SavedJoin }
   | { kind: 'rejected'; join: SavedJoin }
 
@@ -51,12 +51,27 @@ export function JoinRoom({ link, onJoined }: { link: InviteLink; onJoined: (room
       setPhase({ kind: 'loading' })
       const res = await previewRoom(link.server, link.roomId, link.invite)
       if (!alive) return
-      setPhase(res.ok ? { kind: 'form', preview: res.value } : { kind: 'preview-failed', text: res.error, offline: !!res.offline })
+      const retry = () => setAttempt((n) => n + 1)
+      setPhase(res.ok ? { kind: 'form', preview: res.value, name: '' } : { kind: 'preview-failed', text: res.error, offline: !!res.offline, retry })
     })()
     return () => {
       alive = false
     }
   }, [link.roomId, link.invite, link.server, attempt, toPhase])
+
+  // «Попроситься снова» после отказа: что за комната — заново и по ссылке, открытой сейчас
+  // (ведущий мог сменить её); форма монтируется новой — значит, и номер запроса новый (Р-13),
+  // иначе сервер вернул бы ту же отклонённую заявку. Отказ на устройстве остаётся, пока не
+  // записана новая заявка (`saveJoin` поверх той же записи)
+  const askAgain = useCallback(
+    async (name: string) => {
+      setPhase({ kind: 'loading' })
+      const res = await previewRoom(link.server, link.roomId, link.invite)
+      const retry = () => void askAgain(name)
+      setPhase(res.ok ? { kind: 'form', preview: res.value, name } : { kind: 'preview-failed', text: res.error, offline: !!res.offline, retry })
+    },
+    [link.server, link.roomId, link.invite],
+  )
 
   return (
     <div className="card join">
@@ -70,14 +85,14 @@ export function JoinRoom({ link, onJoined }: { link: InviteLink; onJoined: (room
           </p>
           {phase.offline && (
             <div className="row">
-              <button className="button" type="button" onClick={() => setAttempt((n) => n + 1)}>
+              <button className="button" type="button" onClick={phase.retry}>
                 Повторить
               </button>
             </div>
           )}
         </>
       )}
-      {phase.kind === 'form' && <JoinForm link={link} preview={phase.preview} onSent={toPhase} />}
+      {phase.kind === 'form' && <JoinForm link={link} preview={phase.preview} initialName={phase.name} onSent={toPhase} />}
       {phase.kind === 'waiting' && <Waiting join={phase.join} onJoined={onJoined} onRejected={toPhase} />}
       {phase.kind === 'rejected' && (
         <>
@@ -86,6 +101,9 @@ export function JoinRoom({ link, onJoined }: { link: InviteLink; onJoined: (room
             Комната «{phase.join.roomName}», ведущий — {phase.join.hostName}. Вы просились как {phase.join.name}.
           </p>
           <div className="row">
+            <button className="button" type="button" onClick={() => void askAgain(phase.join.name)}>
+              Попроситься снова
+            </button>
             <a className="button secondary" href="#/">
               К моим комнатам
             </a>
@@ -96,8 +114,18 @@ export function JoinRoom({ link, onJoined }: { link: InviteLink; onJoined: (room
   )
 }
 
-function JoinForm({ link, preview, onSent }: { link: InviteLink; preview: Preview; onSent: (join: SavedJoin) => void }) {
-  const [name, setName] = useState('')
+function JoinForm({
+  link,
+  preview,
+  initialName,
+  onSent,
+}: {
+  link: InviteLink
+  preview: Preview
+  initialName: string
+  onSent: (join: SavedJoin) => void
+}) {
+  const [name, setName] = useState(initialName)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   // Синхронный замок от двойного нажатия; повтор той же формы — тот же номер запроса (Р-13)
