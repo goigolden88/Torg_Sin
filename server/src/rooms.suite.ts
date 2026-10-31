@@ -1,12 +1,41 @@
 // Тесты сервера комнат на любом хранилище (Р-02): одни и те же — на Cloudflare-подделке
 // (rooms.test.ts) и на SQLite запасной обёртки (server/node/rooms.test.ts)
 import { afterEach, describe, expect, it } from 'vitest'
-import { isHealth, PROTOCOL_VERSION, type CreateRoomResponse, type RoomStateResponse } from '../../src/rules/protocol'
-import { BAD_CURRENCY, LONG_MEMBER_NAME, LONG_ROOM_NAME, NEED_MEMBER_NAME, NEED_ROOM_NAME } from '../../src/rules/room'
+import {
+  isHealth,
+  PROTOCOL_VERSION,
+  type ClaimDeviceResponse,
+  type CreateRoomResponse,
+  type DeviceLinkResponse,
+  type InviteResponse,
+  type JoinRequestsResponse,
+  type JoinRoomResponse,
+  type RoomStateResponse,
+} from '../../src/rules/protocol'
+import { BAD_CURRENCY, LONG_MEMBER_NAME, LONG_ROOM_NAME, NAME_TAKEN, NEED_MEMBER_NAME, NEED_ROOM_NAME } from '../../src/rules/room'
 import { ulid } from '../../src/rules/ulid'
 import { BAD_REQUEST_ID, CREATION_OFF, NEED_KEY, WRONG_PASSWORD } from './http'
 import { hashKey } from './keys'
-import { append, APPEND_ONLY, NO_ROOM, readLog, REQUEST_TAKEN, WRONG_KEY, type RoomStorage } from './room'
+import {
+  ALREADY_ADMITTED,
+  ALREADY_REJECTED,
+  append,
+  APPEND_ONLY,
+  BAD_DEVICE_LINK,
+  BAD_LINK,
+  DEVICE_LINK_TTL,
+  HOST_ONLY,
+  JOIN_TAKEN,
+  NO_MEMBER,
+  NO_REQUEST,
+  NO_ROOM,
+  readLog,
+  REJECTED,
+  REQUEST_TAKEN,
+  WAITING,
+  WRONG_KEY,
+  type RoomStorage,
+} from './room'
 import type { TestServer } from './testing'
 
 const PASSWORD = 'пароль-компании'
@@ -222,6 +251,299 @@ export function roomsSuite(storageName: string, start: (password: string | undef
           expect(r.status).toBe(404)
           expect(await r.json()).toEqual({ v: PROTOCOL_VERSION, error: NO_ROOM })
         }
+      })
+    })
+
+    describe('вход по ссылке (Р-03)', () => {
+      // Действие комнаты: POST с телом (или GET без него) и ключом телефона, если он есть
+      function send(s: TestServer, roomId: string, action: string, body?: unknown, key?: string): Promise<Response> {
+        const headers: Record<string, string> = key === undefined ? {} : { Authorization: 'Bearer ' + key }
+        const init: RequestInit = body === undefined ? { headers } : { method: 'POST', headers, body: JSON.stringify(body) }
+        return s.send(`/rooms/${roomId}/${action}`, init)
+      }
+
+      async function ok<T>(r: Promise<Response>): Promise<T> {
+        const res = await r
+        const body: unknown = await res.json()
+        expect({ status: res.status, body }).toMatchObject({ status: 200 })
+        return body as T
+      }
+
+      async function refused(r: Promise<Response>, status: number, error: string, join?: string): Promise<void> {
+        const res = await r
+        expect(res.status).toBe(status)
+        expect(await res.json()).toEqual(join ? { v: PROTOCOL_VERSION, error, join } : { v: PROTOCOL_VERSION, error })
+      }
+
+      function join(s: TestServer, room: CreateRoomResponse, name: string, requestId?: string): Promise<JoinRoomResponse> {
+        return ok<JoinRoomResponse>(send(s, room.roomId, 'join', { v: PROTOCOL_VERSION, invite: room.invite, name, requestId }))
+      }
+
+      // Подал заявку и впущен ведущим
+      async function member(s: TestServer, room: CreateRoomResponse, name: string): Promise<JoinRoomResponse> {
+        const j = await join(s, room, name)
+        await ok(send(s, room.roomId, 'admit', { request: j.memberId }, room.key))
+        return j
+      }
+
+      async function members(s: TestServer, roomId: string, key: string): Promise<string[]> {
+        return (await ok<RoomStateResponse>(get(s, roomId, key))).members.map((m) => m.name)
+      }
+
+      it('по ссылке видно только название комнаты и имя ведущего', async () => {
+        const s = await server()
+        const room = await create(s)
+        expect(await ok(send(s, room.roomId, 'preview', { invite: room.invite }))).toEqual({
+          v: PROTOCOL_VERSION,
+          name: 'Дача',
+          hostName: 'Аня',
+        })
+      })
+
+      it('неверная ссылка — 403 «Ссылка недействительна»', async () => {
+        const s = await server()
+        const room = await create(s)
+        for (const body of [{ invite: 'не-тот' }, { invite: '' }, {}]) {
+          await refused(send(s, room.roomId, 'preview', body), 403, BAD_LINK)
+          await refused(send(s, room.roomId, 'join', { ...body, name: 'Боря' }), 403, BAD_LINK)
+        }
+        // Чужая комната, нет комнаты, кривой номер
+        const other = await create(s)
+        for (const roomId of [other.roomId, ulid(), 'не-номер']) {
+          await refused(send(s, roomId, 'preview', { invite: room.invite }), 403, BAD_LINK)
+        }
+        expect(BAD_LINK).toBe('Ссылка недействительна — попросите новую у ведущего')
+      })
+
+      it('заявка — ключ, который пока не открывает комнату: «ждём, пока ведущий впустит»', async () => {
+        const s = await server()
+        const room = await create(s)
+        const j = await join(s, room, ' Боря ')
+        expect(j).toEqual({ v: PROTOCOL_VERSION, memberId: expect.stringMatching(/^[0-9A-HJKMNP-TV-Z]{26}$/), key: expect.any(String), join: 'waiting' })
+        expect(j.key.length).toBeGreaterThanOrEqual(40)
+        await refused(get(s, room.roomId, j.key), 403, WAITING, 'waiting')
+        expect(WAITING).toBe('Ждём, пока ведущий впустит')
+        // Ни в списке участников, ни ведущему не мешает
+        expect(await members(s, room.roomId, room.key)).toEqual(['Аня'])
+      })
+
+      it('форма заявки с ошибкой — 400', async () => {
+        const s = await server()
+        const room = await create(s)
+        const cases: [Record<string, unknown>, string][] = [
+          [{ name: '' }, NEED_MEMBER_NAME],
+          [{ name: 'я'.repeat(31) }, LONG_MEMBER_NAME],
+          [{ name: 'Боря', requestId: 'abc' }, BAD_REQUEST_ID],
+        ]
+        for (const [change, error] of cases) await refused(send(s, room.roomId, 'join', { invite: room.invite, ...change }), 400, error)
+        expect((await send(s, room.roomId, 'join', { invite: room.invite, name: 'Боря', v: PROTOCOL_VERSION + 1 })).status).toBe(400)
+      })
+
+      it('ведущий впустил — ключ открывает комнату, участник в списке', async () => {
+        const s = await server()
+        const room = await create(s)
+        const j = await join(s, room, 'Боря')
+        expect(await ok(send(s, room.roomId, 'admit', { request: j.memberId }, room.key))).toEqual({
+          v: PROTOCOL_VERSION,
+          member: { id: j.memberId, name: 'Боря' },
+        })
+        const state = await ok<RoomStateResponse>(get(s, room.roomId, j.key))
+        expect(state.me).toBe(j.memberId)
+        expect(state.members).toEqual([
+          { id: room.memberId, name: 'Аня' },
+          { id: j.memberId, name: 'Боря' },
+        ])
+        // Повтор — тот же ответ, без новой записи; отклонить впущенного нельзя
+        const log = await readLog(s.storage(room.roomId))
+        await ok(send(s, room.roomId, 'admit', { request: j.memberId }, room.key))
+        expect(await readLog(s.storage(room.roomId))).toEqual(log)
+        await refused(send(s, room.roomId, 'reject', { request: j.memberId }, room.key), 409, ALREADY_ADMITTED)
+      })
+
+      it('ведущий отклонил — ключ отвечает «Ведущий отклонил заявку»', async () => {
+        const s = await server()
+        const room = await create(s)
+        const j = await join(s, room, 'Боря')
+        expect(await ok(send(s, room.roomId, 'reject', { request: j.memberId }, room.key))).toEqual({ v: PROTOCOL_VERSION, request: j.memberId })
+        await refused(get(s, room.roomId, j.key), 403, REJECTED, 'rejected')
+        expect(REJECTED).toBe('Ведущий отклонил заявку')
+        await refused(send(s, room.roomId, 'admit', { request: j.memberId }, room.key), 409, ALREADY_REJECTED)
+        await refused(send(s, room.roomId, 'admit', { request: ulid() }, room.key), 404, NO_REQUEST)
+        expect(await members(s, room.roomId, room.key)).toEqual(['Аня'])
+        // Отклонённое имя свободно: новая заявка — с новым номером
+        const again = await join(s, room, 'Боря')
+        expect(again.memberId).not.toBe(j.memberId)
+      })
+
+      it('заявки видит только ведущий', async () => {
+        const s = await server()
+        const room = await create(s)
+        const borya = await member(s, room, 'Боря')
+        const vera = await join(s, room, 'Вера')
+        s.clock.now += 1000
+        const gosha = await join(s, room, 'Гоша')
+        expect(await ok<JoinRequestsResponse>(send(s, room.roomId, 'requests', undefined, room.key))).toEqual({
+          v: PROTOCOL_VERSION,
+          requests: [
+            { id: vera.memberId, name: 'Вера', at: s.clock.now - 1000 },
+            { id: gosha.memberId, name: 'Гоша', at: s.clock.now },
+          ],
+        })
+        await refused(send(s, room.roomId, 'requests', undefined, borya.key), 403, HOST_ONLY)
+        await refused(send(s, room.roomId, 'requests', undefined, vera.key), 403, WAITING, 'waiting')
+        await refused(send(s, room.roomId, 'requests', undefined), 403, NEED_KEY)
+        await refused(send(s, room.roomId, 'requests', undefined, 'someone-elses-key'), 403, WRONG_KEY)
+        // Состояние комнаты заявок не показывает
+        expect(JSON.stringify(await ok(get(s, room.roomId, borya.key)))).not.toContain('Вера')
+      })
+
+      it('ведущий сменил ссылку — старая не работает, новая работает, впущенные не страдают', async () => {
+        const s = await server()
+        const room = await create(s)
+        const borya = await member(s, room, 'Боря')
+        const vera = await join(s, room, 'Вера')
+        // Тело не нужно: POST без тела
+        const renewed = await ok<InviteResponse>(
+          s.send(`/rooms/${room.roomId}/invite`, { method: 'POST', headers: { Authorization: 'Bearer ' + room.key } }),
+        )
+        expect(renewed.invite).not.toBe(room.invite)
+        expect(renewed.invite.length).toBeGreaterThanOrEqual(20)
+        await refused(send(s, room.roomId, 'preview', { invite: room.invite }), 403, BAD_LINK)
+        await refused(send(s, room.roomId, 'join', { invite: room.invite, name: 'Гоша' }), 403, BAD_LINK)
+        expect(await ok(send(s, room.roomId, 'preview', { invite: renewed.invite }))).toEqual({ v: PROTOCOL_VERSION, name: 'Дача', hostName: 'Аня' })
+        await join(s, { ...room, invite: renewed.invite }, 'Гоша')
+        // Впущенный — в комнате; поданная до смены заявка — ждёт решения
+        expect(await members(s, room.roomId, borya.key)).toEqual(['Аня', 'Боря'])
+        await ok(send(s, room.roomId, 'admit', { request: vera.memberId }, room.key))
+        expect(await members(s, room.roomId, vera.key)).toEqual(['Аня', 'Боря', 'Вера'])
+      })
+
+      it('ссылка для другого устройства: одноразовая, на 24 часа, ключ того же участника', async () => {
+        const s = await server()
+        const room = await create(s)
+        const borya = await member(s, room, 'Боря')
+        const link = await ok<DeviceLinkResponse>(send(s, room.roomId, 'device', {}, borya.key))
+        expect(link).toEqual({ v: PROTOCOL_VERSION, token: expect.any(String), member: borya.memberId, expiresAt: s.clock.now + DEVICE_LINK_TTL })
+        expect(DEVICE_LINK_TTL).toBe(24 * 60 * 60 * 1000)
+        s.clock.now += DEVICE_LINK_TTL - 1
+        const claimed = await ok<ClaimDeviceResponse>(send(s, room.roomId, 'device/claim', { token: link.token }))
+        expect(claimed).toEqual({ v: PROTOCOL_VERSION, memberId: borya.memberId, key: expect.any(String) })
+        expect(claimed.key).not.toBe(borya.key)
+        // Новый ключ — тот же участник; старый тоже работает
+        expect((await ok<RoomStateResponse>(get(s, room.roomId, claimed.key))).me).toBe(borya.memberId)
+        expect((await ok<RoomStateResponse>(get(s, room.roomId, borya.key))).me).toBe(borya.memberId)
+        // Второй раз — нет
+        await refused(send(s, room.roomId, 'device/claim', { token: link.token }), 403, BAD_DEVICE_LINK)
+        // Через 24 часа — нет
+        const late = await ok<DeviceLinkResponse>(send(s, room.roomId, 'device', {}, borya.key))
+        s.clock.now += DEVICE_LINK_TTL
+        await refused(send(s, room.roomId, 'device/claim', { token: late.token }), 403, BAD_DEVICE_LINK)
+        // Чужой токен, другая комната, кривой номер
+        await refused(send(s, room.roomId, 'device/claim', { token: 'не-тот' }), 403, BAD_DEVICE_LINK)
+        await refused(send(s, room.roomId, 'device/claim', {}), 403, BAD_DEVICE_LINK)
+        await refused(send(s, 'не-номер', 'device/claim', { token: link.token }), 403, BAD_DEVICE_LINK)
+      })
+
+      it('ведущий выдал ссылку за участника с «отвязать прежние» — старые ключи больше не открывают', async () => {
+        const s = await server()
+        const room = await create(s)
+        const borya = await member(s, room, 'Боря')
+        const second = await ok<ClaimDeviceResponse>(
+          send(s, room.roomId, 'device/claim', { token: (await ok<DeviceLinkResponse>(send(s, room.roomId, 'device', {}, borya.key))).token }),
+        )
+        // Неиспользованная ссылка со старого телефона — тоже погаснет
+        const stale = await ok<DeviceLinkResponse>(send(s, room.roomId, 'device', {}, borya.key))
+        const link = await ok<DeviceLinkResponse>(send(s, room.roomId, 'device', { member: borya.memberId, unlink: true }, room.key))
+        expect(link.member).toBe(borya.memberId)
+        // Пока ссылкой не воспользовались — старые ключи работают
+        expect((await get(s, room.roomId, borya.key)).status).toBe(200)
+        const fresh = await ok<ClaimDeviceResponse>(send(s, room.roomId, 'device/claim', { token: link.token }))
+        expect(fresh.memberId).toBe(borya.memberId)
+        await refused(get(s, room.roomId, borya.key), 403, WRONG_KEY)
+        await refused(get(s, room.roomId, second.key), 403, WRONG_KEY)
+        await refused(send(s, room.roomId, 'device/claim', { token: stale.token }), 403, BAD_DEVICE_LINK)
+        expect((await ok<RoomStateResponse>(get(s, room.roomId, fresh.key))).me).toBe(borya.memberId)
+        // Другие участники не страдают
+        expect(await members(s, room.roomId, room.key)).toEqual(['Аня', 'Боря'])
+        await refused(send(s, room.roomId, 'device', { member: ulid() }, room.key), 404, NO_MEMBER)
+      })
+
+      it('не ведущий не впускает, не отклоняет, не меняет ссылку и не выдаёт ссылку за другого — 403', async () => {
+        const s = await server()
+        const room = await create(s)
+        const borya = await member(s, room, 'Боря')
+        const vera = await join(s, room, 'Вера')
+        const log = await readLog(s.storage(room.roomId))
+        await refused(send(s, room.roomId, 'admit', { request: vera.memberId }, borya.key), 403, HOST_ONLY)
+        await refused(send(s, room.roomId, 'reject', { request: vera.memberId }, borya.key), 403, HOST_ONLY)
+        await refused(send(s, room.roomId, 'invite', {}, borya.key), 403, HOST_ONLY)
+        await refused(send(s, room.roomId, 'device', { member: room.memberId }, borya.key), 403, HOST_ONLY)
+        await refused(send(s, room.roomId, 'device', { member: room.memberId, unlink: true }, borya.key), 403, HOST_ONLY)
+        // Ждущая заявка — тем более
+        await refused(send(s, room.roomId, 'admit', { request: vera.memberId }, vera.key), 403, WAITING, 'waiting')
+        await refused(send(s, room.roomId, 'invite', {}), 403, NEED_KEY)
+        expect(await readLog(s.storage(room.roomId))).toEqual(log)
+        expect(HOST_ONLY).toBe('Это может только ведущий')
+      })
+
+      it('имя уже есть (без учёта регистра) — 409; повтор той же заявки — одна заявка', async () => {
+        const s = await server()
+        const room = await create(s)
+        await refused(send(s, room.roomId, 'join', { invite: room.invite, name: 'аНЯ' }), 409, NAME_TAKEN)
+        expect(NAME_TAKEN).toBe('Такое имя уже есть — добавьте букву')
+        const requestId = ulid(s.clock.now)
+        const first = await join(s, room, 'Боря', requestId)
+        // Имя ждущей заявки тоже занято
+        await refused(send(s, room.roomId, 'join', { invite: room.invite, name: 'БОРЯ' }), 409, NAME_TAKEN)
+        s.clock.now += 1500
+        expect(await join(s, room, 'Боря', requestId)).toEqual(first)
+        // Одновременно — тоже одна
+        const [a, b] = await Promise.all([join(s, room, 'Боря', requestId), join(s, room, 'Боря', requestId)])
+        expect([a, b]).toEqual([first, first])
+        // Тот же номер, другое имя — отказ
+        await refused(send(s, room.roomId, 'join', { invite: room.invite, name: 'Вера', requestId }), 409, JOIN_TAKEN)
+        const requests = (await readLog(s.storage(room.roomId))).filter((e) => e.type === 'join.requested')
+        expect(requests.length).toBe(1)
+        expect((await ok<JoinRequestsResponse>(send(s, room.roomId, 'requests', undefined, room.key))).requests.length).toBe(1)
+        // Впустили — повтор заявки говорит «впущен», ключ тот же
+        await ok(send(s, room.roomId, 'admit', { request: first.memberId }, room.key))
+        expect(await join(s, room, 'Боря', requestId)).toEqual({ ...first, join: 'admitted' })
+      })
+
+      it('каждое действие — запись журнала; ключей и токенов в хранилище нет в открытом виде', async () => {
+        const s = await server()
+        const room = await create(s)
+        const borya = await member(s, room, 'Боря')
+        const vera = await join(s, room, 'Вера')
+        await ok(send(s, room.roomId, 'reject', { request: vera.memberId }, room.key))
+        const renewed = await ok<InviteResponse>(send(s, room.roomId, 'invite', {}, room.key))
+        const link = await ok<DeviceLinkResponse>(send(s, room.roomId, 'device', { member: borya.memberId, unlink: true }, room.key))
+        const claimed = await ok<ClaimDeviceResponse>(send(s, room.roomId, 'device/claim', { token: link.token }))
+        // Чтение журнал не трогает
+        await ok(send(s, room.roomId, 'preview', { invite: renewed.invite }))
+        await ok(send(s, room.roomId, 'requests', undefined, room.key))
+
+        const log = await readLog(s.storage(room.roomId))
+        expect(log.map((e) => [e.type, e.memberId])).toEqual([
+          ['room.created', room.memberId],
+          ['member.added', room.memberId],
+          ['join.requested', borya.memberId],
+          ['member.added', room.memberId],
+          ['join.requested', vera.memberId],
+          ['join.rejected', room.memberId],
+          ['invite.changed', room.memberId],
+          ['device.issued', room.memberId],
+          ['device.linked', borya.memberId],
+        ])
+        expect(log.at(-1)).toMatchObject({ type: 'device.linked', member: borya.memberId, unlink: true })
+        // Журнал писался только в новые номера
+        const logPuts = s.puts(room.roomId).filter((k) => k.startsWith('log:'))
+        expect(new Set(logPuts).size).toBe(logPuts.length)
+        expect(logPuts.length).toBe(log.length)
+
+        const everything = JSON.stringify([...(await s.storage(room.roomId).list({ prefix: '' }))])
+        for (const secret of [borya.key, vera.key, claimed.key, link.token, room.invite]) expect(everything).not.toContain(secret)
+        expect(JSON.stringify(log)).not.toContain(renewed.invite)
       })
     })
 
