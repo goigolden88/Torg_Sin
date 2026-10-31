@@ -1,7 +1,8 @@
-// Сервер комнат на Cloudflare (Р-01): Worker принимает запросы, объект Room — одна
-// комната (этап 1). Логика — в http.ts и правилах src/rules/; здесь только привязка к Cloudflare
+// Сервер комнат на Cloudflare (Р-01): Worker принимает запросы, объект Room — одна комната.
+// Логика — в http.ts, room.ts и правилах src/rules/; здесь только привязка к Cloudflare
 import { DurableObject } from 'cloudflare:workers'
-import { notFound, route } from './http'
+import { handle } from './http'
+import * as room from './room'
 
 export type Env = {
   ROOMS: DurableObjectNamespace<Room>
@@ -9,11 +10,28 @@ export type Env = {
 }
 
 export default {
-  async fetch(request: Request): Promise<Response> {
-    const url = new URL(request.url)
-    return route(request.method, url.pathname, Date.now()) ?? notFound()
+  async fetch(request: Request, env: Env): Promise<Response> {
+    return handle(request, {
+      password: env.ROOM_PASSWORD,
+      now: () => Date.now(),
+      create: (input) => roomStub(env, input.roomId).create(input),
+      state: (roomId, keyHash) => roomStub(env, roomId).state(keyHash),
+    })
   },
 }
 
-// Комната — пока пустая: класс объявлен с первой выкатки, чтобы этапу 1 не нужна была миграция
-export class Room extends DurableObject<Env> {}
+// Объект комнаты — по её номеру; реестра комнат нет: список своих комнат держит телефон
+function roomStub(env: Env, roomId: string): DurableObjectStub<Room> {
+  return env.ROOMS.get(env.ROOMS.idFromName(roomId))
+}
+
+// Объект обрабатывает вызовы по одному — двойное создание не создаст двух комнат
+export class Room extends DurableObject<Env> {
+  async create(input: room.CreateInput): Promise<room.CreateResult> {
+    return room.createRoom(this.ctx.storage, input, Date.now())
+  }
+
+  async state(keyHash: string): Promise<room.StateResult> {
+    return room.roomState(this.ctx.storage, keyHash)
+  }
+}
