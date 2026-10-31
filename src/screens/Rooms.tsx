@@ -3,12 +3,21 @@
 // отдельным экраном с «Назад» (класс .open у .rooms), разметка одна
 import { useCallback, useEffect, useState } from 'react'
 import { currencyLabel } from '../rules/currency'
+import type { DeviceLink, InviteLink } from '../rules/link'
 import { store, type SavedRoom } from '../store/db'
 import { BackLink } from './BackLink'
+import { ClaimDevice } from './ClaimDevice'
 import { CreateRoom } from './CreateRoom'
+import { JoinRoom } from './JoinRoom'
 import { RoomView } from './RoomView'
 
-export type RoomsView = { kind: 'list' } | { kind: 'new' } | { kind: 'room'; id: string }
+export type RoomsView =
+  | { kind: 'list' }
+  | { kind: 'new' }
+  | { kind: 'room'; id: string }
+  | { kind: 'join'; link: InviteLink } // по ссылке-приглашению
+  | { kind: 'device'; link: DeviceLink } // по ссылке для другого устройства
+  | { kind: 'bad-link'; text: string } // ссылка не разобралась
 
 const STORE_FAILED = 'Не открылось хранилище на этом устройстве — комнаты не сохранятся. Частный режим браузера?'
 
@@ -71,6 +80,15 @@ export function Rooms({ view }: { view: RoomsView }) {
         <section className="detail">
           {view.kind === 'new' ? (
             <CreateRoom onCreated={upsert} />
+          ) : view.kind === 'join' ? (
+            <JoinRoom key={hashOf(view.link)} link={view.link} onJoined={upsert} />
+          ) : view.kind === 'device' ? (
+            <ClaimDevice key={hashOf(view.link)} link={view.link} onClaimed={upsert} />
+          ) : view.kind === 'bad-link' ? (
+            <div className="card">
+              <BackLink />
+              <p className="error">{view.text}</p>
+            </div>
           ) : view.kind === 'room' ? (
             open ? (
               <RoomView key={open.id} room={open} onUpdate={upsert} />
@@ -89,6 +107,11 @@ export function Rooms({ view }: { view: RoomsView }) {
       </div>
     </div>
   )
+}
+
+// Другая ссылка — экран заново, со своим состоянием
+function hashOf(link: InviteLink | DeviceLink): string {
+  return JSON.stringify(link)
 }
 
 function participants(n: number): string {

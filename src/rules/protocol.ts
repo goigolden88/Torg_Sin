@@ -88,6 +88,62 @@ export function isCreateRoomResponse(x: unknown): x is CreateRoomResponse {
   return !!r && typeof r.v === 'number' && strings(r, 'roomId', 'invite', 'memberId', 'key')
 }
 
+// Отметка заявки в отказе GET /rooms/<номер>: ждём ведущего или отклонили; другое — нет отметки
+export function joinMark(x: unknown): 'waiting' | 'rejected' | undefined {
+  const r = record(x)
+  return r?.join === 'waiting' || r?.join === 'rejected' ? r.join : undefined
+}
+
+function versioned(x: unknown): Record<string, unknown> | null {
+  const r = record(x)
+  return r && typeof r.v === 'number' ? r : null
+}
+
+export function isPreviewResponse(x: unknown): x is PreviewResponse {
+  const r = versioned(x)
+  return !!r && strings(r, 'name', 'hostName')
+}
+
+export function isJoinRoomResponse(x: unknown): x is JoinRoomResponse {
+  const r = versioned(x)
+  return !!r && strings(r, 'memberId', 'key') && (r.join === 'waiting' || r.join === 'admitted' || r.join === 'rejected')
+}
+
+export function isJoinRequestsResponse(x: unknown): x is JoinRequestsResponse {
+  const r = versioned(x)
+  if (!r || !Array.isArray(r.requests)) return false
+  return r.requests.every((q) => {
+    const request = record(q)
+    return !!request && strings(request, 'id', 'name') && typeof request.at === 'number'
+  })
+}
+
+export function isAdmitResponse(x: unknown): x is AdmitResponse {
+  const r = versioned(x)
+  const member = r && record(r.member)
+  return !!member && strings(member, 'id', 'name')
+}
+
+export function isRejectResponse(x: unknown): x is RejectResponse {
+  const r = versioned(x)
+  return !!r && strings(r, 'request')
+}
+
+export function isInviteResponse(x: unknown): x is InviteResponse {
+  const r = versioned(x)
+  return !!r && strings(r, 'invite') && r.invite !== ''
+}
+
+export function isDeviceLinkResponse(x: unknown): x is DeviceLinkResponse {
+  const r = versioned(x)
+  return !!r && strings(r, 'token', 'member') && typeof r.expiresAt === 'number'
+}
+
+export function isClaimDeviceResponse(x: unknown): x is ClaimDeviceResponse {
+  const r = versioned(x)
+  return !!r && strings(r, 'memberId', 'key')
+}
+
 export function isRoomStateResponse(x: unknown): x is RoomStateResponse {
   const r = record(x)
   const room = r && record(r.room)
