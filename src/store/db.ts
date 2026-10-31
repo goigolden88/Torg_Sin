@@ -2,9 +2,10 @@
 // База «torgsin», версия схемы — DB_VERSION; каждая новая версия — шаг в upgrade, старые шаги
 // не меняются. Настройки устройства (адрес сервера, пароль компании) — не здесь, а в settings.ts
 export const DB_NAME = 'torgsin'
-export const DB_VERSION = 1
+export const DB_VERSION = 2
 
 const ROOMS = 'rooms'
+const JOINS = 'joins' // с версии 2
 
 // Своя комната на этом устройстве: ключ телефона и последнее известное с сервера
 export type SavedRoom = {
@@ -22,9 +23,26 @@ export type SavedRoom = {
   syncedAt: number | null // последний ответ сервера о комнате; null — ещё не было
 }
 
-// Шаги схемы: от версии, которая была на устройстве, до DB_VERSION
+// Заявка на вход по ссылке, которую ещё не впустили: ключ заявки откроет комнату, когда ведущий
+// впустит. Впустили — заявка становится комнатой (SavedRoom) и отсюда убирается
+export type SavedJoin = {
+  roomId: string // номер комнаты
+  server: string // адрес сервера комнаты — из ссылки; «Настройки» его не меняют
+  invite: string // токен ссылки, по которой подана заявка
+  name: string // моё имя в заявке
+  memberId: string // номер заявки — он же мой номер участника, когда впустят
+  key: string // ключ заявки: Authorization: Bearer <ключ>
+  roomName: string // что показала ссылка: название комнаты и имя ведущего
+  hostName: string
+  status: 'waiting' | 'rejected'
+  savedAt: number
+}
+
+// Шаги схемы: от версии, которая была на устройстве, до DB_VERSION. Шаг только добавляет:
+// записи прежних версий остаются как есть
 function upgrade(db: IDBDatabase, from: number): void {
   if (from < 1) db.createObjectStore(ROOMS, { keyPath: 'id' })
+  if (from < 2) db.createObjectStore(JOINS, { keyPath: 'roomId' })
 }
 
 function done<T>(request: IDBRequest<T>): Promise<T> {
@@ -53,6 +71,10 @@ export type Store = {
   listRooms(): Promise<SavedRoom[]>
   getRoom(id: string): Promise<SavedRoom | undefined>
   saveRoom(room: SavedRoom): Promise<void>
+  getJoin(roomId: string): Promise<SavedJoin | undefined>
+  saveJoin(join: SavedJoin): Promise<void>
+  // Впустили: комната записана, заявка убрана — одной транзакцией
+  admitJoin(room: SavedRoom): Promise<void>
   close(): Promise<void>
 }
 
@@ -67,6 +89,16 @@ export function createStore(factory: IDBFactory): Store {
     return opened
   }
   const rooms = async (mode: IDBTransactionMode) => (await db()).transaction(ROOMS, mode).objectStore(ROOMS)
+  // Запись: готово, когда транзакция завершилась, а не когда принят запрос
+  const write = async (names: string[], run: (tx: IDBTransaction) => void) => {
+    const tx = (await db()).transaction(names, 'readwrite')
+    await new Promise<void>((resolve, reject) => {
+      tx.oncomplete = () => resolve()
+      tx.onerror = () => reject(tx.error)
+      tx.onabort = () => reject(tx.error ?? new Error('Запись отменена'))
+      run(tx)
+    })
+  }
 
   return {
     // Новые сверху
@@ -79,13 +111,18 @@ export function createStore(factory: IDBFactory): Store {
     },
     // По номеру комнаты: повтор той же комнаты не заводит вторую
     async saveRoom(room) {
-      const store = await rooms('readwrite')
-      // Записано, когда транзакция завершилась, а не когда принят запрос
-      await new Promise<void>((resolve, reject) => {
-        store.transaction.oncomplete = () => resolve()
-        store.transaction.onerror = () => reject(store.transaction.error)
-        store.transaction.onabort = () => reject(store.transaction.error ?? new Error('Запись отменена'))
-        store.put(room)
+      await write([ROOMS], (tx) => tx.objectStore(ROOMS).put(room))
+    },
+    async getJoin(roomId) {
+      return (await done((await db()).transaction(JOINS, 'readonly').objectStore(JOINS).get(roomId))) as SavedJoin | undefined
+    },
+    async saveJoin(join) {
+      await write([JOINS], (tx) => tx.objectStore(JOINS).put(join))
+    },
+    async admitJoin(room) {
+      await write([ROOMS, JOINS], (tx) => {
+        tx.objectStore(ROOMS).put(room)
+        tx.objectStore(JOINS).delete(room.id)
       })
     },
     async close() {

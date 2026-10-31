@@ -1,11 +1,31 @@
-// Запросы к серверу комнат. Ответ — проверенный (protocol.ts) или отказ с текстом для человека
+// Запросы к серверу комнат. Ответ — проверенный (protocol.ts) или отказ с текстом для человека.
+// server — адрес сервера комнаты (у комнаты свой, из ссылки или с создания; «Настройки» — только для новых)
 import {
+  isAdmitResponse,
+  isClaimDeviceResponse,
   isCreateRoomResponse,
+  isDeviceLinkResponse,
   isErrorResponse,
+  isInviteResponse,
+  isJoinRequestsResponse,
+  isJoinRoomResponse,
+  isPreviewResponse,
+  isRejectResponse,
   isRoomStateResponse,
+  joinMark,
   PROTOCOL_VERSION,
+  type AdmitResponse,
+  type ClaimDeviceResponse,
   type CreateRoomRequest,
   type CreateRoomResponse,
+  type DeviceLinkRequest,
+  type DeviceLinkResponse,
+  type InviteResponse,
+  type JoinRequestsResponse,
+  type JoinRoomRequest,
+  type JoinRoomResponse,
+  type PreviewResponse,
+  type RejectResponse,
   type RoomStateResponse,
 } from './rules/protocol'
 
@@ -13,7 +33,9 @@ export const OFFLINE = 'Нет связи с сервером'
 export const VERSION_MISMATCH = 'Версия сайта и сервера разная — обновите страницу'
 const STRANGE = 'Сервер ответил непонятно. Проверьте адрес сервера в «Настройках»'
 
-export type Result<T> = { ok: true; value: T } | { ok: false; error: string; offline?: true; status?: number }
+// join — отметка заявки в отказе: ждём ведущего или отклонили (экран ожидания)
+export type Failure = { ok: false; error: string; offline?: true; status?: number; join?: 'waiting' | 'rejected' }
+export type Result<T> = { ok: true; value: T } | Failure
 
 async function call<T>(url: string, init: RequestInit, valid: (x: unknown) => x is T & { v: number }): Promise<Result<T>> {
   let response: Response
@@ -23,22 +45,81 @@ async function call<T>(url: string, init: RequestInit, valid: (x: unknown) => x 
     return { ok: false, error: OFFLINE, offline: true }
   }
   const body: unknown = await response.json().catch(() => null)
-  if (isErrorResponse(body) && !response.ok) return { ok: false, error: body.error, status: response.status }
+  if (isErrorResponse(body) && !response.ok) {
+    const join = joinMark(body)
+    return join ? { ok: false, error: body.error, status: response.status, join } : { ok: false, error: body.error, status: response.status }
+  }
   if (body && typeof body === 'object' && 'v' in body && body.v !== PROTOCOL_VERSION) return { ok: false, error: VERSION_MISMATCH }
   if (!response.ok || !valid(body)) return { ok: false, error: STRANGE, status: response.status }
   return { ok: true, value: body }
 }
 
-// POST /rooms — создать комнату по паролю компании
-export function createRoom(server: string, request: CreateRoomRequest): Promise<Result<CreateRoomResponse>> {
-  return call(
-    server + '/rooms',
-    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ v: PROTOCOL_VERSION, ...request }) },
-    isCreateRoomResponse,
-  )
+function roomUrl(server: string, roomId: string, action = ''): string {
+  return server + '/rooms/' + encodeURIComponent(roomId) + (action ? '/' + action : '')
 }
 
-// GET /rooms/<номер> — состояние комнаты по ключу телефона
+// POST с телом JSON; key — ключ телефона (Authorization: Bearer), если действие по ключу
+function post(body: object, key?: string): RequestInit {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (key) headers.Authorization = 'Bearer ' + key
+  return { method: 'POST', headers, body: JSON.stringify({ v: PROTOCOL_VERSION, ...body }) }
+}
+
+function bearer(key: string): RequestInit {
+  return { headers: { Authorization: 'Bearer ' + key } }
+}
+
+// POST /rooms — создать комнату по паролю компании
+export function createRoom(server: string, request: CreateRoomRequest): Promise<Result<CreateRoomResponse>> {
+  return call(server + '/rooms', post(request), isCreateRoomResponse)
+}
+
+// GET /rooms/<номер> — состояние комнаты по ключу телефона. Ключ заявки — отказ с join
 export function fetchRoom(server: string, roomId: string, key: string): Promise<Result<RoomStateResponse>> {
-  return call(server + '/rooms/' + encodeURIComponent(roomId), { headers: { Authorization: 'Bearer ' + key } }, isRoomStateResponse)
+  return call(roomUrl(server, roomId), bearer(key), isRoomStateResponse)
+}
+
+// POST /rooms/<номер>/preview — что за комната по ссылке-приглашению
+export function previewRoom(server: string, roomId: string, invite: string): Promise<Result<PreviewResponse>> {
+  return call(roomUrl(server, roomId, 'preview'), post({ invite }), isPreviewResponse)
+}
+
+// POST /rooms/<номер>/join — заявка; повтор с тем же requestId — та же заявка и тот же ключ
+export function joinRoom(server: string, roomId: string, request: Omit<JoinRoomRequest, 'v'>): Promise<Result<JoinRoomResponse>> {
+  return call(roomUrl(server, roomId, 'join'), post(request), isJoinRoomResponse)
+}
+
+// GET /rooms/<номер>/requests — ждущие заявки, ведущему
+export function fetchRequests(server: string, roomId: string, key: string): Promise<Result<JoinRequestsResponse>> {
+  return call(roomUrl(server, roomId, 'requests'), bearer(key), isJoinRequestsResponse)
+}
+
+// POST /rooms/<номер>/admit — впустить
+export function admitRequest(server: string, roomId: string, key: string, request: string): Promise<Result<AdmitResponse>> {
+  return call(roomUrl(server, roomId, 'admit'), post({ request }, key), isAdmitResponse)
+}
+
+// POST /rooms/<номер>/reject — отклонить
+export function rejectRequest(server: string, roomId: string, key: string, request: string): Promise<Result<RejectResponse>> {
+  return call(roomUrl(server, roomId, 'reject'), post({ request }, key), isRejectResponse)
+}
+
+// POST /rooms/<номер>/invite — новая ссылка-приглашение; старая перестаёт работать
+export function renewInvite(server: string, roomId: string, key: string): Promise<Result<InviteResponse>> {
+  return call(roomUrl(server, roomId, 'invite'), post({}, key), isInviteResponse)
+}
+
+// POST /rooms/<номер>/device — ссылка для другого устройства (себе или, ведущему, за другого)
+export function issueDeviceLink(
+  server: string,
+  roomId: string,
+  key: string,
+  request: Omit<DeviceLinkRequest, 'v'>,
+): Promise<Result<DeviceLinkResponse>> {
+  return call(roomUrl(server, roomId, 'device'), post(request, key), isDeviceLinkResponse)
+}
+
+// POST /rooms/<номер>/device/claim — ключ этого устройства по ссылке
+export function claimDevice(server: string, roomId: string, token: string): Promise<Result<ClaimDeviceResponse>> {
+  return call(roomUrl(server, roomId, 'device/claim'), post({ token }), isClaimDeviceResponse)
 }
