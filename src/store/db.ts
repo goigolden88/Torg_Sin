@@ -15,7 +15,7 @@ export type SavedRoom = {
   server: string // адрес сервера комнаты: у комнаты свой, «Настройки» его не меняют
   memberId: string // мой номер участника
   key: string // ключ телефона: Authorization: Bearer <ключ>
-  invite: string | null // токен приглашения; есть только у ведущего, создавшего комнату здесь
+  invite: string | null // токен приглашения; есть только у ведущего — создал комнату здесь или сменил ссылку
   name: string
   currency: string
   hostId: string
