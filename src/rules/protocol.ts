@@ -5,8 +5,9 @@ export const PROTOCOL_VERSION = 1
 // Ответ GET /health: сервер жив, его протокол и время (UTC, мс) — по нему закрываются сроки
 export type Health = { v: number; ok: true; time: number }
 
-// Отказ: понятный человеку текст
-export type ErrorResponse = { v: number; error: string }
+// Отказ: понятный человеку текст. join — у ключа заявки, которую ещё не впустили
+// («waiting») или отклонили («rejected»): экран ожидания различает их без разбора текста
+export type ErrorResponse = { v: number; error: string; join?: 'waiting' | 'rejected' }
 
 // POST /rooms: создать комнату по паролю компании (Р-03). requestId — номер запроса (ULID)
 // от телефона: повтор с тем же номером даёт ту же комнату и тот же ответ
@@ -30,6 +31,37 @@ export type RoomStateResponse = {
   members: { id: string; name: string }[]
   me: string
 }
+
+// Вход по ссылке (Р-03). Токены — в теле запроса, не в адресе: адреса попадают в журналы.
+// POST /rooms/<номер>/preview — что за комната по ссылке-приглашению: только название и ведущий
+export type PreviewRequest = { v?: number; invite: string }
+export type PreviewResponse = { v: number; name: string; hostName: string }
+
+// POST /rooms/<номер>/join — заявка: ключ телефона, который откроет комнату, когда ведущий
+// впустит. requestId — номер запроса (ULID): повтор с тем же номером — та же заявка и тот же ключ
+export type JoinRoomRequest = { v?: number; invite: string; name: string; requestId?: string }
+export type JoinRoomResponse = { v: number; memberId: string; key: string; join: 'waiting' | 'admitted' | 'rejected' }
+
+// GET /rooms/<номер>/requests — ждущие заявки, только ведущему
+export type JoinRequestsResponse = { v: number; requests: { id: string; name: string; at: number }[] }
+
+// POST /rooms/<номер>/admit и /reject — решение ведущего по заявке
+export type DecideRequest = { v?: number; request: string }
+export type AdmitResponse = { v: number; member: { id: string; name: string } }
+export type RejectResponse = { v: number; request: string }
+
+// POST /rooms/<номер>/invite — ведущий меняет ссылку-приглашение: старая перестаёт работать
+export type InviteResponse = { v: number; invite: string }
+
+// POST /rooms/<номер>/device — ссылка для другого устройства: одноразовая, на сутки.
+// member — за кого (по умолчанию — себе; за другого — только ведущий); unlink — после
+// использования прежние ключи участника не открывают комнату (потерял телефон)
+export type DeviceLinkRequest = { v?: number; member?: string; unlink?: boolean }
+export type DeviceLinkResponse = { v: number; token: string; member: string; expiresAt: number }
+
+// POST /rooms/<номер>/device/claim — другое устройство по ссылке получает свой ключ участника
+export type ClaimDeviceRequest = { v?: number; token: string }
+export type ClaimDeviceResponse = { v: number; memberId: string; key: string }
 
 export function isHealth(x: unknown): x is Health {
   if (typeof x !== 'object' || x === null) return false

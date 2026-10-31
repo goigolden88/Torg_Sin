@@ -16,6 +16,9 @@ export default {
       now: () => Date.now(),
       create: (input) => roomStub(env, input.roomId).create(input),
       state: (roomId, keyHash) => roomStub(env, roomId).state(keyHash),
+      // Вызов объекта не сохраняет связь «действие → ответ» в типах — её держит room.act
+      act: async <K extends room.ActionType>(roomId: string, action: Extract<room.RoomAction, { type: K }>) =>
+        (await roomStub(env, roomId).act(action)) as room.ActionResult<K>,
     })
   },
 }
@@ -33,5 +36,10 @@ export class Room extends DurableObject<Env> {
 
   async state(keyHash: string): Promise<room.StateResult> {
     return room.roomState(this.ctx.storage, keyHash)
+  }
+
+  // Вход по ссылке и решения ведущего (room.act): по одному, по времени сервера
+  async act(action: room.RoomAction): Promise<room.ActionResult> {
+    return room.act(this.ctx.storage, action, Date.now())
   }
 }

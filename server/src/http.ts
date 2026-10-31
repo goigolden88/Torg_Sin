@@ -7,10 +7,20 @@ import {
   type Health,
   type RoomStateResponse,
 } from '../../src/rules/protocol'
-import { checkRoomInput } from '../../src/rules/room'
+import { checkMemberName, checkRoomInput } from '../../src/rules/room'
 import { ulid } from '../../src/rules/ulid'
-import { deriveCreation, hashKey, randomToken, ULID_PATTERN } from './keys'
-import { NO_ROOM, type CreateInput, type CreateResult, type StateResult } from './room'
+import { deriveCreation, hashKey, randomToken, sameText, ULID_PATTERN } from './keys'
+import {
+  BAD_DEVICE_LINK,
+  BAD_LINK,
+  NO_ROOM,
+  type ActionResult,
+  type ActionType,
+  type CreateInput,
+  type CreateResult,
+  type RoomAction,
+  type StateResult,
+} from './room'
 
 // Сайт живёт на другом адресе (GitHub Pages) — браузеру нужно разрешение
 export const CORS_HEADERS: Record<string, string> = {
@@ -58,9 +68,15 @@ export type RoomsDeps = {
   now: () => number // время сервера, UTC, мс
   create: (input: CreateInput) => Promise<CreateResult>
   state: (roomId: string, keyHash: string) => Promise<StateResult>
+  // Остальные действия комнаты (room.ts, act) — по одному, в очереди комнаты
+  act: <K extends ActionType>(roomId: string, action: Extract<RoomAction, { type: K }>) => Promise<ActionResult<K>>
 }
 
 type Reply<T> = { status: number; body: T | ErrorResponse }
+
+function failure(status: number, error: string, join?: ErrorResponse['join']): Reply<never> {
+  return { status, body: join ? { v: PROTOCOL_VERSION, error, join } : { v: PROTOCOL_VERSION, error } }
+}
 
 // Все адреса сервера
 export async function handle(request: Request, deps: RoomsDeps): Promise<Response> {
@@ -77,7 +93,153 @@ export async function handle(request: Request, deps: RoomsDeps): Promise<Respons
     const r = await getRoom(match[1],request.headers.get('Authorization'), deps)
     return json(r.status, r.body)
   }
+  const sub = /^\/rooms\/([^/]+)\/(preview|join|requests|admit|reject|invite|device|device\/claim)$/.exec(path)
+  if (sub) {
+    const r = await roomAction(sub[1], sub[2], request, deps)
+    if (r) return json(r.status, r.body)
+  }
   return notFound()
+}
+
+// Адреса входа по ссылке (Р-03): /rooms/<номер>/<действие>. Не тот метод — null (404)
+async function roomAction(roomId: string, action: string, request: Request, deps: RoomsDeps): Promise<Reply<unknown> | null> {
+  const authorization = request.headers.get('Authorization')
+  if (action === 'requests') return request.method === 'GET' ? listRequests(roomId, authorization, deps) : null
+  if (request.method !== 'POST') return null
+  const body: unknown = await request.json().catch(() => null)
+  switch (action) {
+    case 'preview':
+      return previewRoom(roomId, body, deps)
+    case 'join':
+      return joinRoom(roomId, body, deps)
+    case 'admit':
+    case 'reject':
+      return decide(roomId, action, authorization, body, deps)
+    case 'invite':
+      return renewInvite(roomId, authorization, body, deps)
+    case 'device':
+      return issueDevice(roomId, authorization, body, deps)
+    case 'device/claim':
+      return claimDevice(roomId, body, deps)
+  }
+  return null
+}
+
+// Тело запроса: версия протокола не та — отказ. Без тела (или не JSON) — пустое, если можно
+function readBody(body: unknown, optional = false): { ok: true; body: Record<string, unknown> } | { ok: false; reply: Reply<never> } {
+  const record = isRecord(body) ? body : optional && body === null ? {} : null
+  if (!record) return { ok: false, reply: failure(400, BAD_REQUEST) }
+  if (record.v !== undefined && record.v !== PROTOCOL_VERSION) return { ok: false, reply: failure(400, VERSION_ERROR) }
+  return { ok: true, body: record }
+}
+
+function reply<K extends ActionType>(r: ActionResult<K>, extra: Record<string, unknown> = {}): Reply<unknown> {
+  if (!r.ok) return failure(r.status, r.error, r.join)
+  return { status: 200, body: { v: PROTOCOL_VERSION, ...r.value, ...extra } }
+}
+
+// Ключ телефона из заголовка Authorization: Bearer <ключ>
+function bearer(authorization: string | null): string | undefined {
+  return /^Bearer\s+(\S+)$/i.exec(authorization ?? '')?.[1]
+}
+
+// Действие по ключу телефона: нет ключа — 403; кривой номер комнаты — 404, хранилище не трогаем
+async function withKey(
+  roomId: string,
+  authorization: string | null,
+  run: (keyHash: string) => Promise<Reply<unknown>>,
+): Promise<Reply<unknown>> {
+  const key = bearer(authorization)
+  if (!key) return failure(403, NEED_KEY)
+  if (!ULID_PATTERN.test(roomId)) return failure(404, NO_ROOM)
+  return run(await hashKey(key))
+}
+
+// POST /rooms/<номер>/preview { invite } → название комнаты и имя ведущего
+export async function previewRoom(roomId: string, raw: unknown, deps: RoomsDeps): Promise<Reply<unknown>> {
+  const read = readBody(raw)
+  if (!read.ok) return read.reply
+  const invite = read.body.invite
+  if (typeof invite !== 'string' || !invite || !ULID_PATTERN.test(roomId)) return failure(403, BAD_LINK)
+  return reply(await deps.act(roomId, { type: 'preview', invite }))
+}
+
+// POST /rooms/<номер>/join { invite, name, requestId? } → ключ заявки
+export async function joinRoom(roomId: string, raw: unknown, deps: RoomsDeps): Promise<Reply<unknown>> {
+  const read = readBody(raw)
+  if (!read.ok) return read.reply
+  const { invite } = read.body
+  if (typeof invite !== 'string' || !invite || !ULID_PATTERN.test(roomId)) return failure(403, BAD_LINK)
+  const name = checkMemberName(read.body.name)
+  if (!name.ok) return failure(400, name.error)
+  // Номера запроса нет — повтор не узнать, но заявка подаётся
+  const requestId = read.body.requestId === undefined ? ulid(deps.now()) : read.body.requestId
+  if (typeof requestId !== 'string' || !ULID_PATTERN.test(requestId)) return failure(400, BAD_REQUEST_ID)
+  return reply(await deps.act(roomId, { type: 'join', invite, name: name.name, requestId }))
+}
+
+// GET /rooms/<номер>/requests — ждущие заявки, ведущему
+export async function listRequests(roomId: string, authorization: string | null, deps: RoomsDeps): Promise<Reply<unknown>> {
+  return withKey(roomId, authorization, async (keyHash) => reply(await deps.act(roomId, { type: 'requests', keyHash })))
+}
+
+// POST /rooms/<номер>/admit | reject { request } — решение ведущего
+export async function decide(
+  roomId: string,
+  decision: 'admit' | 'reject',
+  authorization: string | null,
+  raw: unknown,
+  deps: RoomsDeps,
+): Promise<Reply<unknown>> {
+  return withKey(roomId, authorization, async (keyHash) => {
+    const read = readBody(raw)
+    if (!read.ok) return read.reply
+    const request = read.body.request
+    if (typeof request !== 'string' || !request) return failure(400, BAD_REQUEST)
+    return decision === 'admit'
+      ? reply(await deps.act(roomId, { type: 'admit', keyHash, request }))
+      : reply(await deps.act(roomId, { type: 'reject', keyHash, request }))
+  })
+}
+
+// POST /rooms/<номер>/invite — новая ссылка-приглашение, ведущему
+export async function renewInvite(roomId: string, authorization: string | null, raw: unknown, deps: RoomsDeps): Promise<Reply<unknown>> {
+  return withKey(roomId, authorization, async (keyHash) => {
+    const read = readBody(raw, true)
+    if (!read.ok) return read.reply
+    return reply(await deps.act(roomId, { type: 'renewInvite', keyHash, invite: randomToken() }))
+  })
+}
+
+// POST /rooms/<номер>/device { member?, unlink? } — ссылка для другого устройства; токен — только в ответе
+export async function issueDevice(roomId: string, authorization: string | null, raw: unknown, deps: RoomsDeps): Promise<Reply<unknown>> {
+  return withKey(roomId, authorization, async (keyHash) => {
+    const read = readBody(raw, true)
+    if (!read.ok) return read.reply
+    const { member, unlink } = read.body
+    if ((member !== undefined && (typeof member !== 'string' || !member)) || (unlink !== undefined && typeof unlink !== 'boolean')) {
+      return failure(400, BAD_REQUEST)
+    }
+    const token = randomToken()
+    const r = await deps.act(roomId, {
+      type: 'issueDevice',
+      keyHash,
+      member: typeof member === 'string' ? member : null,
+      unlink: unlink === true,
+      tokenHash: await hashKey(token),
+    })
+    return reply(r, { token })
+  })
+}
+
+// POST /rooms/<номер>/device/claim { token } — новое устройство получает свой ключ участника
+export async function claimDevice(roomId: string, raw: unknown, deps: RoomsDeps): Promise<Reply<unknown>> {
+  const read = readBody(raw)
+  if (!read.ok) return read.reply
+  const token = read.body.token
+  if (typeof token !== 'string' || !token || !ULID_PATTERN.test(roomId)) return failure(403, BAD_DEVICE_LINK)
+  const key = randomToken(32)
+  return reply(await deps.act(roomId, { type: 'claimDevice', tokenHash: await hashKey(token), keyHash: await hashKey(key) }), { key })
 }
 
 // POST /rooms: пароль компании → проверка формы → комната. Пароль проверяется до всего
@@ -102,12 +264,13 @@ export async function createRoom(body: unknown, deps: RoomsDeps): Promise<Reply<
 // GET /rooms/<номер>: ключ телефона — в заголовке Authorization: Bearer <ключ>
 export async function getRoom(roomId: string, authorization: string | null, deps: RoomsDeps): Promise<Reply<RoomStateResponse>> {
   const fail = (status: number, error: string) => ({ status, body: { v: PROTOCOL_VERSION, error } })
-  const key = /^Bearer\s+(\S+)$/i.exec(authorization ?? '')?.[1]
+  const key = bearer(authorization)
   if (!key) return fail(403, NEED_KEY)
   // Кривой номер — комнаты точно нет: хранилище не трогаем
   if (!ULID_PATTERN.test(roomId)) return fail(404, NO_ROOM)
   const r = await deps.state(roomId, await hashKey(key))
-  if (!r.ok) return fail(r.status, r.error)
+  // Ключ заявки: «ждём, пока ведущий впустит» или «отклонил» — с отметкой join для экрана ожидания
+  if (!r.ok) return failure(r.status, r.error, r.join)
   const { state } = r
   return {
     status: 200,
@@ -120,13 +283,9 @@ export async function getRoom(roomId: string, authorization: string | null, deps
   }
 }
 
-// Сравнение без раннего выхода: время ответа не подсказывает, сколько знаков угадано
+// Сравнение без раннего выхода (keys.ts): время ответа не подсказывает, сколько знаков угадано
 function samePassword(given: string, expected: string): boolean {
-  const a = new TextEncoder().encode(given)
-  const b = new TextEncoder().encode(expected)
-  let diff = a.length ^ b.length
-  for (let i = 0; i < b.length; i++) diff |= (a[i] ?? 0) ^ b[i]
-  return diff === 0
+  return sameText(given, expected)
 }
 
 function isRecord(x: unknown): x is Record<string, unknown> {
