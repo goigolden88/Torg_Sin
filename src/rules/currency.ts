@@ -1,6 +1,6 @@
 // Валюты комнаты (Р-07): одна на комнату, выбирается при создании. Новая валюта — строка
 // таблицы. Суммы хранятся целыми в минимальных единицах: digits — знаков после запятой.
-// Форматирование сумм — этап 5; здесь только таблица
+// Здесь же — разбор суммы из поля ввода (parseAmount) и показ суммы (formatAmount)
 export type Currency = {
   code: string
   digits: number // знаков после запятой: 100 единиц RUB = 1,00 ₽
@@ -33,4 +33,47 @@ export function isCurrencyCode(x: unknown): x is CurrencyCode {
 
 export function currency(code: CurrencyCode): Currency {
   return CURRENCIES.find((c) => c.code === code) as Currency
+}
+
+const NBSP = ' '
+
+export type ParsedAmount = { ok: true; units: number } | { ok: false; error: string }
+
+// Сумма из поля ввода → целое в минимальных единицах: «1 200,50», «1200.5», «300».
+// Пробелы между разрядами (и неразрывные) допустимы; запятая или точка — дробная часть
+export function parseAmount(text: string, code: CurrencyCode): ParsedAmount {
+  const { digits } = currency(code)
+  const s = text.replace(/[\s  ]/g, '')
+  if (s === '') return { ok: false, error: 'Введите сумму' }
+  if (/^[-−–]/.test(s)) return { ok: false, error: 'Сумма не может быть меньше нуля' }
+  const m = /^(\d+)(?:[.,](\d+))?$/.exec(s)
+  if (!m) return { ok: false, error: 'Сумма — число, например 1 200,50' }
+  const frac = m[2] ?? ''
+  if (frac.length > digits) {
+    return {
+      ok: false,
+      error: digits === 0 ? 'Сумма — целое число, без запятой' : `Не больше ${digits} знаков после запятой`,
+    }
+  }
+  const big = BigInt(m[1] + frac.padEnd(digits, '0'))
+  if (big === 0n) return { ok: false, error: 'Сумма должна быть больше нуля' }
+  if (big > BigInt(Number.MAX_SAFE_INTEGER)) return { ok: false, error: 'Слишком большая сумма' }
+  return { ok: true, units: Number(big) }
+}
+
+// Целое в минимальных единицах → «1 200,50 ₽», «0,00012 ₿», «15 очки», «15 USDT» (у USDT знака нет —
+// код). Пробелы между разрядами и перед знаком — неразрывные. Целая сумма — без дробной части;
+// дробная — не меньше 2 знаков, лишние нули справа убираются: «1 200 ₽», «1 200,50 ₽». Минус — «−»
+export function formatAmount(units: number, code: CurrencyCode): string {
+  const c = currency(code)
+  const neg = units < 0
+  const raw = BigInt(Math.abs(Math.trunc(units)))
+    .toString()
+    .padStart(c.digits + 1, '0')
+  const whole = raw.slice(0, raw.length - c.digits)
+  let frac = raw.slice(raw.length - c.digits).replace(/0+$/, '')
+  if (frac !== '' && frac.length < 2) frac = frac.padEnd(Math.min(2, c.digits), '0')
+  const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, NBSP)
+  const num = (neg ? '−' : '') + grouped + (frac ? ',' + frac : '')
+  return `${num}${NBSP}${c.sign || c.code}`
 }
