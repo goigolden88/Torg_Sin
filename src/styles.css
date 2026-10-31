@@ -1,0 +1,267 @@
+/* ТоргСин — вёрстка «сначала телефон» (Р-10): базовые правила — для узкого экрана,
+   шире — через min-width. Ступени: до 600 px — телефон, 600–1023 — планшет,
+   от 1024 — компьютер (меню слева, «список + открытое» рядом, ширина ≤ 1200 px).
+   Проверка каждого экрана — на 390 и 1280 px. */
+
+:root {
+  --bg: #11141c;
+  --surface: #1b2030;
+  --surface-2: #252b3e;
+  --line: #313852;
+  --text: #eef0f6;
+  --muted: #9aa2b8;
+  --gold: #e3b341;
+  --gold-text: #1a1408;
+  --ok: #5cc88a;
+  --error: #ff7a7a;
+  --radius: 14px;
+  --tap: 44px; /* меньше кнопки на телефоне не бывает */
+  --nav-h: 64px;
+  --pad: 16px;
+  color-scheme: dark;
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  font-size: 16px;
+  line-height: 1.45;
+  background: var(--bg);
+  color: var(--text);
+  -webkit-text-size-adjust: 100%;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100dvh;
+}
+
+h1 {
+  font-size: 1.5rem;
+  margin: 0; /* отступ до содержимого — gap у .screen */
+}
+
+h2 {
+  font-size: 1.1rem;
+  margin: 0 0 8px;
+}
+
+p {
+  margin: 0 0 8px;
+}
+
+/* ─── Каркас: телефон ─────────────────────────────────────────────────────── */
+
+.app {
+  min-height: 100dvh;
+}
+
+.main {
+  padding: var(--pad);
+  padding-top: calc(var(--pad) + env(safe-area-inset-top));
+  /* место под вкладки снизу */
+  padding-bottom: calc(var(--nav-h) + var(--pad) + env(safe-area-inset-bottom));
+}
+
+.nav {
+  position: fixed;
+  inset: auto 0 0 0;
+  z-index: 10;
+  display: flex;
+  height: calc(var(--nav-h) + env(safe-area-inset-bottom));
+  padding-bottom: env(safe-area-inset-bottom);
+  background: var(--surface);
+  border-top: 1px solid var(--line);
+}
+
+.brand {
+  display: none;
+}
+
+.nav-item {
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-height: var(--tap);
+  color: var(--muted);
+  text-decoration: none;
+  font-size: 0.8rem;
+}
+
+.nav-item[aria-current='page'] {
+  color: var(--gold);
+}
+
+.nav-icon {
+  font-size: 1.3rem;
+  line-height: 1;
+}
+
+.screen {
+  display: flex;
+  flex-direction: column;
+  gap: var(--pad);
+  min-width: 0;
+}
+
+/* «Список + открытое»: на телефоне — одно под другим */
+.split {
+  display: flex;
+  flex-direction: column;
+  gap: var(--pad);
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: var(--pad);
+  min-width: 0;
+}
+
+.detail {
+  display: none; /* на телефоне открытое — отдельным экраном (этап 1) */
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 8px 0;
+}
+
+.input {
+  flex: 1 1 220px;
+  min-width: 0;
+  min-height: var(--tap);
+  padding: 0 12px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  color: var(--text);
+  font: inherit;
+}
+
+.button {
+  min-height: var(--tap);
+  padding: 0 18px;
+  border: 0;
+  border-radius: 10px;
+  background: var(--gold);
+  color: var(--gold-text);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.button.secondary {
+  background: var(--surface-2);
+  color: var(--text);
+  border: 1px solid var(--line);
+}
+
+.button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.button:focus-visible,
+.input:focus-visible,
+.nav-item:focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 2px;
+}
+
+.empty {
+  font-size: 1.1rem;
+}
+
+.hint {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.ok {
+  color: var(--ok);
+}
+
+.error {
+  color: var(--error);
+}
+
+/* ─── Планшет ─────────────────────────────────────────────────────────────── */
+
+@media (min-width: 600px) {
+  :root {
+    --pad: 20px;
+  }
+}
+
+/* ─── Компьютер: меню слева, содержимое по центру ─────────────────────────── */
+
+@media (min-width: 1024px) {
+  .app {
+    display: grid;
+    grid-template-columns: 240px minmax(0, 1fr);
+  }
+
+  .nav {
+    position: sticky;
+    top: 0;
+    inset: auto;
+    height: 100dvh;
+    flex-direction: column;
+    gap: 4px;
+    padding: 20px 12px;
+    border-top: 0;
+    border-right: 1px solid var(--line);
+  }
+
+  .brand {
+    display: block;
+    padding: 0 12px 16px;
+    font-size: 1.3rem;
+    font-weight: 700;
+    color: var(--gold);
+  }
+
+  .nav-item {
+    flex: 0 0 auto;
+    flex-direction: row;
+    justify-content: flex-start;
+    gap: 12px;
+    padding: 0 12px;
+    border-radius: 10px;
+    font-size: 1rem;
+  }
+
+  .nav-item:hover {
+    background: var(--surface-2);
+  }
+
+  .nav-item[aria-current='page'] {
+    background: var(--surface-2);
+  }
+
+  .main {
+    width: 100%;
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 32px;
+  }
+
+  /* «Список + открытое» — рядом */
+  .split {
+    display: grid;
+    grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
+    align-items: start;
+  }
+
+  .detail {
+    display: block;
+    min-height: 240px;
+  }
+}
