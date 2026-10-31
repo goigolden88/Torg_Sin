@@ -1,5 +1,9 @@
 node_modules
 dist
 server/dist
+# Комнаты запасного сервера (server/node) — живые данные, не в репо
+server/node/data.sqlite*
+*.sqlite-wal
+*.sqlite-shm
 .wrangler
 *.local

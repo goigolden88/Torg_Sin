@@ -7,8 +7,9 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "test": "vitest run",
-    "server:check": "tsc --noEmit -p server",
+    "test": "vitest run --reporter=verbose",
+    "server:check": "tsc --noEmit -p server && tsc --noEmit -p server/node",
+    "server:node": "vite build --config server/node/vite.config.ts && node server/node/dist/main.js",
     "server:build": "wrangler deploy --dry-run --config server/wrangler.toml --outdir server/dist",
     "server:deploy": "wrangler deploy --config server/wrangler.toml"
   },
@@ -18,6 +19,7 @@
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20261024.1",
+    "@types/node": "^24.19.2",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "fake-indexeddb": "^6.2.5",
