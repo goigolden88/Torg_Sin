@@ -3,10 +3,24 @@
 //
 // Что лежит в хранилище комнаты:
 //   log:00000001…  — журнал комнаты (Р-11), только дописывается: запись по ключу не меняется
-//   key:<хеш>      — ключ телефона → номер участника; ключа в открытом виде нет
+//   key:<хеш>      — ключ телефона → номер участника (или заявки); ключа в открытом виде нет;
+//                    отвязанный ключ помечен unlinkedAt и комнату не открывает
 //   invite         — токен ссылки-приглашения (меняется — не журнал)
-import { foldLog, type LogEntry, type RoomInput, type RoomState } from '../../src/rules/room'
+//   secret         — секрет комнаты: из него и номера запроса выводится ключ по заявке
+//   device:<хеш>   — ссылка для другого устройства: чья, до когда, отвязать ли прежние,
+//                    использована ли; токена в открытом виде нет
+import {
+  foldLog,
+  joinRequests,
+  nameTaken,
+  NAME_TAKEN,
+  type JoinRequest,
+  type LogEntry,
+  type RoomInput,
+  type RoomState,
+} from '../../src/rules/room'
 import { ulid } from '../../src/rules/ulid'
+import { deriveJoinKey, hashKey, randomToken, sameText } from './keys'
 
 export type RoomStorage = {
   get<T>(key: string): Promise<T | undefined>
@@ -19,13 +33,37 @@ export const NO_ROOM = 'Нет такой комнаты'
 export const WRONG_KEY = 'Нет доступа: этот телефон не участник комнаты'
 export const REQUEST_TAKEN = 'Этот номер запроса уже занят другой комнатой'
 export const APPEND_ONLY = 'Журнал комнаты только дописывается'
+export const BAD_LINK = 'Ссылка недействительна — попросите новую у ведущего'
+export const WAITING = 'Ждём, пока ведущий впустит'
+export const REJECTED = 'Ведущий отклонил заявку'
+export const HOST_ONLY = 'Это может только ведущий'
+export const JOIN_TAKEN = 'Этот номер запроса уже занят другой заявкой'
+export const NO_REQUEST = 'Нет такой заявки'
+export const ALREADY_REJECTED = 'Заявка уже отклонена'
+export const ALREADY_ADMITTED = 'Участник уже впущен'
+export const NO_MEMBER = 'Нет такого участника'
+export const BAD_DEVICE_LINK = 'Ссылка для другого устройства недействительна — попросите новую'
+
+// Ссылка для другого устройства живёт сутки
+export const DEVICE_LINK_TTL = 24 * 60 * 60 * 1000
 
 const LOG = 'log:'
 const KEY = 'key:'
 const INVITE = 'invite'
+const SECRET = 'secret'
+const DEVICE = 'device:'
 
-type KeyRecord = { memberId: string; at: number }
+type KeyRecord = { memberId: string; at: number; unlinkedAt?: number }
 type InviteRecord = { token: string; at: number }
+type SecretRecord = { secret: string; at: number }
+type DeviceRecord = {
+  member: string
+  unlink: boolean
+  expiresAt: number
+  at: number
+  usedAt?: number // использована — второй раз не сработает
+  revokedAt?: number // прежние ключи участника отвязаны — неиспользованные ссылки тоже гаснут
+}
 
 // Номер записи — по порядку: 8 цифр, ключи сортируются как числа
 function logKey(n: number): string {
@@ -80,15 +118,265 @@ export async function createRoom(storage: RoomStorage, input: CreateInput, now: 
   return { ok: true, roomId: input.roomId, memberId: hostId, invite: input.invite }
 }
 
-export type StateResult =
-  | { ok: true; state: RoomState; me: string }
-  | { ok: false; status: 403 | 404; error: string }
+// Отказ комнаты; join — ключ заявки, которую ещё не впустили или отклонили (экран ожидания)
+export type Failure = { ok: false; status: 400 | 403 | 404 | 409; error: string; join?: 'waiting' | 'rejected' }
+
+export type StateResult = { ok: true; state: RoomState; me: string } | Failure
+
+function fail(status: Failure['status'], error: string, join?: Failure['join']): Failure {
+  return join ? { ok: false, status, error, join } : { ok: false, status, error }
+}
+
+type Caller = { ok: true; log: LogEntry[]; state: RoomState; me: string }
+
+// Кто прислал ключ: участник — дальше; заявка — «ждём» или «отклонили»; отвязанный или чужой — отказ
+async function caller(storage: RoomStorage, keyHash: string): Promise<Caller | Failure> {
+  const log = await readLog(storage)
+  const state = foldLog(log)
+  if (!state) return fail(404, NO_ROOM)
+  const owner = await storage.get<KeyRecord>(KEY + keyHash)
+  if (!owner || owner.unlinkedAt !== undefined) return fail(403, WRONG_KEY)
+  if (state.members.some((m) => m.id === owner.memberId)) return { ok: true, log, state, me: owner.memberId }
+  const request = joinRequests(log).find((r) => r.id === owner.memberId)
+  if (request?.status === 'waiting') return fail(403, WAITING, 'waiting')
+  if (request?.status === 'rejected') return fail(403, REJECTED, 'rejected')
+  return fail(403, WRONG_KEY)
+}
+
+async function hostCaller(storage: RoomStorage, keyHash: string): Promise<Caller | Failure> {
+  const c = await caller(storage, keyHash)
+  if (c.ok && c.me !== c.state.hostId) return fail(403, HOST_ONLY)
+  return c
+}
 
 // Состояние комнаты для владельца ключа (по хешу ключа)
 export async function roomState(storage: RoomStorage, keyHash: string): Promise<StateResult> {
+  const c = await caller(storage, keyHash)
+  return c.ok ? { ok: true, state: c.state, me: c.me } : c
+}
+
+// Действия комнаты, кроме создания и чтения состояния. Токены и ключи, которые выдаёт сервер,
+// придумывает Worker (http.ts) и передаёт сюда хешами; ключ заявки выводится здесь — из секрета комнаты
+export type RoomAction =
+  | { type: 'preview'; invite: string } // что за комната по ссылке-приглашению
+  | { type: 'join'; invite: string; name: string; requestId: string } // заявка на вход
+  | { type: 'requests'; keyHash: string } // ждущие заявки — ведущему
+  | { type: 'admit'; keyHash: string; request: string }
+  | { type: 'reject'; keyHash: string; request: string }
+  | { type: 'renewInvite'; keyHash: string; invite: string } // новая ссылка-приглашение
+  | { type: 'issueDevice'; keyHash: string; member: string | null; unlink: boolean; tokenHash: string }
+  | { type: 'claimDevice'; tokenHash: string; keyHash: string } // новый ключ по ссылке для устройства
+
+export type JoinStatus = JoinRequest['status']
+
+// Что отдаёт каждое действие при успехе
+export type ActionValues = {
+  preview: { name: string; hostName: string }
+  join: { memberId: string; key: string; join: JoinStatus }
+  requests: { requests: { id: string; name: string; at: number }[] }
+  admit: { member: { id: string; name: string } }
+  reject: { request: string }
+  renewInvite: { invite: string }
+  issueDevice: { member: string; expiresAt: number }
+  claimDevice: { memberId: string }
+}
+
+export type ActionType = RoomAction['type']
+export type ActionResult<K extends ActionType = ActionType> = { ok: true; value: ActionValues[K] } | Failure
+
+function ok<V>(value: V): { ok: true; value: V } {
+  return { ok: true, value }
+}
+
+// Одно действие комнаты; объект Room (и очередь Node-обёртки) вызывает их по одному
+export async function act<K extends ActionType>(
+  storage: RoomStorage,
+  action: Extract<RoomAction, { type: K }>,
+  now: number,
+): Promise<ActionResult<K>> {
+  const a = action as RoomAction
+  let r: ActionResult
+  switch (a.type) {
+    case 'preview':
+      r = await preview(storage, a.invite)
+      break
+    case 'join':
+      r = await join(storage, a, now)
+      break
+    case 'requests':
+      r = await listRequests(storage, a.keyHash)
+      break
+    case 'admit':
+      r = await admit(storage, a.keyHash, a.request, now)
+      break
+    case 'reject':
+      r = await reject(storage, a.keyHash, a.request, now)
+      break
+    case 'renewInvite':
+      r = await renewInvite(storage, a.keyHash, a.invite, now)
+      break
+    case 'issueDevice':
+      r = await issueDevice(storage, a, now)
+      break
+    case 'claimDevice':
+      r = await claimDevice(storage, a.tokenHash, a.keyHash, now)
+      break
+  }
+  return r as ActionResult<K>
+}
+
+async function inviteValid(storage: RoomStorage, given: string): Promise<boolean> {
+  const invite = await storage.get<InviteRecord>(INVITE)
+  return invite !== undefined && given !== '' && sameText(given, invite.token)
+}
+
+// По ссылке-приглашению видно только название комнаты и имя ведущего
+async function preview(storage: RoomStorage, invite: string): Promise<ActionResult<'preview'>> {
   const state = foldLog(await readLog(storage))
-  if (!state) return { ok: false, status: 404, error: NO_ROOM }
+  if (!state || !(await inviteValid(storage, invite))) return fail(403, BAD_LINK)
+  const host = state.members.find((m) => m.id === state.hostId)
+  return ok({ name: state.name, hostName: host?.name ?? '' })
+}
+
+// Секрет комнаты для ключей по заявкам; у комнаты его нет — заводится
+async function roomSecret(storage: RoomStorage, now: number): Promise<string> {
+  const existing = await storage.get<SecretRecord>(SECRET)
+  if (existing) return existing.secret
+  const secret = randomToken(32)
+  await storage.put<SecretRecord>(SECRET, { secret, at: now })
+  return secret
+}
+
+// Заявка по ссылке: ключ телефона, который откроет комнату, когда ведущий впустит.
+// Повтор с тем же номером запроса — та же заявка и тот же ключ
+async function join(
+  storage: RoomStorage,
+  a: { invite: string; name: string; requestId: string },
+  now: number,
+): Promise<ActionResult<'join'>> {
+  const log = await readLog(storage)
+  const state = foldLog(log)
+  if (!state || !(await inviteValid(storage, a.invite))) return fail(403, BAD_LINK)
+  const key = await deriveJoinKey(await roomSecret(storage, now), a.requestId)
+  const keyHash = await hashKey(key)
+  const requests = joinRequests(log)
   const owner = await storage.get<KeyRecord>(KEY + keyHash)
-  if (!owner || !state.members.some((m) => m.id === owner.memberId)) return { ok: false, status: 403, error: WRONG_KEY }
-  return { ok: true, state, me: owner.memberId }
+  if (owner) {
+    const request = requests.find((r) => r.id === owner.memberId)
+    if (request) {
+      if (request.name !== a.name) return fail(409, JOIN_TAKEN)
+      return ok({ memberId: request.id, key, join: request.status })
+    }
+    // Ключ записан, а заявки в журнале нет (прошлый раз оборвался между ними) — дописать заявку
+  }
+  if (nameTaken(state, requests, a.name)) return fail(409, NAME_TAKEN)
+  const id = owner?.memberId ?? ulid(now)
+  // Ключ — до журнала: заявка в журнале есть — значит, ключ к ней выдан
+  if (!owner) await storage.put<KeyRecord>(KEY + keyHash, { memberId: id, at: now })
+  await append(storage, [{ id: ulid(now), at: now, memberId: id, type: 'join.requested', request: id, name: a.name }])
+  return ok({ memberId: id, key, join: 'waiting' })
+}
+
+// Ждущие заявки — только ведущему
+async function listRequests(storage: RoomStorage, keyHash: string): Promise<ActionResult<'requests'>> {
+  const c = await hostCaller(storage, keyHash)
+  if (!c.ok) return c
+  const waiting = joinRequests(c.log).filter((r) => r.status === 'waiting')
+  return ok({ requests: waiting.map((r) => ({ id: r.id, name: r.name, at: r.at })) })
+}
+
+// Заявка по номеру — для решения ведущего
+async function hostRequest(
+  storage: RoomStorage,
+  keyHash: string,
+  requestId: string,
+): Promise<{ ok: true; me: string; request: JoinRequest } | Failure> {
+  const c = await hostCaller(storage, keyHash)
+  if (!c.ok) return c
+  const request = joinRequests(c.log).find((r) => r.id === requestId)
+  if (!request) return fail(404, NO_REQUEST)
+  return { ok: true, me: c.me, request }
+}
+
+// Впустить: участник в списке, ключ заявки открывает комнату. Повтор — тот же ответ без новой
+// записи; отклонённую не впустить — пусть подаст новую заявку
+async function admit(storage: RoomStorage, keyHash: string, requestId: string, now: number): Promise<ActionResult<'admit'>> {
+  const found = await hostRequest(storage, keyHash, requestId)
+  if (!found.ok) return found
+  const { me, request } = found
+  if (request.status === 'rejected') return fail(409, ALREADY_REJECTED)
+  if (request.status === 'waiting') {
+    await append(storage, [{ id: ulid(now), at: now, memberId: me, type: 'member.added', member: request.id, name: request.name }])
+  }
+  return ok({ member: { id: request.id, name: request.name } })
+}
+
+// Отклонить: ключ заявки отвечает «Ведущий отклонил заявку». Повтор — тот же ответ; впущенного не отклонить
+async function reject(storage: RoomStorage, keyHash: string, requestId: string, now: number): Promise<ActionResult<'reject'>> {
+  const found = await hostRequest(storage, keyHash, requestId)
+  if (!found.ok) return found
+  const { me, request } = found
+  if (request.status === 'admitted') return fail(409, ALREADY_ADMITTED)
+  if (request.status === 'waiting') {
+    await append(storage, [{ id: ulid(now), at: now, memberId: me, type: 'join.rejected', request: request.id }])
+  }
+  return ok({ request: request.id })
+}
+
+// Новая ссылка-приглашение: старая перестаёт работать; впущенные и ждущие не страдают
+async function renewInvite(storage: RoomStorage, keyHash: string, invite: string, now: number): Promise<ActionResult<'renewInvite'>> {
+  const c = await hostCaller(storage, keyHash)
+  if (!c.ok) return c
+  await storage.put<InviteRecord>(INVITE, { token: invite, at: now })
+  await append(storage, [{ id: ulid(now), at: now, memberId: c.me, type: 'invite.changed' }])
+  return ok({ invite })
+}
+
+// Ссылка для другого устройства: себе — любой участник; за другого — только ведущий
+async function issueDevice(
+  storage: RoomStorage,
+  a: { keyHash: string; member: string | null; unlink: boolean; tokenHash: string },
+  now: number,
+): Promise<ActionResult<'issueDevice'>> {
+  const c = await caller(storage, a.keyHash)
+  if (!c.ok) return c
+  const member = a.member ?? c.me
+  if (member !== c.me && c.me !== c.state.hostId) return fail(403, HOST_ONLY)
+  if (!c.state.members.some((m) => m.id === member)) return fail(404, NO_MEMBER)
+  const expiresAt = now + DEVICE_LINK_TTL
+  await storage.put<DeviceRecord>(DEVICE + a.tokenHash, { member, unlink: a.unlink, expiresAt, at: now })
+  await append(storage, [{ id: ulid(now), at: now, memberId: c.me, type: 'device.issued', member, unlink: a.unlink, expiresAt }])
+  return ok({ member, expiresAt })
+}
+
+// Ссылку для другого устройства использовали: новый ключ того же участника. Одна ссылка — один раз;
+// с отметкой «отвязать прежние» — старые ключи участника и его неиспользованные ссылки гаснут
+async function claimDevice(storage: RoomStorage, tokenHash: string, keyHash: string, now: number): Promise<ActionResult<'claimDevice'>> {
+  const state = foldLog(await readLog(storage))
+  const link = await storage.get<DeviceRecord>(DEVICE + tokenHash)
+  if (
+    !state ||
+    !link ||
+    link.usedAt !== undefined ||
+    link.revokedAt !== undefined ||
+    now >= link.expiresAt ||
+    !state.members.some((m) => m.id === link.member)
+  ) {
+    return fail(403, BAD_DEVICE_LINK)
+  }
+  // Сначала — «использована»: оборвётся дальше — повторно ссылка всё равно не сработает
+  await storage.put<DeviceRecord>(DEVICE + tokenHash, { ...link, usedAt: now })
+  if (link.unlink) {
+    for (const [k, rec] of await storage.list<KeyRecord>({ prefix: KEY })) {
+      if (rec.memberId === link.member && rec.unlinkedAt === undefined) await storage.put<KeyRecord>(k, { ...rec, unlinkedAt: now })
+    }
+    for (const [k, rec] of await storage.list<DeviceRecord>({ prefix: DEVICE })) {
+      if (k !== DEVICE + tokenHash && rec.member === link.member && rec.usedAt === undefined && rec.revokedAt === undefined) {
+        await storage.put<DeviceRecord>(k, { ...rec, revokedAt: now })
+      }
+    }
+  }
+  await storage.put<KeyRecord>(KEY + keyHash, { memberId: link.member, at: now })
+  await append(storage, [{ id: ulid(now), at: now, memberId: link.member, type: 'device.linked', member: link.member, unlink: link.unlink }])
+  return ok({ memberId: link.member })
 }

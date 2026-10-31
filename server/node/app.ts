@@ -4,7 +4,7 @@
 import type { Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { handle } from '../src/http'
-import { createRoom, roomState, type RoomStorage } from '../src/room'
+import { act, createRoom, roomState, type RoomStorage } from '../src/room'
 import { perKey } from '../src/serial'
 import { Alarms } from './alarms'
 import { listen } from './listen'
@@ -62,6 +62,7 @@ export async function startServer(options: NodeServerOptions): Promise<NodeServe
           now,
           create: (input) => serial(input.roomId, () => createRoom(storage(input.roomId), input, now())),
           state: (roomId, keyHash) => serial(roomId, () => roomState(storage(roomId), keyHash)),
+          act: (roomId, action) => serial(roomId, () => act(storage(roomId), action, now())),
         }),
       options.port,
       options.host,

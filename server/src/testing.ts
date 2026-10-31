@@ -1,7 +1,7 @@
 // Подделки для тестов: хранилище кладёт значения JSON-строкой (как настоящее — между
 // вызовами в памяти ничего не держится) и помнит каждую запись; комнаты — по номеру
 import { handle, type RoomsDeps } from './http'
-import { createRoom, roomState, type RoomStorage } from './room'
+import { act, createRoom, roomState, type RoomStorage } from './room'
 import { perKey } from './serial'
 
 export class FakeStorage implements RoomStorage {
@@ -53,6 +53,7 @@ export function fakeServer(password: string | undefined): TestServer & { deps: R
     now: () => clock.now,
     create: (input) => serial(input.roomId, () => createRoom(storage(input.roomId), input, clock.now)),
     state: (roomId, keyHash) => serial(roomId, () => roomState(storage(roomId), keyHash)),
+    act: (roomId, action) => serial(roomId, () => act(storage(roomId), action, clock.now)),
   }
   return {
     deps,
