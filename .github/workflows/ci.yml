@@ -45,3 +45,10 @@ jobs:
 
       - if: steps.has.outputs.app == 'yes'
         run: npm run build --if-present
+
+      # Сервер комнат (server/, Р-01): типы своим tsconfig и сборка без выкатки — ключи не нужны
+      - if: steps.has.outputs.app == 'yes'
+        run: npm run server:check
+
+      - if: steps.has.outputs.app == 'yes'
+        run: npm run server:build

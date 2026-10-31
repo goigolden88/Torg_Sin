@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-1 -1 2 2">
+  <rect x="-1" y="-1" width="2" height="2" fill="#11141c"/>
+  <circle r="0.78" fill="#fade8c"/>
+  <circle r="0.7" fill="#e3b341"/>
+  <!-- тёмный сектор 35 % от верха по часовой -->
+  <path d="M0 0 L0 -0.7 A0.7 0.7 0 0 1 0.5663 0.4114 Z" fill="#966c18"/>
+</svg>
