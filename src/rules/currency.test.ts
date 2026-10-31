@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { CURRENCIES, currency, isCurrencyCode } from './currency'
+import { CURRENCIES, currency, currencyLabel, isCurrencyCode } from './currency'
 
 describe('валюты', () => {
   it('таблица из Архитектуры: код, знаков после запятой, знак', () => {
@@ -13,6 +13,12 @@ describe('валюты', () => {
     ])
     expect(currency('RUB').sign).toBe('₽')
     expect(currency('PTS').sign).toBe('очки')
+  })
+  it('подпись для выбора', () => {
+    expect(currencyLabel('RUB')).toBe('₽ — рубли')
+    expect(currencyLabel('USDT')).toBe('USDT')
+    expect(currencyLabel('PTS')).toBe('очки')
+    expect(currencyLabel('GBP')).toBe('GBP')
   })
   it('только коды из таблицы', () => {
     expect(isCurrencyCode('BTC')).toBe(true)
