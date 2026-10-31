@@ -1,6 +1,7 @@
 // Оболочка: разделы и раскладка (Р-10). Телефон — вкладки снизу, компьютер — меню слева;
 // раскладку меняет только CSS (styles.css), разметка одна
 import { useEffect, useState } from 'react'
+import { parseDeviceLink, parseInviteLink } from './rules/link'
 import { Rooms, type RoomsView } from './screens/Rooms'
 import { Settings } from './screens/Settings'
 
@@ -12,12 +13,25 @@ const TABS: { id: Tab; label: string; icon: string }[] = [
   { id: 'settings', label: 'Настройки', icon: '⚙️' },
 ]
 
+const BAD_INVITE = 'Ссылка недействительна — попросите новую у ведущего'
+const BAD_DEVICE = 'Ссылка для другого устройства недействительна — попросите новую'
+
 // Хеш-роутинг: GitHub Pages отдаёт один index.html на любой адрес.
-// #/ — список, #/new — создать комнату, #/room/<номер> — открытая комната, #/settings
+// #/ — список, #/new — создать комнату, #/room/<номер> — открытая комната, #/settings;
+// #/join/<номер>/<токен>[?server=…] — ссылка-приглашение, #/device/<номер>/<токен>[?server=…] —
+// ссылка для другого устройства (src/rules/link.ts)
 function routeFromHash(): Route {
   const hash = location.hash
   if (hash === '#/settings') return { tab: 'settings' }
   if (hash === '#/new') return { tab: 'rooms', view: { kind: 'new' } }
+  if (hash.startsWith('#/join/')) {
+    const link = parseInviteLink(hash)
+    return { tab: 'rooms', view: link ? { kind: 'join', link } : { kind: 'bad-link', text: BAD_INVITE } }
+  }
+  if (hash.startsWith('#/device/')) {
+    const link = parseDeviceLink(hash)
+    return { tab: 'rooms', view: link ? { kind: 'device', link } : { kind: 'bad-link', text: BAD_DEVICE } }
+  }
   const room = /^#\/room\/([^/?]+)$/.exec(hash)
   if (room) return { tab: 'rooms', view: { kind: 'room', id: decodeURIComponent(room[1]) } }
   return { tab: 'rooms', view: { kind: 'list' } }

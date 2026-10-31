@@ -238,6 +238,102 @@ h3 {
   font-size: 0.9rem;
 }
 
+/* Подтверждение необратимого («Сменить ссылку») — внутри панели, видимыми кнопками */
+.confirm {
+  margin: 0.5rem 0;
+  padding: 0.75rem;
+  border: 1px solid var(--error);
+  border-radius: 10px;
+}
+
+/* Флажок — вся строка нажимается, не ниже 44 px */
+.check {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  min-height: var(--tap);
+  padding: 0.6rem 0;
+  cursor: pointer;
+}
+
+.check input {
+  flex: none;
+  width: 1.4rem;
+  height: 1.4rem;
+  margin: 0;
+  accent-color: var(--gold);
+}
+
+/* Заявки у ведущего: на телефоне — карточка «имя, когда» и кнопки под ней; шире — в строку */
+.request-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.request {
+  display: flex;
+  flex-direction: column;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--gold);
+  border-radius: 10px;
+  background: var(--surface-2);
+}
+
+.request .row {
+  margin: 0.25rem 0;
+}
+
+.request .row .button {
+  flex: 1 1 0;
+}
+
+.request-who {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.request-name {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.request-who .hint {
+  font-size: 0.9rem;
+}
+
+/* Ожидание: мигающая точка — экран живой, обновляется сам */
+.waiting {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.pulse {
+  flex: none;
+  width: 0.75rem;
+  height: 0.75rem;
+  border-radius: 50%;
+  background: var(--gold);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  50% {
+    opacity: 0.25;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pulse {
+    animation: none;
+  }
+}
+
 /* Форма: поле — подпись над вводом */
 .form {
   display: flex;
@@ -390,6 +486,17 @@ h3 {
 @media (min-width: 600px) {
   :root {
     --pad: 20px;
+  }
+
+  .request {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+  }
+
+  .request .row .button {
+    flex: none;
   }
 }
 

@@ -1,6 +1,8 @@
 // Хранилище на устройстве — единственный модуль, который трогает IndexedDB (CLAUDE.md).
 // База «torgsin», версия схемы — DB_VERSION; каждая новая версия — шаг в upgrade, старые шаги
 // не меняются. Настройки устройства (адрес сервера, пароль компании) — не здесь, а в settings.ts
+import type { RoomStateResponse } from '../rules/protocol'
+
 export const DB_NAME = 'torgsin'
 export const DB_VERSION = 2
 
@@ -21,6 +23,12 @@ export type SavedRoom = {
   members: { id: string; name: string }[]
   savedAt: number // когда записано на устройстве — порядок в «Моих комнатах»
   syncedAt: number | null // последний ответ сервера о комнате; null — ещё не было
+}
+
+// Ответ сервера о комнате поверх записанного на устройстве; syncedAt — сейчас
+export function withState(room: SavedRoom, state: RoomStateResponse, now: number): SavedRoom {
+  const { room: s, members } = state
+  return { ...room, name: s.name, currency: s.currency, hostId: s.hostId, createdAt: s.createdAt, members, syncedAt: now }
 }
 
 // Заявка на вход по ссылке, которую ещё не впустили: ключ заявки откроет комнату, когда ведущий
