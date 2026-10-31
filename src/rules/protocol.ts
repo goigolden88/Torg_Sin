@@ -68,3 +68,33 @@ export function isHealth(x: unknown): x is Health {
   const h = x as Record<string, unknown>
   return h.ok === true && typeof h.v === 'number' && typeof h.time === 'number'
 }
+
+function record(x: unknown): Record<string, unknown> | null {
+  return typeof x === 'object' && x !== null && !Array.isArray(x) ? (x as Record<string, unknown>) : null
+}
+
+function strings(r: Record<string, unknown>, ...names: string[]): boolean {
+  return names.every((n) => typeof r[n] === 'string')
+}
+
+// Проверки ответов для сайта: сервер другой версии или чужой адрес — не то, что ждём
+export function isErrorResponse(x: unknown): x is ErrorResponse {
+  const r = record(x)
+  return !!r && typeof r.v === 'number' && typeof r.error === 'string'
+}
+
+export function isCreateRoomResponse(x: unknown): x is CreateRoomResponse {
+  const r = record(x)
+  return !!r && typeof r.v === 'number' && strings(r, 'roomId', 'invite', 'memberId', 'key')
+}
+
+export function isRoomStateResponse(x: unknown): x is RoomStateResponse {
+  const r = record(x)
+  const room = r && record(r.room)
+  if (!r || !room || typeof r.v !== 'number' || typeof r.me !== 'string' || !Array.isArray(r.members)) return false
+  if (!strings(room, 'id', 'name', 'currency', 'hostId') || typeof room.createdAt !== 'number') return false
+  return r.members.every((m) => {
+    const member = record(m)
+    return !!member && strings(member, 'id', 'name')
+  })
+}

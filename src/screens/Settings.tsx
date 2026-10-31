@@ -1,8 +1,8 @@
-// «Настройки»: адрес сервера комнат и проверка связи (Р-02)
+// «Настройки»: адрес сервера комнат и проверка связи (Р-02); пароль компании на устройстве
 import { useState, type FormEvent } from 'react'
 import { DEFAULT_SERVER, healthUrl } from '../rules/address'
 import { isHealth, PROTOCOL_VERSION } from '../rules/protocol'
-import { getServer, setServer } from '../settings'
+import { getPassword, getServer, setPassword, setServer } from '../settings'
 
 type Check = { state: 'idle' } | { state: 'busy' } | { state: 'ok'; text: string } | { state: 'fail'; text: string }
 
@@ -11,6 +11,12 @@ export function Settings() {
   const [draft, setDraft] = useState(server === DEFAULT_SERVER ? '' : server)
   const [error, setError] = useState('')
   const [check, setCheck] = useState<Check>({ state: 'idle' })
+  const [password, setPasswordState] = useState(getPassword)
+
+  function forgetPassword() {
+    setPassword('')
+    setPasswordState('')
+  }
 
   function save(e: FormEvent) {
     e.preventDefault()
@@ -71,6 +77,22 @@ export function Settings() {
         </div>
         {check.state === 'ok' && <p className="ok">{check.text}</p>}
         {check.state === 'fail' && <p className="error">{check.text}</p>}
+        <p className="hint">Новые комнаты создаются на этом сервере. У созданных и открытых по ссылке — свой адрес, его эта настройка не меняет.</p>
+      </section>
+      <section className="card">
+        <h2>Пароль компании</h2>
+        {password ? (
+          <>
+            <p className="hint">Этот телефон помнит пароль: создавать комнаты можно, не вводя его.</p>
+            <div className="row">
+              <button className="button secondary" type="button" onClick={forgetPassword}>
+                Стереть пароль
+              </button>
+            </div>
+          </>
+        ) : (
+          <p className="hint">Не запомнен. Телефон запомнит пароль, когда вы создадите комнату.</p>
+        )}
       </section>
       <p className="hint">Версия {__APP_VERSION__}</p>
     </div>

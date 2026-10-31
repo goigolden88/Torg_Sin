@@ -122,8 +122,199 @@ p {
   min-width: 0;
 }
 
+.list,
 .detail {
-  display: none; /* на телефоне открытое — отдельным экраном (этап 1) */
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+/* Телефон: открытое — отдельным экраном с «Назад»; список — когда ничего не открыто */
+.rooms:not(.open) .detail,
+.rooms.open .list {
+  display: none;
+}
+
+.back {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--tap);
+  margin: -0.5rem 0 0.25rem;
+  color: var(--gold);
+  text-decoration: none;
+}
+
+a.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+}
+
+.room-list,
+.members {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.room-item {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-height: var(--tap);
+  padding: 0.75rem var(--pad);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  text-decoration: none;
+}
+
+.room-item[aria-current='page'] {
+  border-color: var(--gold);
+}
+
+.room-item .hint {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.room-name,
+.room-title {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.room-title {
+  font-size: 1.3rem;
+}
+
+h3 {
+  font-size: 1rem;
+  margin: 1rem 0 0.5rem;
+}
+
+.member {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: var(--tap);
+  padding: 0 0.75rem;
+  border-radius: 10px;
+  background: var(--surface-2);
+  overflow-wrap: anywhere;
+}
+
+.badge {
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  background: var(--gold);
+  color: var(--gold-text);
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.badge.muted {
+  background: var(--line);
+  color: var(--text);
+}
+
+.panel {
+  margin: 0.5rem 0;
+  padding: var(--pad);
+  border: 1px solid var(--gold);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+
+.input.link {
+  width: 100%;
+  font-size: 0.9rem;
+}
+
+/* Форма: поле — подпись над вводом */
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+
+.field > span:first-child,
+.field > legend {
+  padding: 0;
+  margin-bottom: 0.35rem;
+  font-weight: 600;
+}
+
+.field .input {
+  flex: none;
+  width: 100%;
+}
+
+.field .hint {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+/* Выбор валюты — видимыми кнопками, не выпадающим списком */
+.chips {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 7.5rem), 1fr));
+  gap: 0.5rem;
+}
+
+.chip {
+  position: relative;
+  display: flex;
+}
+
+.chip input {
+  position: absolute;
+  opacity: 0;
+  inset: 0;
+  margin: 0;
+  cursor: pointer;
+}
+
+.chip span {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--tap);
+  padding: 0 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-2);
+  text-align: center;
+}
+
+.chip input:checked + span {
+  border-color: var(--gold);
+  background: var(--gold);
+  color: var(--gold-text);
+  font-weight: 600;
+}
+
+.chip input:focus-visible + span {
+  outline: 2px solid var(--gold);
+  outline-offset: 2px;
 }
 
 .row {
@@ -170,6 +361,8 @@ p {
 
 .button:focus-visible,
 .input:focus-visible,
+.back:focus-visible,
+.room-item:focus-visible,
 .nav-item:focus-visible {
   outline: 2px solid var(--gold);
   outline-offset: 2px;
@@ -260,8 +453,13 @@ p {
     align-items: start;
   }
 
-  .detail {
-    display: block;
-    min-height: 240px;
+  /* Список и открытое видны оба; «Назад» не нужен */
+  .rooms:not(.open) .detail,
+  .rooms.open .list {
+    display: flex;
+  }
+
+  .back {
+    display: none;
   }
 }
