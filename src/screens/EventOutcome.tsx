@@ -25,7 +25,6 @@ const CHOICE = {
     note: 'Ставившие смогут возразить в течение суток. Предложение не отозвать.',
     button: 'Предложить',
     busyLabel: 'Предлагаю…',
-    done: 'Исход предложен',
   },
   decide: {
     send: decideOutcome,
@@ -33,7 +32,6 @@ const CHOICE = {
     note: 'Исход станет утверждённым, выплаты посчитаются по нему. Решение не изменить.',
     button: 'Утвердить',
     busyLabel: 'Утверждаю…',
-    done: 'Исход утверждён',
   },
   vote: {
     send: voteOutcome,
@@ -41,7 +39,6 @@ const CHOICE = {
     note: 'Голос один, изменить его нельзя.',
     button: 'Голосовать',
     busyLabel: 'Голосую…',
-    done: 'Голос принят',
   },
 }
 type Choice = keyof typeof CHOICE
@@ -50,7 +47,6 @@ type Choice = keyof typeof CHOICE
 type Ask = {
   slot: string
   form: string
-  done: string
   question: string
   note: string
   button: string
@@ -76,7 +72,6 @@ export function EventOutcome({
 }) {
   const [ask, setAsk] = useState<Ask | null>(null)
   const [objecting, setObjecting] = useState(false)
-  const [done, setDone] = useState('')
   const busy = useRef(false)
   const o = event.outcome
   const me = room.memberId
@@ -112,11 +107,9 @@ export function EventOutcome({
 
   function chosen(action: Choice, outcome: string) {
     const c = CHOICE[action]
-    setDone('')
     setAsk({
       slot: event.id + '/' + action,
       form: formKey(room.id, event.id, action, outcome),
-      done: c.done,
       question: c.question(title(outcome)),
       note: c.note,
       button: c.button,
@@ -127,11 +120,9 @@ export function EventOutcome({
 
   function objected(reason: string) {
     if (!o) return
-    setDone('')
     setAsk({
       slot: event.id + '/object',
       form: formKey(room.id, event.id, 'object', reason),
-      done: 'Возражение отправлено',
       question: `Возразить против „${title(o.proposal.outcome)}“?`,
       note: `Причина: ${reason}. Возражение не отозвать; исход решит ${hostDecides(roles) ? 'ведущий' : 'голосование не ставивших'}.`,
       button: 'Возразить',
@@ -144,7 +135,6 @@ export function EventOutcome({
     <section className="outcome" aria-label="Исход" onKeyDown={onKey}>
       <h3>Исход</h3>
       {o ? <OutcomeState room={room} event={event} o={o} now={now} title={title} /> : <NotProposed room={room} event={event} now={now} />}
-      {done && <p className="ok">{done}</p>}
       {!online && (mayProposeNow || mayObject || mayDecide || mayVote) && <p className="hint">Действовать можно, когда есть связь с сервером.</p>}
 
       {mayProposeNow && (
@@ -171,7 +161,6 @@ export function EventOutcome({
           onDone={async () => {
             setAsk(null)
             setObjecting(false)
-            setDone(ask.done)
             await onDone()
           }}
         />
@@ -305,7 +294,6 @@ function Voters({ o, who }: { o: OutcomeView; who: (id: string) => string }) {
   return (
     <li>
       Голосуют: проголосовали {voted.size} из {o.voters.length}
-      {o.votingUntil ? `, голосование до ${formatDateTime(o.votingUntil)}` : ''}
       <ul className="voters">
         {o.voters.map((m) => (
           <li key={m} className={voted.has(m) ? 'voted' : ''}>
