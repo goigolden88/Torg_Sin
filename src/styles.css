@@ -1,7 +1,8 @@
 /* ТоргСин — вёрстка «сначала телефон» (Р-10): базовые правила — для узкого экрана,
    шире — через min-width. Ступени: до 600 px — телефон, 600–1023 — планшет,
-   от 1024 — компьютер (меню слева, «список + открытое» рядом, ширина ≤ 1200 px).
-   Проверка каждого экрана — на 390 и 1280 px. */
+   от 1024 — компьютер (меню слева, сворачивается до значков; «список + открытое» рядом:
+   список ≈ 340 px, открытое ≤ 720 px, вместе — по центру). Проверка каждого экрана — на 390
+   и 1280 px, раскладка компьютера — ещё и на 1920. */
 
 :root {
   --bg: #11141c;
@@ -74,7 +75,8 @@ p {
   border-top: 1px solid var(--line);
 }
 
-.brand {
+/* Название и кнопка сворачивания меню — только на компьютере */
+.nav-head {
   display: none;
 }
 
@@ -503,9 +505,21 @@ h3 {
 /* ─── Компьютер: меню слева, содержимое по центру ─────────────────────────── */
 
 @media (min-width: 1024px) {
+  :root {
+    --nav-w: 15rem; /* меню развёрнуто */
+    --nav-w-collapsed: 4.5rem; /* свёрнуто до значков */
+    --list-w: 21.25rem; /* список комнат, ≈ 340 px */
+    --detail-w: 45rem; /* открытое, ≈ 720 px */
+    --split-gap: 1.5rem;
+  }
+
   .app {
     display: grid;
-    grid-template-columns: 240px minmax(0, 1fr);
+    grid-template-columns: var(--nav-w) minmax(0, 1fr);
+  }
+
+  .app.nav-collapsed {
+    grid-template-columns: var(--nav-w-collapsed) minmax(0, 1fr);
   }
 
   .nav {
@@ -514,28 +528,65 @@ h3 {
     inset: auto;
     height: 100dvh;
     flex-direction: column;
-    gap: 4px;
-    padding: 20px 12px;
+    gap: 0.25rem;
+    padding: 1.25rem 0.75rem;
     border-top: 0;
     border-right: 1px solid var(--line);
   }
 
+  .nav-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    padding: 0 0 1rem 0.75rem;
+  }
+
   .brand {
-    display: block;
-    padding: 0 12px 16px;
     font-size: 1.3rem;
     font-weight: 700;
     color: var(--gold);
+    white-space: nowrap;
+    overflow: hidden;
+  }
+
+  .nav-toggle {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--tap);
+    height: var(--tap);
+    padding: 0;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: transparent;
+    color: var(--muted);
+    font: inherit;
+    font-size: 1.2rem;
+    line-height: 1;
+    cursor: pointer;
+  }
+
+  .nav-toggle:hover {
+    background: var(--surface-2);
+    color: var(--text);
+  }
+
+  .nav-toggle:focus-visible {
+    outline: 2px solid var(--gold);
+    outline-offset: 2px;
   }
 
   .nav-item {
     flex: 0 0 auto;
     flex-direction: row;
     justify-content: flex-start;
-    gap: 12px;
-    padding: 0 12px;
+    gap: 0.75rem;
+    padding: 0 0.75rem;
     border-radius: 10px;
     font-size: 1rem;
+    white-space: nowrap;
   }
 
   .nav-item:hover {
@@ -546,18 +597,37 @@ h3 {
     background: var(--surface-2);
   }
 
-  .main {
-    width: 100%;
-    max-width: 1200px;
-    margin: 0 auto;
-    padding: 32px;
+  /* Свёрнуто: только значки, подпись — всплывающая (title) и для чтеца экрана (aria-label) */
+  .nav-collapsed .brand,
+  .nav-collapsed .nav-label {
+    display: none;
   }
 
-  /* «Список + открытое» — рядом */
+  .nav-collapsed .nav-head {
+    justify-content: center;
+    padding-left: 0;
+  }
+
+  .nav-collapsed .nav-item {
+    justify-content: center;
+    padding: 0;
+  }
+
+  /* Содержимое: не шире «список + открытое», по центру свободного места */
+  .main {
+    width: 100%;
+    max-width: calc(var(--list-w) + var(--split-gap) + var(--detail-w) + 4rem);
+    margin: 0 auto;
+    padding: 2rem;
+  }
+
+  /* «Список + открытое» — рядом: список ≈ 340 px, открытое ≤ 720 px */
   .split {
     display: grid;
-    grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
+    grid-template-columns: minmax(16rem, var(--list-w)) minmax(0, var(--detail-w));
+    justify-content: center;
     align-items: start;
+    gap: var(--split-gap);
   }
 
   /* Список и открытое видны оба; «Назад» не нужен */
@@ -568,5 +638,46 @@ h3 {
 
   .back {
     display: none;
+  }
+
+  /* Комната: заголовок, «Валюта · создана», кнопки и участники — на одной сетке отступов */
+  .room {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    padding: 1.5rem;
+  }
+
+  .room > *,
+  .room h3 {
+    margin: 0;
+  }
+
+  .room > h3 {
+    margin-top: 0.5rem;
+  }
+
+  .requests {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+
+  /* Участники — список со строками-разделителями, без заливки во всю ширину */
+  .members {
+    gap: 0;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+
+  .member {
+    padding: 0 1rem;
+    border-radius: 0;
+    background: none;
+  }
+
+  .member + .member {
+    border-top: 1px solid var(--line);
   }
 }

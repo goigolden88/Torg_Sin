@@ -1,4 +1,5 @@
-// Снимки экранов для отчёта PR (Р-10: каждый экран — на 390 и 1280 px): npm run shots.
+// Снимки экранов для отчёта PR (Р-10: каждый экран — на 390 и 1280 px; раскладка компьютера —
+// меню развёрнуто и свёрнуто — ещё и на 1920 px): npm run shots.
 // Собирает сайт, поднимает vite preview (порт 4173) и запасной сервер комнат (server/node) в памяти
 // с выдуманным паролем, затем ведёт Chrome без окна по сценарию «ведущий создаёт комнату → друг
 // просится → ведущий впускает…»: у каждого «устройства» своё хранилище (отдельный контекст
@@ -15,10 +16,13 @@ const OUT = 'shots'
 const PORT = 4173
 const SITE = `http://localhost:${PORT}/Torg_Sin/`
 const PASSWORD = 'demo-password' // выдуманный: сервер живёт только на время снимков
-const SIZES = [
+type Size = { name: string; width: number; height: number }
+const SIZES: Size[] = [
   { name: '390', width: 390, height: 844 },
   { name: '1280', width: 1280, height: 800 },
 ]
+// Раскладка компьютера (меню слева, ширина содержимого) — ещё и на широком мониторе
+const WIDE: Size[] = [SIZES[1], { name: '1920', width: 1920, height: 1080 }]
 const TIMEOUT = 20_000 // ожидание экрана: опрос сервера — раз в 5 секунд
 
 type RoomsServer = { url: string; close: () => Promise<void> }
@@ -108,17 +112,17 @@ async function launchChrome(profile: string): Promise<{ process: ChildProcess; u
 class Device {
   private cdp: Cdp
   private session: string
-  private size: (typeof SIZES)[number]
+  private size: Size
   private name: string
 
-  private constructor(cdp: Cdp, session: string, size: (typeof SIZES)[number], name: string) {
+  private constructor(cdp: Cdp, session: string, size: Size, name: string) {
     this.cdp = cdp
     this.session = session
     this.size = size
     this.name = name
   }
 
-  static async open(cdp: Cdp, size: (typeof SIZES)[number], name: string): Promise<Device> {
+  static async open(cdp: Cdp, size: Size, name: string): Promise<Device> {
     const { browserContextId } = await cdp.send<{ browserContextId: string }>('Target.createBrowserContext')
     const { targetId } = await cdp.send<{ targetId: string }>('Target.createTarget', { url: 'about:blank', browserContextId })
     const { sessionId } = await cdp.send<{ sessionId: string }>('Target.attachToTarget', { targetId, flatten: true })
@@ -216,11 +220,14 @@ function sleep(ms: number): Promise<void> {
 
 // ─── Сценарий ────────────────────────────────────────────────────────────────
 
-async function scenario(cdp: Cdp, size: (typeof SIZES)[number], server: RoomsServer, startServer: ServerModule['startServer']) {
+async function scenario(cdp: Cdp, size: Size, server: RoomsServer, startServer: ServerModule['startServer']) {
   console.log(`Ширина ${size.width} px`)
   const host = await Device.open(cdp, size, 'ведущий')
   await host.goto(SITE + '#/')
   await host.waitText('Комнат пока нет')
+  // Кнопка сворачивания меню — только на компьютере (от 1024 px)
+  const toggle = await host.eval<boolean>(`document.querySelector('.nav-toggle').offsetParent !== null`)
+  if (toggle !== size.width >= 1024) throw new Error(`Кнопка сворачивания меню ${toggle ? 'видна' : 'не видна'} на ${size.width} px`)
   // Комнату ведущий создаёт на сервере снимков: адрес — в его «Настройках»
   await host.eval(`localStorage.setItem('torgsin.server', ${JSON.stringify(server.url)})`)
   await host.shot('01-moi-komnaty-pusto')
@@ -370,6 +377,65 @@ async function scenario(cdp: Cdp, size: (typeof SIZES)[number], server: RoomsSer
   await stranger.shot('20-net-svyazi')
 }
 
+// Раскладка компьютера: две комнаты, в открытой — два участника; меню развёрнуто и свёрнуто
+async function layout(cdp: Cdp, size: Size, server: RoomsServer) {
+  console.log(`Раскладка компьютера, ${size.width} px`)
+  const host = await Device.open(cdp, size, 'ведущий')
+  await host.goto(SITE + '#/')
+  await host.waitText('Комнат пока нет')
+  await host.eval(`localStorage.setItem('torgsin.server', ${JSON.stringify(server.url)})`)
+  for (const name of ['Футбол по средам', 'Дача 2026']) {
+    await host.click('Создать комнату')
+    await host.waitText('Новая комната')
+    await host.fill('Название', name)
+    await host.fill('Ваше имя в комнате', 'Аня')
+    await host.fill('Пароль компании', PASSWORD)
+    await host.click('Создать')
+    await host.waitText('Участники')
+  }
+  await host.click('Пригласить')
+  await host.waitText('Отправьте ссылку друзьям')
+  const invite = await host.value('input[aria-label="Ссылка-приглашение"]')
+  await host.click('Закрыть')
+  const friend = await Device.open(cdp, size, 'друг')
+  await friend.goto(invite)
+  await friend.waitText('Вход в комнату')
+  await friend.fill('Ваше имя в комнате', 'Боря')
+  await friend.click('Попроситься')
+  await friend.waitText('Ждём, пока ведущий впустит')
+  await host.waitText('Заявки (1)')
+  await host.click('Впустить')
+  await friend.waitText('Участники')
+  await host.reload()
+  await host.waitText('Боря')
+  await host.shot('21-komnata-menu-razvernuto')
+
+  // Свернуть меню: подписи скрыты, у значков — всплывающая подпись; положение помнится после перезагрузки
+  await host.click('«')
+  await sleep(200)
+  const collapsed = await host.eval<{ app: boolean; labels: boolean; titles: string[]; toggle: string | null }>(`({
+    app: document.querySelector('.app').classList.contains('nav-collapsed'),
+    labels: [...document.querySelectorAll('.nav-label')].some((el) => el.offsetParent !== null),
+    titles: [...document.querySelectorAll('.nav-item')].map((el) => el.title),
+    toggle: document.querySelector('.nav-toggle').getAttribute('aria-label'),
+  })`)
+  if (!collapsed.app || collapsed.labels || collapsed.titles.some((t) => !t) || collapsed.toggle !== 'Развернуть меню')
+    throw new Error('Меню не свернулось: ' + JSON.stringify(collapsed))
+  await host.shot('22-komnata-menu-svernuto')
+  await host.reload()
+  await host.waitText('Боря')
+  if (!(await host.eval<boolean>(`document.querySelector('.app').classList.contains('nav-collapsed')`)))
+    throw new Error('После перезагрузки меню развернулось')
+  await host.goto(SITE + '#/')
+  await host.waitText('Выберите комнату слева')
+  await host.shot('23-moi-komnaty-menu-svernuto')
+  // Развернуть обратно
+  await host.click('»')
+  await sleep(200)
+  if (await host.eval<boolean>(`document.querySelector('.app').classList.contains('nav-collapsed')`)) throw new Error('Меню не развернулось')
+  if (await host.eval<string | null>(`localStorage.getItem('torgsin.navCollapsed')`)) throw new Error('Развёрнутое меню не запомнилось')
+}
+
 async function main(): Promise<void> {
   await rm(OUT, { recursive: true, force: true })
   await mkdir(OUT, { recursive: true })
@@ -388,6 +454,7 @@ async function main(): Promise<void> {
     chrome = launched.process
     cdp = await Cdp.connect(launched.url)
     for (const size of SIZES) await scenario(cdp, size, server, module.startServer)
+    for (const size of WIDE) await layout(cdp, size, server)
     console.log('Готово: снимки в', OUT)
   } finally {
     if (cdp) {
