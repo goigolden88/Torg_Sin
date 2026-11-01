@@ -15,6 +15,7 @@ import { formKey, requestFor, type PendingRequest } from '../rules/request'
 import { ulid } from '../rules/ulid'
 import { savedEvents, type SavedRoom } from '../store/db'
 import { BackLink, useEscape } from './BackLink'
+import { ChanceChart } from './ChanceChart'
 import { money, nameOf, StatusLine } from './eventParts'
 import { EventOutcome } from './EventOutcome'
 import { useRoom, useServerNow, type Sync } from './useRoom'
@@ -118,6 +119,7 @@ export function EventScreen({ room, eventId, onUpdate }: { room: SavedRoom; even
       )}
 
       <Position room={room} event={event} />
+      <ChanceChart room={room} event={event} now={now} />
       <Feed room={room} event={event} />
 
       {ask && (
