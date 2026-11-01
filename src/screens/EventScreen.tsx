@@ -9,7 +9,7 @@ import { cancelEvent, clarifyEvent, placeBet } from '../api'
 import { currency as currencyOf, isCurrencyCode, parseAmount } from '../rules/currency'
 import { formatDateTime } from '../rules/date'
 import { checkClarification, checkReason, eventStatus, MAX_EVENT_TEXT, NEED_REASON } from '../rules/event'
-import { formatChance, formatOdds, payoutIfWins, poolOdds, settlePool } from '../rules/pool'
+import { chancePercents, formatChance, formatOdds, payoutIfWins, poolOdds, settlePool } from '../rules/pool'
 import type { EventStatus, EventView } from '../rules/protocol'
 import { formKey, requestFor, type PendingRequest } from '../rules/request'
 import { ulid } from '../rules/ulid'
@@ -146,24 +146,27 @@ function Bars({ room, event }: { room: SavedRoom; event: EventView }) {
     event.outcomes.map((o) => o.id),
     event.bets,
   )
+  // Проценты на весь набор исходов — в сумме 100; одно и то же число на полосе и в строке под ней
+  const percents = chancePercents(odds.outcomes.map((x) => x.chance))
   return (
     <section aria-label="Банк по исходам">
       <h3>{odds.bank > 0 ? `Банк ${money(odds.bank, room.currency)}` : 'Банк пока пуст'}</h3>
       <ul className="bars">
         {event.outcomes.map((o, i) => {
           const x = odds.outcomes[i]
+          const chance = formatChance(x.chance, percents[i])
           return (
             <li key={o.id} className="bar-row">
               <div className="bar-head">
                 <span className="bar-title">{o.title}</span>
-                <span className="bar-chance">{x.stake > 0 ? formatChance(x.chance) : ''}</span>
+                <span className="bar-chance">{x.stake > 0 ? chance : ''}</span>
               </div>
               <div className="bar" aria-hidden="true">
                 <div className="bar-fill" style={{ width: `${(x.chance ?? 0) * 100}%` }} />
               </div>
               <span className="hint">
                 {x.stake > 0
-                  ? `банк ${money(odds.bank, room.currency)}, на „${o.title}“ ${money(x.stake, room.currency)} — коэффициент ${formatOdds(x.odds)}, вероятность по ставкам ${formatChance(x.chance)}`
+                  ? `банк ${money(odds.bank, room.currency)}, на „${o.title}“ ${money(x.stake, room.currency)} — коэффициент ${formatOdds(x.odds)}, вероятность по ставкам ${chance}`
                   : 'ставок нет'}
               </span>
             </li>

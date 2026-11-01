@@ -116,10 +116,33 @@ export function formatOdds(odds: number | null): string {
   return String(Math.round(odds * 100) / 100).replace('.', ',')
 }
 
-// Вероятность для экрана: «75 %» (неразрывный пробел); больше нуля, но меньше 1 % — «< 1 %»
-export function formatChance(chance: number | null): string {
+// Целые проценты на весь набор исходов события — в сумме ровно 100 (метод наибольших остатков).
+// На входе — доли 0…1 в порядке исходов (chance из poolOdds или chances точки chanceHistory); null —
+// банк пуст, тогда и на выходе null. Каждой доле — целая часть её процентов, недостающие до 100
+// единицы — по одной долям с наибольшим остатком; при равных остатках — исходу выше в списке.
+// Доля меньше 0,5 % единицы не получает: остаётся 0 и показывается «< 1 %»
+export function chancePercents(chances: readonly (number | null)[]): (number | null)[] {
+  if (chances.every((c) => c === null || c === 0)) return chances.map((c) => (c === null ? null : 0))
+  const EPS = 1e-9 // погрешность дробей: 0,29 × 100 = 28,999…
+  const exact = chances.map((c) => (c ?? 0) * 100)
+  const out = exact.map((x) => Math.floor(x + EPS))
+  let rest = 100 - out.reduce((s, x) => s + x, 0)
+  const order = exact
+    .map((x, i) => ({ i, rem: x - out[i], ok: x >= 0.5 - EPS }))
+    .filter((r) => r.ok)
+    .sort((a, b) => (Math.abs(a.rem - b.rem) < EPS ? a.i - b.i : b.rem - a.rem))
+  for (let k = 0; rest > 0 && order.length > 0; k = (k + 1) % order.length) {
+    out[order[k].i] += 1
+    rest -= 1
+  }
+  return chances.map((c, i) => (c === null ? null : out[i]))
+}
+
+// Вероятность для экрана: «75 %» (неразрывный пробел); больше нуля, но меньше 1 % — «< 1 %».
+// percent — уже округлённое из chancePercents (так проценты события в сумме — 100); нет — своё
+export function formatChance(chance: number | null, percent?: number | null): string {
   if (chance === null) return '—'
-  const p = Math.round(chance * 100)
+  const p = percent ?? Math.round(chance * 100)
   if (p === 0 && chance > 0) return '< 1 %'
   return `${p} %`
 }

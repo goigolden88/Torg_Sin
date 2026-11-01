@@ -4,8 +4,9 @@
 export type Currency = {
   code: string
   digits: number // знаков после запятой: 100 единиц RUB = 1,00 ₽
-  sign: string // знак при сумме; пусто — показывается код
+  sign: string // знак при сумме; пусто — показывается код; без числа («Сумма, очки») — как есть
   title: string // для выбора валюты на экране
+  forms?: readonly [string, string, string] // слово при числе вместо знака: «1 очко», «2 очка», «5 очков»
 }
 
 export const CURRENCIES = [
@@ -14,7 +15,7 @@ export const CURRENCIES = [
   { code: 'EUR', digits: 2, sign: '€', title: 'евро' },
   { code: 'USDT', digits: 2, sign: '', title: 'USDT' },
   { code: 'BTC', digits: 8, sign: '₿', title: 'биткоины' },
-  { code: 'PTS', digits: 0, sign: 'очки', title: 'очки' },
+  { code: 'PTS', digits: 0, sign: 'очки', title: 'очки', forms: ['очко', 'очка', 'очков'] },
 ] as const satisfies readonly Currency[]
 
 // «₽ — рубли», «USDT», «очки»; неизвестный код — как есть
@@ -61,8 +62,21 @@ export function parseAmount(text: string, code: CurrencyCode): ParsedAmount {
   return { ok: true, units: Number(big) }
 }
 
-// Целое в минимальных единицах → «1 200,50 ₽», «0,00012 ₿», «15 очки», «15 USDT» (у USDT знака нет —
-// код). Пробелы между разрядами и перед знаком — неразрывные. Целая сумма — без дробной части;
+// Слово при числе по-русски: forms — [«1 очко», «2 очка», «5 очков»]. Решают две последние цифры:
+// 11–14 — «очков»; иначе последняя: 1 — «очко», 2–4 — «очка», прочие — «очков». Знак числа не влияет
+export function plural(n: bigint, forms: readonly [string, string, string]): string {
+  const a = n < 0n ? -n : n
+  const two = a % 100n
+  const one = a % 10n
+  if (two >= 11n && two <= 14n) return forms[2]
+  if (one === 1n) return forms[0]
+  if (one >= 2n && one <= 4n) return forms[1]
+  return forms[2]
+}
+
+// Целое в минимальных единицах → «1 200,50 ₽», «0,00012 ₿», «15 очков», «21 очко», «15 USDT» (у USDT
+// знака нет — код). У валюты со словом (forms) оно склоняется по числу; дробное — «1,5 очка».
+// Пробелы между разрядами и перед знаком — неразрывные. Целая сумма — без дробной части;
 // дробная — не меньше 2 знаков, лишние нули справа убираются: «1 200 ₽», «1 200,50 ₽». Минус — «−»
 export function formatAmount(units: number, code: CurrencyCode): string {
   const c = currency(code)
@@ -75,5 +89,6 @@ export function formatAmount(units: number, code: CurrencyCode): string {
   if (frac !== '' && frac.length < 2) frac = frac.padEnd(Math.min(2, c.digits), '0')
   const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, NBSP)
   const num = (neg ? '−' : '') + grouped + (frac ? ',' + frac : '')
-  return `${num}${NBSP}${c.sign || c.code}`
+  const word = c.forms ? (frac ? c.forms[1] : plural(BigInt(whole), c.forms)) : c.sign || c.code
+  return `${num}${NBSP}${word}`
 }

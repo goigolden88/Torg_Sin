@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { CURRENCIES, currency, currencyLabel, formatAmount, isCurrencyCode, parseAmount } from './currency'
+import { CURRENCIES, currency, currencyLabel, formatAmount, isCurrencyCode, parseAmount, plural } from './currency'
 
 describe('валюты', () => {
   it('таблица из Архитектуры: код, знаков после запятой, знак', () => {
@@ -66,11 +66,47 @@ describe('показ суммы', () => {
     expect(formatAmount(5, 'USD')).toBe(`0,05${N}$`)
     expect(formatAmount(12000, 'BTC')).toBe(`0,00012${N}₿`)
     expect(formatAmount(50000000, 'BTC')).toBe(`0,50${N}₿`)
-    expect(formatAmount(15, 'PTS')).toBe(`15${N}очки`)
+    expect(formatAmount(15, 'PTS')).toBe(`15${N}очков`)
     expect(formatAmount(1500, 'USDT')).toBe(`15${N}USDT`)
-    expect(formatAmount(123456789, 'PTS')).toBe(`123${N}456${N}789${N}очки`)
+    expect(formatAmount(123456789, 'PTS')).toBe(`123${N}456${N}789${N}очков`)
     expect(formatAmount(0, 'RUB')).toBe(`0${N}₽`)
     expect(formatAmount(-30000, 'RUB')).toBe(`−300${N}₽`)
+  })
+  it('очки склоняются по числу', () => {
+    const cases: [number, string][] = [
+      [0, `0${N}очков`],
+      [1, `1${N}очко`],
+      [2, `2${N}очка`],
+      [4, `4${N}очка`],
+      [5, `5${N}очков`],
+      [11, `11${N}очков`],
+      [12, `12${N}очков`],
+      [13, `13${N}очков`],
+      [14, `14${N}очков`],
+      [21, `21${N}очко`],
+      [22, `22${N}очка`],
+      [25, `25${N}очков`],
+      [101, `101${N}очко`],
+      [111, `111${N}очков`],
+      [1200, `1${N}200${N}очков`],
+      [-1, `−1${N}очко`],
+      [-5, `−5${N}очков`],
+      [-22, `−22${N}очка`],
+    ]
+    for (const [units, text] of cases) expect(formatAmount(units, 'PTS')).toBe(text)
+  })
+  it('склонение: формы по двум последним цифрам', () => {
+    const f = ['очко', 'очка', 'очков'] as const
+    expect(plural(1001n, f)).toBe('очко')
+    expect(plural(1012n, f)).toBe('очков')
+    expect(plural(-3n, f)).toBe('очка')
+  })
+  it('слово «очки» без числа и знаки других валют — как были', () => {
+    expect(currency('PTS').sign).toBe('очки')
+    expect(currencyLabel('PTS')).toBe('очки')
+    expect(formatAmount(100, 'RUB')).toBe(`1${N}₽`)
+    expect(formatAmount(500, 'EUR')).toBe(`5${N}€`)
+    expect(formatAmount(100, 'USDT')).toBe(`1${N}USDT`)
   })
   it('туда и обратно', () => {
     for (const units of [1, 99, 100, 120050, 9876543210]) {
