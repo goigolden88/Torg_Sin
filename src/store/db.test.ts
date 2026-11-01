@@ -1,6 +1,7 @@
 import { IDBFactory } from 'fake-indexeddb'
 import { describe, expect, it } from 'vitest'
-import { createStore, DB_NAME, DB_VERSION, openDb, type SavedJoin, type SavedRoom } from './db'
+import type { EventView, RoomStateResponse } from '../rules/protocol'
+import { createStore, DB_NAME, DB_VERSION, openDb, savedEvents, withState, type SavedJoin, type SavedRoom } from './db'
 
 function room(id: string, savedAt: number, extra: Partial<SavedRoom> = {}): SavedRoom {
   return {
@@ -78,6 +79,50 @@ describe('хранилище на устройстве', () => {
     expect(db.version).toBe(2)
     expect([...db.objectStoreNames].sort()).toEqual(['joins', 'rooms'])
     db.close()
+  })
+
+  it('события: старая запись без поля — пусто; ответ сервера — записан и на месте после перезапуска', async () => {
+    const factory = new IDBFactory()
+    const first = createStore(factory)
+    await first.saveRoom(room('A', 1)) // как до событий: поля events нет
+    const old = await first.getRoom('A')
+    expect(old && savedEvents(old)).toEqual([])
+
+    const event: EventView = {
+      id: 'E1',
+      at: 10,
+      authorId: 'MA',
+      condition: 'Дождь в субботу',
+      check: 'Прогноз на даче',
+      outcomes: [
+        { id: '1', title: 'Да' },
+        { id: '2', title: 'Нет' },
+      ],
+      closesAt: 100,
+      expectedAt: 200,
+      subjectId: null,
+      status: 'open',
+      clarifications: [],
+      bets: [{ id: 'B1', memberId: 'MA', outcome: '1', amount: 30000, at: 20 }],
+      cancelled: null,
+      refunds: [],
+      outcome: null,
+    }
+    const state: RoomStateResponse = {
+      v: 1,
+      room: { id: 'A', name: 'Дача', currency: 'RUB', hostId: 'MA', createdAt: 1 },
+      members: [{ id: 'MA', name: 'Аня' }],
+      me: 'MA',
+      events: [event],
+      now: 50,
+    }
+    await first.saveRoom(withState(old as SavedRoom, state, 60))
+    await first.close()
+
+    const saved = await createStore(factory).getRoom('A')
+    expect(saved && savedEvents(saved)).toEqual([event])
+    expect(saved?.syncedAt).toBe(60)
+    expect(saved?.key).toBe('ключ-A') // ключ и приглашение не тронуты
   })
 
   it('заявка: записана, отклонена, а впустили — стала комнатой и убрана', async () => {

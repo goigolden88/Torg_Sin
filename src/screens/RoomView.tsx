@@ -2,52 +2,26 @@
 // комната открыта). «Пригласить» — ссылка из токена, который хранится у комнаты на устройстве:
 // сервер не спрашиваем, POST /invite сменил бы ссылку — это отдельная кнопка «Сменить ссылку»
 // с подтверждением. «Ссылка для другого устройства» — себе; ведущему — и за другого участника.
-// Состояние — с сервера при открытии; нет связи — последнее известное
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { admitRequest, fetchRequests, fetchRoom, issueDeviceLink, rejectRequest, renewInvite } from '../api'
+// Состояние — с сервера раз в 5 с, пока комната открыта (useRoom); нет связи — последнее известное.
+// Под участниками — «События» (EventList)
+import { useCallback, useState } from 'react'
+import { admitRequest, fetchRequests, issueDeviceLink, rejectRequest, renewInvite } from '../api'
 import { currencyLabel } from '../rules/currency'
 import { formatDate, formatDateTime } from '../rules/date'
 import { deviceLink, inviteLink } from '../rules/link'
 import type { JoinRequestsResponse } from '../rules/protocol'
-import { store, withState, type SavedRoom } from '../store/db'
+import type { SavedRoom } from '../store/db'
 import { BackLink, useEscape } from './BackLink'
+import { EventList } from './EventList'
 import { LinkBox, siteUrl } from './LinkBox'
 import { usePoll } from './usePoll'
+import { useRoom } from './useRoom'
 
-type Sync = { state: 'busy' } | { state: 'ok' } | { state: 'fail'; text: string }
 type Panel = 'none' | 'invite' | 'device'
 
 export function RoomView({ room, onUpdate }: { room: SavedRoom; onUpdate: (room: SavedRoom) => void }) {
-  const [sync, setSync] = useState<Sync>({ state: 'busy' })
   const [panel, setPanel] = useState<Panel>('none')
-  const latest = useRef(room)
-  latest.current = room
-
-  // Показать и записать на устройстве; не записалось — покажем с сервера и в следующий раз
-  const save = useCallback(
-    (next: SavedRoom) => {
-      onUpdate(next)
-      void store()
-        .saveRoom(next)
-        .catch(() => undefined)
-    },
-    [onUpdate],
-  )
-
-  const refresh = useCallback(async () => {
-    const r = latest.current
-    const res = await fetchRoom(r.server, r.id, r.key)
-    if (!res.ok) {
-      setSync({ state: 'fail', text: res.offline ? 'Нет связи с сервером — показано последнее известное' : res.error })
-      return
-    }
-    setSync({ state: 'ok' })
-    save(withState(latest.current, res.value, Date.now()))
-  }, [save])
-
-  useEffect(() => {
-    void refresh()
-  }, [refresh])
+  const { sync, clock, refresh, save, latest } = useRoom(room, onUpdate)
 
   useEscape(
     useCallback(() => setPanel('none'), []),
@@ -92,7 +66,7 @@ export function RoomView({ room, onUpdate }: { room: SavedRoom; onUpdate: (room:
           </li>
         ))}
       </ul>
-      <p className="hint">События и пари — в следующих обновлениях.</p>
+      <EventList room={room} clock={clock} />
     </div>
   )
 }

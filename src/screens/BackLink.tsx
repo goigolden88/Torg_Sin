@@ -1,10 +1,11 @@
 // «Назад» к списку комнат: на телефоне открытое — отдельный экран; на компьютере список и так
-// рядом, кнопку прячет CSS (.back)
+// рядом, кнопку прячет CSS (.back). Из события и нового события — в комнату (href): там «Назад»
+// виден на любой ширине (.rooms.wide)
 import { useEffect } from 'react'
 
-export function BackLink() {
+export function BackLink({ href = '#/' }: { href?: string }) {
   return (
-    <a className="back" href="#/">
+    <a className="back" href={href}>
       ← Назад
     </a>
   )
