@@ -8,13 +8,17 @@ import { store, type SavedRoom } from '../store/db'
 import { BackLink } from './BackLink'
 import { ClaimDevice } from './ClaimDevice'
 import { CreateRoom } from './CreateRoom'
+import { EventScreen } from './EventScreen'
 import { JoinRoom } from './JoinRoom'
+import { NewEvent } from './NewEvent'
 import { RoomView } from './RoomView'
 
 export type RoomsView =
   | { kind: 'list' }
   | { kind: 'new' }
   | { kind: 'room'; id: string }
+  | { kind: 'new-event'; id: string } // новое событие в комнате id
+  | { kind: 'event'; id: string; event: string } // событие комнаты id
   | { kind: 'join'; link: InviteLink } // по ссылке-приглашению
   | { kind: 'device'; link: DeviceLink } // по ссылке для другого устройства
   | { kind: 'bad-link'; text: string } // ссылка не разобралась
@@ -42,11 +46,14 @@ export function Rooms({ view }: { view: RoomsView }) {
     })
   }, [])
 
-  const openId = view.kind === 'room' ? view.id : null
+  const openId = view.kind === 'room' || view.kind === 'event' || view.kind === 'new-event' ? view.id : null
   const open = rooms?.find((r) => r.id === openId)
+  // Событие и новое событие — во всю ширину содержимого и на компьютере: список комнат прячется,
+  // «Назад» ведёт в комнату (экрану события нужно ≥ 640 px, рядом со списком на 1024–1279 его нет)
+  const wide = view.kind === 'event' || view.kind === 'new-event'
 
   return (
-    <div className={'screen rooms' + (view.kind === 'list' ? '' : ' open')}>
+    <div className={'screen rooms' + (view.kind === 'list' ? '' : ' open') + (wide ? ' wide' : '')}>
       <div className="split">
         <section className="list">
           <h1>Мои комнаты</h1>
@@ -89,14 +96,18 @@ export function Rooms({ view }: { view: RoomsView }) {
               <BackLink />
               <p className="error">{view.text}</p>
             </div>
-          ) : view.kind === 'room' ? (
-            open ? (
-              <RoomView key={open.id} room={open} onUpdate={upsert} />
-            ) : (
+          ) : view.kind === 'room' || view.kind === 'event' || view.kind === 'new-event' ? (
+            !open ? (
               <div className="card">
                 <BackLink />
                 <p className="hint">{rooms === null ? 'Загружаю…' : 'Этой комнаты на устройстве нет.'}</p>
               </div>
+            ) : view.kind === 'event' ? (
+              <EventScreen key={open.id + '/' + view.event} room={open} eventId={view.event} onUpdate={upsert} />
+            ) : view.kind === 'new-event' ? (
+              <NewEvent key={open.id} room={open} onUpdate={upsert} />
+            ) : (
+              <RoomView key={open.id} room={open} onUpdate={upsert} />
             )
           ) : (
             <div className="card">

@@ -2,8 +2,12 @@
 // server — адрес сервера комнаты (у комнаты свой, из ссылки или с создания; «Настройки» — только для новых)
 import {
   isAdmitResponse,
+  isCancelEventResponse,
   isClaimDeviceResponse,
+  isClarifyEventResponse,
+  isCreateEventResponse,
   isCreateRoomResponse,
+  isPlaceBetResponse,
   isDeviceLinkResponse,
   isErrorResponse,
   isInviteResponse,
@@ -15,7 +19,13 @@ import {
   joinMark,
   PROTOCOL_VERSION,
   type AdmitResponse,
+  type CancelEventResponse,
   type ClaimDeviceResponse,
+  type ClarifyEventResponse,
+  type CreateEventRequest,
+  type CreateEventResponse,
+  type PlaceBetRequest,
+  type PlaceBetResponse,
   type CreateRoomRequest,
   type CreateRoomResponse,
   type DeviceLinkRequest,
@@ -122,4 +132,46 @@ export function issueDeviceLink(
 // POST /rooms/<номер>/device/claim — ключ этого устройства по ссылке
 export function claimDevice(server: string, roomId: string, token: string): Promise<Result<ClaimDeviceResponse>> {
   return call(roomUrl(server, roomId, 'device/claim'), post({ token }), isClaimDeviceResponse)
+}
+
+// …/events/<событие>/<действие>
+function eventUrl(server: string, roomId: string, eventId: string, action: string): string {
+  return roomUrl(server, roomId, 'events/' + encodeURIComponent(eventId) + '/' + action)
+}
+
+// POST /rooms/<номер>/events — завести событие; повтор с тем же requestId — то же событие
+export function createEvent(
+  server: string,
+  roomId: string,
+  key: string,
+  request: Omit<CreateEventRequest, 'v'>,
+): Promise<Result<CreateEventResponse>> {
+  return call(roomUrl(server, roomId, 'events'), post(request, key), isCreateEventResponse)
+}
+
+// POST …/events/<событие>/bets — ставка; повтор с тем же requestId — та же ставка
+export function placeBet(
+  server: string,
+  roomId: string,
+  key: string,
+  eventId: string,
+  request: Omit<PlaceBetRequest, 'v'>,
+): Promise<Result<PlaceBetResponse>> {
+  return call(eventUrl(server, roomId, eventId, 'bets'), post(request, key), isPlaceBetResponse)
+}
+
+// POST …/events/<событие>/clarify — уточнение автора
+export function clarifyEvent(server: string, roomId: string, key: string, eventId: string, text: string): Promise<Result<ClarifyEventResponse>> {
+  return call(eventUrl(server, roomId, eventId, 'clarify'), post({ text }, key), isClarifyEventResponse)
+}
+
+// POST …/events/<событие>/cancel — отмена; после закрытия приёма — ведущий с причиной
+export function cancelEvent(
+  server: string,
+  roomId: string,
+  key: string,
+  eventId: string,
+  reason: string | null,
+): Promise<Result<CancelEventResponse>> {
+  return call(eventUrl(server, roomId, eventId, 'cancel'), post(reason ? { reason } : {}, key), isCancelEventResponse)
 }

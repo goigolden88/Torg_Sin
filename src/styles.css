@@ -483,6 +483,242 @@ h3 {
   color: var(--error);
 }
 
+.textarea {
+  min-height: calc(var(--tap) * 1.75);
+  padding: 0.6rem 12px;
+  resize: vertical;
+  line-height: 1.4;
+}
+
+/* ─── События: список в комнате ───────────────────────────────────────────── */
+
+.events {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.events-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
+.events-head h3 {
+  margin: 0;
+}
+
+.events-group {
+  margin: 0.5rem 0 0;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.event-list,
+.clarifications,
+.bars,
+.position,
+.feed {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.event-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-height: var(--tap);
+  padding: 0.75rem var(--pad);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  color: var(--text);
+  text-decoration: none;
+}
+
+.event-item:focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 2px;
+}
+
+.event-item .hint {
+  font-size: 0.9rem;
+}
+
+.event-name,
+.event-title {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.status {
+  font-size: 0.95rem;
+}
+
+.status.open {
+  color: var(--gold);
+}
+
+.status.closed {
+  color: var(--muted);
+}
+
+.status.cancelled {
+  color: var(--error);
+}
+
+/* ─── Событие ─────────────────────────────────────────────────────────────── */
+
+.event-title {
+  font-size: 1.3rem;
+}
+
+.event-check,
+.clarifications li {
+  overflow-wrap: anywhere;
+}
+
+.clarifications li {
+  padding: 0.5rem 0.75rem;
+  border-left: 3px solid var(--gold);
+  background: var(--surface-2);
+  border-radius: 0 10px 10px 0;
+}
+
+/* Полоса банка исхода: доля — шириной в процентах */
+.bar-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.bar-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  font-weight: 600;
+}
+
+.bar-title {
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+.bar-chance {
+  flex: none;
+  color: var(--gold);
+}
+
+.bar {
+  height: 0.75rem;
+  border-radius: 999px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  overflow: hidden;
+}
+
+.bar-fill {
+  height: 100%;
+  background: var(--gold);
+}
+
+.bar-row .hint {
+  font-size: 0.9rem;
+}
+
+.bet-form {
+  margin: 1rem 0 0.5rem;
+  padding: var(--pad);
+  border: 1px solid var(--gold);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  gap: 0.75rem;
+}
+
+.bet-form h3 {
+  margin: 0;
+}
+
+.bet-form .chip span {
+  background: var(--surface);
+}
+
+/* Лента ставок и позиция: на телефоне — карточки; шире — строками */
+.feed-row,
+.position-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  padding: 0.5rem 0.75rem;
+  border-radius: 10px;
+  background: var(--surface-2);
+  overflow-wrap: anywhere;
+}
+
+.feed-who,
+.position-title {
+  font-weight: 600;
+}
+
+/* Свои исходы в форме: поле и «Убрать» в строку */
+.outcomes-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+}
+
+.outcome-edit {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.5rem;
+}
+
+.outcome-edit .field {
+  flex: 1 1 auto;
+}
+
+.times {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1rem;
+}
+
+/* Окно подтверждения ставки — поверх экрана, по центру */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  padding: var(--pad);
+  background: rgb(0 0 0 / 0.6);
+}
+
+.modal {
+  width: min(100%, 28rem);
+  max-height: 100%;
+  overflow-y: auto;
+  padding: 1.25rem;
+  border: 1px solid var(--gold);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.modal-question {
+  font-size: 1.15rem;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
 /* ─── Планшет ─────────────────────────────────────────────────────────────── */
 
 @media (min-width: 600px) {
@@ -499,6 +735,23 @@ h3 {
 
   .request .row .button {
     flex: none;
+  }
+
+  .times {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  /* Лента и позиция — строкой: кто / сколько на что / когда */
+  .feed-row,
+  .position-row {
+    display: grid;
+    grid-template-columns: minmax(6rem, 1fr) minmax(0, 2fr) minmax(0, 1.4fr);
+    align-items: baseline;
+    gap: 0.75rem;
+  }
+
+  .feed-row .hint {
+    text-align: right;
   }
 }
 
@@ -679,5 +932,42 @@ h3 {
 
   .member + .member {
     border-top: 1px solid var(--line);
+  }
+
+  /* Событие и новое событие — во всю ширину содержимого (≤ 720 px): список комнат прячется, как
+     на телефоне, «Назад» ведёт в комнату. Рядом со списком на 1024–1279 px событию осталось бы
+     ≈ 360–610 px, а ему нужно ≥ 640 */
+  .rooms.wide .split {
+    grid-template-columns: minmax(0, var(--detail-w));
+  }
+
+  .rooms.wide .list {
+    display: none;
+  }
+
+  .rooms.wide .back {
+    display: inline-flex;
+  }
+
+  .event {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    padding: 1.5rem;
+  }
+
+  .event > *,
+  .event h3 {
+    margin: 0;
+  }
+
+  .event section {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  .event > section > h3 {
+    margin-top: 0.5rem;
   }
 }
