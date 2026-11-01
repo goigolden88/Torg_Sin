@@ -307,9 +307,11 @@ export function eventVoters(e: EventState): string[] {
 
 // Может ли участник предложить исход на now (приём уже закрыт — проверяет вызывающий):
 // автор, если он не предмет спора; ведущий — если автор предмет спора или молчит 3 дня после
-// «исход ожидается к»; предмет спора — никогда
+// «исход ожидается к»; предмет спора — никогда. Ведущий завёл событие о себе (он и автор, и
+// предмет) — любой участник, кроме предмета спора: первое предложение — единственное (Р-19)
 export function mayPropose(e: EventState, memberId: string, now: number): boolean {
   if (memberId === e.subjectId) return false
+  if (e.authorId === e.hostId && e.subjectId === e.hostId) return true
   if (memberId === e.authorId) return true
   return memberId === e.hostId && (e.authorId === e.subjectId || now >= e.expectedAt + AUTHOR_SILENCE)
 }
@@ -333,8 +335,8 @@ export function voteWinner(votes: readonly OutcomeMark[]): string | null {
 
 // Исход события на now (время сервера) — из журнала, без будильника: «утверждён сам» через сутки
 // без возражения, голосование кончается через 72 часа или когда проголосовали все, «окончательный» —
-// через 7 дней после утверждения. Не предложен — null. Отменённое событие — без выплат (возврат —
-// eventRefunds)
+// через 7 дней после утверждения. Не предложен — null. Отменённое событие — статус «отменено» на
+// любом шаге, без выплат и без finalAt: окончательным не станет (возврат — eventRefunds; Р-19)
 export function eventOutcome(e: EventState, now: number): OutcomeView | null {
   const p = e.proposal
   if (!p) return null
@@ -364,9 +366,10 @@ export function eventOutcome(e: EventState, now: number): OutcomeView | null {
     }
   }
   let settled: ReturnType<typeof settlePool> | null = null
-  if (approved) {
+  if (e.cancelled) status = 'cancelled'
+  else if (approved) {
     status = now >= approved.at + FINAL_TIME ? 'final' : 'approved'
-    if (!e.cancelled) settled = settlePool(poolBets(e), approved.outcome)
+    settled = settlePool(poolBets(e), approved.outcome)
   }
   return {
     status,
@@ -378,7 +381,7 @@ export function eventOutcome(e: EventState, now: number): OutcomeView | null {
     votingUntil,
     votes,
     approved,
-    finalAt: approved ? approved.at + FINAL_TIME : null,
+    finalAt: approved && !e.cancelled ? approved.at + FINAL_TIME : null,
     void: settled?.void ?? false,
     payouts: settled?.payouts ?? [],
   }

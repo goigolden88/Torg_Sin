@@ -114,6 +114,8 @@ describe('ответы комнат', () => {
     expect(isRoomStateResponse({ ...state, events: [{ ...view, outcome }] })).toBe(true)
     const voting = { ...outcome, status: 'voting', decision: null, voters: ['A', 'B'], votingUntil: 9, votes: [{ ...mark, by: 'A' }], approved: null, finalAt: null, payouts: [] }
     expect(isRoomStateResponse({ ...state, events: [{ ...view, outcome: voting }] })).toBe(true)
+    const cancelled = { ...outcome, status: 'cancelled', finalAt: null, payouts: [] }
+    expect(isRoomStateResponse({ ...state, events: [{ ...view, outcome: cancelled }] })).toBe(true)
     expect(isRoomStateResponse({ ...state, events: [{ ...view, outcome: undefined }] })).toBe(false)
     expect(isRoomStateResponse({ ...state, events: [{ ...view, outcome: { ...outcome, status: 'потом' } }] })).toBe(false)
     expect(isRoomStateResponse({ ...state, events: [{ ...view, outcome: { ...outcome, proposal: null } }] })).toBe(false)

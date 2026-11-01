@@ -62,8 +62,9 @@ export type OutcomeMark = { id: string; at: number; by: string; outcome: string 
 export type Objection = { id: string; at: number; by: string; reason: string }
 
 // «сутки на возражение» / «ждёт решения ведущего» / «голосование» / «ждёт суда» (этап 4) /
-// «утверждён» / «окончательный» (7 дней после утверждения без апелляции) — на время сервера
-export type OutcomeStatus = 'proposed' | 'disputed' | 'voting' | 'court' | 'approved' | 'final'
+// «утверждён» / «окончательный» (7 дней после утверждения без апелляции) — на время сервера /
+// «отменено» — событие отменено на любом шаге исхода: без выплат, окончательным не станет (Р-19)
+export type OutcomeStatus = 'proposed' | 'disputed' | 'voting' | 'court' | 'approved' | 'final' | 'cancelled'
 
 // Как утверждён: сам — сутки без возражения (by — null); ведущим (by — ведущий);
 // голосованием (by — null)
@@ -81,8 +82,8 @@ export type OutcomeView = {
   voters: string[] // кто голосует (не ставили и не предмет спора); голосования нет — пусто
   votingUntil: number | null // голосование до (не включая)
   votes: OutcomeMark[]
-  approved: Approval | null
-  finalAt: number | null // станет окончательным (не утверждён — null)
+  approved: Approval | null // что утверждено; событие отменено после утверждения — остаётся для истории
+  finalAt: number | null // станет окончательным (не утверждён или событие отменено — null)
   void: boolean // «без игры»: каждому — его сумма
   payouts: Payout[] // по утверждённому исходу; не утверждён или событие отменено — пусто
 }
@@ -304,7 +305,7 @@ function isObjection(r: Record<string, unknown>): boolean {
   return strings(r, 'id', 'by', 'reason') && numbers(r, 'at')
 }
 
-const OUTCOME_STATUSES: readonly unknown[] = ['proposed', 'disputed', 'voting', 'court', 'approved', 'final']
+const OUTCOME_STATUSES: readonly unknown[] = ['proposed', 'disputed', 'voting', 'court', 'approved', 'final', 'cancelled']
 const APPROVALS: readonly unknown[] = ['unopposed', 'host', 'vote']
 
 function isApproval(r: Record<string, unknown>): boolean {

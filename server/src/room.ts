@@ -629,7 +629,8 @@ function liveEvent(events: readonly EventState[], id: string): { ok: true; event
 }
 
 // Предложить исход: после закрытия приёма — автор события (не предмет спора); автор — предмет
-// или молчит 3 дня после «исход ожидается к» — ведущий. Одно предложение на событие
+// или молчит 3 дня после «исход ожидается к» — ведущий; событие ведущего о себе — любой, кроме
+// него (Р-19). Одно предложение на событие: первое
 async function proposeOutcome(storage: RoomStorage, a: OutcomeAction, now: number): Promise<ActionResult<'proposeOutcome'>> {
   const c = await outcomeCaller(storage, a.keyHash)
   if (!c.ok) return c
