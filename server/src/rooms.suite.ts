@@ -644,7 +644,7 @@ export function roomsSuite(storageName: string, start: (password: string | undef
           expectedAt: form.expectedAt,
           subjectId: vera.memberId,
         })
-        const expected = { ...event, status: 'open', clarifications: [], bets: [], cancelled: null, refunds: [] }
+        const expected = { ...event, status: 'open', clarifications: [], bets: [], cancelled: null, refunds: [], outcome: null }
         for (const key of [room.key, borya.key, vera.key]) expect(await eventsOf(s, room.roomId, key)).toEqual([expected])
         expect(await eventEntries(s, room.roomId)).toEqual(['event.created'])
         // Без предмета спора — null
