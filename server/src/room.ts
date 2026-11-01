@@ -19,6 +19,20 @@ import {
   type RoomInput,
   type RoomState,
 } from '../../src/rules/room'
+import {
+  BAD_SUBJECT,
+  betOf,
+  checkEventTimes,
+  eventBank,
+  eventStatus,
+  infoOf,
+  NEED_REASON,
+  roomEvents,
+  sameEvent,
+  type EventInput,
+  type EventState,
+} from '../../src/rules/event'
+import type { BetInfo, Cancellation, Clarification, EventInfo } from '../../src/rules/protocol'
 import { ulid } from '../../src/rules/ulid'
 import { deriveJoinKey, hashKey, randomToken, sameText } from './keys'
 
@@ -43,6 +57,14 @@ export const ALREADY_REJECTED = 'Заявка уже отклонена'
 export const ALREADY_ADMITTED = 'Участник уже впущен'
 export const NO_MEMBER = 'Нет такого участника'
 export const BAD_DEVICE_LINK = 'Ссылка для другого устройства недействительна — попросите новую'
+export const NO_EVENT = 'Нет такого события'
+export const NO_OUTCOME = 'Нет такого исхода'
+export const BETS_CLOSED = 'Приём ставок закрыт'
+export const EVENT_CANCELLED = 'Событие отменено'
+export const AUTHOR_ONLY = 'Это может только автор события'
+export const EVENT_TAKEN = 'Этот номер запроса уже занят другим событием'
+export const BET_TAKEN = 'Этот номер запроса уже занят другой ставкой'
+export const BANK_FULL = 'Банк события слишком велик для такой ставки'
 
 // Ссылка для другого устройства живёт сутки
 export const DEVICE_LINK_TTL = 24 * 60 * 60 * 1000
@@ -121,7 +143,8 @@ export async function createRoom(storage: RoomStorage, input: CreateInput, now: 
 // Отказ комнаты; join — ключ заявки, которую ещё не впустили или отклонили (экран ожидания)
 export type Failure = { ok: false; status: 400 | 403 | 404 | 409; error: string; join?: 'waiting' | 'rejected' }
 
-export type StateResult = { ok: true; state: RoomState; me: string } | Failure
+// events — события комнаты из журнала (статус на время ответа считает http.ts)
+export type StateResult = { ok: true; state: RoomState; me: string; events: EventState[] } | Failure
 
 function fail(status: Failure['status'], error: string, join?: Failure['join']): Failure {
   return join ? { ok: false, status, error, join } : { ok: false, status, error }
@@ -152,7 +175,7 @@ async function hostCaller(storage: RoomStorage, keyHash: string): Promise<Caller
 // Состояние комнаты для владельца ключа (по хешу ключа)
 export async function roomState(storage: RoomStorage, keyHash: string): Promise<StateResult> {
   const c = await caller(storage, keyHash)
-  return c.ok ? { ok: true, state: c.state, me: c.me } : c
+  return c.ok ? { ok: true, state: c.state, me: c.me, events: roomEvents(c.log) } : c
 }
 
 // Действия комнаты, кроме создания и чтения состояния. Токены и ключи, которые выдаёт сервер,
@@ -166,6 +189,11 @@ export type RoomAction =
   | { type: 'renewInvite'; keyHash: string; invite: string } // новая ссылка-приглашение
   | { type: 'issueDevice'; keyHash: string; member: string | null; unlink: boolean; tokenHash: string }
   | { type: 'claimDevice'; tokenHash: string; keyHash: string } // новый ключ по ссылке для устройства
+  // События-пул: форма уже проверена (event.ts, checkEventInput); сроки — здесь, по времени сервера
+  | { type: 'createEvent'; keyHash: string; input: EventInput; requestId: string }
+  | { type: 'placeBet'; keyHash: string; event: string; outcome: string; amount: number; requestId: string }
+  | { type: 'clarifyEvent'; keyHash: string; event: string; text: string }
+  | { type: 'cancelEvent'; keyHash: string; event: string; reason: string | null }
 
 export type JoinStatus = JoinRequest['status']
 
@@ -179,6 +207,10 @@ export type ActionValues = {
   renewInvite: { invite: string }
   issueDevice: { member: string; expiresAt: number }
   claimDevice: { memberId: string }
+  createEvent: { event: EventInfo }
+  placeBet: { bet: BetInfo }
+  clarifyEvent: { clarification: Clarification }
+  cancelEvent: { cancelled: Cancellation }
 }
 
 export type ActionType = RoomAction['type']
@@ -220,6 +252,18 @@ export async function act<K extends ActionType>(
       break
     case 'claimDevice':
       r = await claimDevice(storage, a.tokenHash, a.keyHash, now)
+      break
+    case 'createEvent':
+      r = await createEvent(storage, a, now)
+      break
+    case 'placeBet':
+      r = await placeBet(storage, a, now)
+      break
+    case 'clarifyEvent':
+      r = await clarifyEvent(storage, a, now)
+      break
+    case 'cancelEvent':
+      r = await cancelEvent(storage, a, now)
       break
   }
   return r as ActionResult<K>
@@ -379,4 +423,125 @@ async function claimDevice(storage: RoomStorage, tokenHash: string, keyHash: str
   await storage.put<KeyRecord>(KEY + keyHash, { memberId: link.member, at: now })
   await append(storage, [{ id: ulid(now), at: now, memberId: link.member, type: 'device.linked', member: link.member, unlink: link.unlink }])
   return ok({ memberId: link.member })
+}
+
+// Завести событие: любой участник. Повтор с тем же номером запроса — то же событие и тот же
+// ответ (даже после срока); тот же номер с другой формой — отказ
+async function createEvent(
+  storage: RoomStorage,
+  a: { keyHash: string; input: EventInput; requestId: string },
+  now: number,
+): Promise<ActionResult<'createEvent'>> {
+  const c = await caller(storage, a.keyHash)
+  if (!c.ok) return c
+  const repeat = roomEvents(c.log).find((e) => e.requestId === a.requestId)
+  if (repeat) return sameEvent(repeat, c.me, a.input) ? ok({ event: infoOf(repeat) }) : fail(409, EVENT_TAKEN)
+  const { input } = a
+  if (input.subject !== null && !c.state.members.some((m) => m.id === input.subject)) return fail(400, BAD_SUBJECT)
+  const late = checkEventTimes(input, now)
+  if (late) return fail(400, late)
+  const id = ulid(now)
+  await append(storage, [
+    {
+      id,
+      at: now,
+      memberId: c.me,
+      type: 'event.created',
+      condition: input.condition,
+      check: input.check,
+      outcomes: input.outcomes,
+      closesAt: input.closesAt,
+      expectedAt: input.expectedAt,
+      subject: input.subject,
+      requestId: a.requestId,
+    },
+  ])
+  return ok({
+    event: {
+      id,
+      at: now,
+      authorId: c.me,
+      condition: input.condition,
+      check: input.check,
+      outcomes: input.outcomes,
+      closesAt: input.closesAt,
+      expectedAt: input.expectedAt,
+      subjectId: input.subject,
+    },
+  })
+}
+
+// Событие комнаты по номеру — для действия участника
+async function eventCaller(
+  storage: RoomStorage,
+  keyHash: string,
+  eventId: string,
+): Promise<(Caller & { event: EventState }) | Failure> {
+  const c = await caller(storage, keyHash)
+  if (!c.ok) return c
+  const event = roomEvents(c.log).find((e) => e.id === eventId)
+  if (!event) return fail(404, NO_EVENT)
+  return { ...c, event }
+}
+
+// Ставка: любой участник, на исход открытого события. Приём закрыт по времени сервера в момент
+// запроса — даже если в срок сервер лежал. Повтор с тем же номером — та же ставка и тот же ответ
+async function placeBet(
+  storage: RoomStorage,
+  a: { keyHash: string; event: string; outcome: string; amount: number; requestId: string },
+  now: number,
+): Promise<ActionResult<'placeBet'>> {
+  const c = await caller(storage, a.keyHash)
+  if (!c.ok) return c
+  const events = roomEvents(c.log)
+  for (const e of events) {
+    const b = e.bets.find((x) => x.requestId === a.requestId)
+    if (!b) continue
+    const same = b.memberId === c.me && b.event === a.event && b.outcome === a.outcome && b.amount === a.amount
+    return same ? ok({ bet: betOf(b) }) : fail(409, BET_TAKEN)
+  }
+  const event = events.find((e) => e.id === a.event)
+  if (!event) return fail(404, NO_EVENT)
+  const status = eventStatus(event, now)
+  if (status === 'cancelled') return fail(409, EVENT_CANCELLED)
+  if (status === 'closed') return fail(409, BETS_CLOSED)
+  if (!event.outcomes.some((o) => o.id === a.outcome)) return fail(400, NO_OUTCOME)
+  if (eventBank(event) + a.amount > Number.MAX_SAFE_INTEGER) return fail(400, BANK_FULL)
+  const bet: BetInfo = { id: ulid(now), event: event.id, memberId: c.me, outcome: a.outcome, amount: a.amount, at: now }
+  await append(storage, [{ ...bet, type: 'bet.placed', requestId: a.requestId }])
+  return ok({ bet })
+}
+
+// Уточнение: только автор; видно всем под условием, само условие не меняется
+async function clarifyEvent(
+  storage: RoomStorage,
+  a: { keyHash: string; event: string; text: string },
+  now: number,
+): Promise<ActionResult<'clarifyEvent'>> {
+  const c = await eventCaller(storage, a.keyHash, a.event)
+  if (!c.ok) return c
+  if (c.me !== c.event.authorId) return fail(403, AUTHOR_ONLY)
+  const clarification: Clarification = { id: ulid(now), at: now, text: a.text }
+  await append(storage, [{ ...clarification, memberId: c.me, type: 'event.clarified', event: c.event.id }])
+  return ok({ clarification })
+}
+
+// Отмена: пока приём идёт — автор; после закрытия — только ведущий и только с причиной.
+// Уже отменено — та же отмена без новой записи. Ставки возвращаются (eventRefunds)
+async function cancelEvent(
+  storage: RoomStorage,
+  a: { keyHash: string; event: string; reason: string | null },
+  now: number,
+): Promise<ActionResult<'cancelEvent'>> {
+  const c = await eventCaller(storage, a.keyHash, a.event)
+  if (!c.ok) return c
+  if (c.event.cancelled) return ok({ cancelled: c.event.cancelled })
+  if (eventStatus(c.event, now) === 'open') {
+    if (c.me !== c.event.authorId) return fail(403, AUTHOR_ONLY)
+  } else {
+    if (c.me !== c.state.hostId) return fail(403, HOST_ONLY)
+    if (a.reason === null) return fail(400, NEED_REASON)
+  }
+  await append(storage, [{ id: ulid(now), at: now, memberId: c.me, type: 'event.cancelled', event: c.event.id, reason: a.reason }])
+  return ok({ cancelled: { at: now, by: c.me, reason: a.reason } })
 }

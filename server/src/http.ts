@@ -7,12 +7,15 @@ import {
   type Health,
   type RoomStateResponse,
 } from '../../src/rules/protocol'
+import { checkAmount, checkClarification, checkEventInput, checkReason, eventView } from '../../src/rules/event'
 import { checkMemberName, checkRoomInput } from '../../src/rules/room'
 import { ulid } from '../../src/rules/ulid'
 import { deriveCreation, hashKey, randomToken, sameText, ULID_PATTERN } from './keys'
 import {
   BAD_DEVICE_LINK,
   BAD_LINK,
+  NO_EVENT,
+  NO_OUTCOME,
   NO_ROOM,
   type ActionResult,
   type ActionType,
@@ -98,7 +101,79 @@ export async function handle(request: Request, deps: RoomsDeps): Promise<Respons
     const r = await roomAction(sub[1], sub[2], request, deps)
     if (r) return json(r.status, r.body)
   }
+  // События-пул: /rooms/<номер>/events и /rooms/<номер>/events/<событие>/<действие>
+  const ev = /^\/rooms\/([^/]+)\/events(?:\/([^/]+)\/(bets|clarify|cancel))?$/.exec(path)
+  if (ev && request.method === 'POST') {
+    const r = await eventAction(ev[1], ev[2], ev[3], request, deps)
+    return json(r.status, r.body)
+  }
   return notFound()
+}
+
+// POST /rooms/<номер>/events — завести; …/events/<событие>/bets | clarify | cancel
+async function eventAction(
+  roomId: string,
+  eventId: string | undefined,
+  action: string | undefined,
+  request: Request,
+  deps: RoomsDeps,
+): Promise<Reply<unknown>> {
+  const authorization = request.headers.get('Authorization')
+  const raw: unknown = await request.json().catch(() => null)
+  if (eventId === undefined) return createEvent(roomId, authorization, raw, deps)
+  return withKey(roomId, authorization, async (keyHash) => {
+    if (!ULID_PATTERN.test(eventId)) return failure(404, NO_EVENT)
+    const read = readBody(raw, action === 'cancel')
+    if (!read.ok) return read.reply
+    const body = read.body
+    switch (action) {
+      case 'bets': {
+        const amount = checkAmount(body.amount)
+        if (typeof body.outcome !== 'string' || !body.outcome) return failure(400, NO_OUTCOME)
+        if (!amount.ok) return failure(400, amount.error)
+        const requestId = requestIdOf(body, deps)
+        if (!requestId) return failure(400, BAD_REQUEST_ID)
+        return reply(await deps.act(roomId, { type: 'placeBet', keyHash, event: eventId, outcome: body.outcome, amount: amount.value, requestId }))
+      }
+      case 'clarify': {
+        const text = checkClarification(body.text)
+        if (!text.ok) return failure(400, text.error)
+        return reply(await deps.act(roomId, { type: 'clarifyEvent', keyHash, event: eventId, text: text.value }))
+      }
+      default: {
+        const reason = checkReason(body.reason)
+        if (!reason.ok) return failure(400, reason.error)
+        return reply(await deps.act(roomId, { type: 'cancelEvent', keyHash, event: eventId, reason: reason.value }))
+      }
+    }
+  })
+}
+
+// Номер запроса из тела: нет — новый (повтор не узнать, но действие выполняется); кривой — null
+function requestIdOf(body: Record<string, unknown>, deps: RoomsDeps): string | null {
+  const id = body.requestId === undefined ? ulid(deps.now()) : body.requestId
+  return typeof id === 'string' && ULID_PATTERN.test(id) ? id : null
+}
+
+// POST /rooms/<номер>/events { condition, check, outcomes?, closesAt, expectedAt, subject?, requestId? }
+export async function createEvent(roomId: string, authorization: string | null, raw: unknown, deps: RoomsDeps): Promise<Reply<unknown>> {
+  return withKey(roomId, authorization, async (keyHash) => {
+    const read = readBody(raw)
+    if (!read.ok) return read.reply
+    const b = read.body
+    const checked = checkEventInput({
+      condition: b.condition,
+      check: b.check,
+      outcomes: b.outcomes,
+      closesAt: b.closesAt,
+      expectedAt: b.expectedAt,
+      subject: b.subject,
+    })
+    if (!checked.ok) return failure(400, checked.error)
+    const requestId = requestIdOf(b, deps)
+    if (!requestId) return failure(400, BAD_REQUEST_ID)
+    return reply(await deps.act(roomId, { type: 'createEvent', keyHash, input: checked.value, requestId }))
+  })
 }
 
 // Адреса входа по ссылке (Р-03): /rooms/<номер>/<действие>. Не тот метод — null (404)
@@ -272,6 +347,8 @@ export async function getRoom(roomId: string, authorization: string | null, deps
   // Ключ заявки: «ждём, пока ведущий впустит» или «отклонил» — с отметкой join для экрана ожидания
   if (!r.ok) return failure(r.status, r.error, r.join)
   const { state } = r
+  // Статус событий — на время сервера в ответе: им же сайт считает отсчёт
+  const now = deps.now()
   return {
     status: 200,
     body: {
@@ -279,6 +356,8 @@ export async function getRoom(roomId: string, authorization: string | null, deps
       room: { id: state.id, name: state.name, currency: state.currency, hostId: state.hostId, createdAt: state.createdAt },
       members: state.members.map((m) => ({ id: m.id, name: m.name })),
       me: r.me,
+      events: r.events.map((e) => eventView(e, now)),
+      now,
     },
   }
 }
