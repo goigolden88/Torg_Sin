@@ -288,13 +288,18 @@ export function eventRefunds(e: EventState): { memberId: string; amount: number 
   return settlePool(poolBets(e), null).payouts.map((p) => ({ memberId: p.memberId, amount: p.payout }))
 }
 
+// Кто есть кто в событии — поля, по которым решается, кому что можно. Есть и у EventState сервера,
+// и у EventView сайта (ведущий — из комнаты): экран зовёт те же функции, что сервер
+type WithBets = { bets: readonly { memberId: string }[] }
+type EventRoles = WithBets & { authorId: string; subjectId: string | null; hostId: string; expectedAt: number }
+
 // Ставил ли участник на событие
-export function betOn(e: EventState, memberId: string): boolean {
+export function betOn(e: WithBets, memberId: string): boolean {
   return e.bets.some((b) => b.memberId === memberId)
 }
 
 // Возражение решает ведущий, если сам не ставил и не предмет спора; иначе — голосование (Р-17)
-export function hostDecides(e: EventState): boolean {
+export function hostDecides(e: Pick<EventRoles, 'bets' | 'hostId' | 'subjectId'>): boolean {
   return !betOn(e, e.hostId) && e.subjectId !== e.hostId
 }
 
@@ -309,7 +314,7 @@ export function eventVoters(e: EventState): string[] {
 // автор, если он не предмет спора; ведущий — если автор предмет спора или молчит 3 дня после
 // «исход ожидается к»; предмет спора — никогда. Ведущий завёл событие о себе (он и автор, и
 // предмет) — любой участник, кроме предмета спора: первое предложение — единственное (Р-19)
-export function mayPropose(e: EventState, memberId: string, now: number): boolean {
+export function mayPropose(e: Omit<EventRoles, 'bets'>, memberId: string, now: number): boolean {
   if (memberId === e.subjectId) return false
   if (e.authorId === e.hostId && e.subjectId === e.hostId) return true
   if (memberId === e.authorId) return true

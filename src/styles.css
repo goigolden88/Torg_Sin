@@ -668,6 +668,134 @@ h3 {
   font-weight: 600;
 }
 
+/* Исход события: статус сверху, ход исхода, действия, выплаты */
+.outcome {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin: 0.75rem 0;
+  padding: var(--pad);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+
+.outcome h3 {
+  margin: 0;
+}
+
+.outcome > p,
+.payouts-box > p {
+  margin: 0;
+}
+
+.outcome-head {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.outcome-head.approved,
+.final {
+  color: var(--ok);
+}
+
+.outcome-head.cancelled {
+  color: var(--error);
+}
+
+.outcome-head.court {
+  color: var(--gold);
+}
+
+.outcome-log,
+.voters {
+  margin: 0;
+  padding-left: 1.2rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  overflow-wrap: anywhere;
+}
+
+.voters .voted {
+  color: var(--ok);
+}
+
+.outcome-form {
+  gap: 0.75rem;
+}
+
+.outcome-form .chip span {
+  background: var(--surface);
+}
+
+.payouts-box {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+/* Выплаты: на телефоне — карточка на участника (подпись — из data-label); шире — таблица */
+.payouts {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.payouts thead {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+
+.payouts tbody {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.payouts tr {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.2rem 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.payouts tr.mine {
+  outline: 1px solid var(--gold);
+}
+
+.payouts th[scope='row'] {
+  grid-column: 1 / -1;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
+.payouts td {
+  display: flex;
+  flex-direction: column;
+  overflow-wrap: anywhere;
+}
+
+.payouts td::before {
+  content: attr(data-label);
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.payouts .win {
+  color: var(--ok);
+  font-weight: 600;
+}
+
+.payouts .loss {
+  color: var(--error);
+  font-weight: 600;
+}
+
 /* Свои исходы в форме: поле и «Убрать» в строку */
 .outcomes-edit {
   display: flex;
@@ -752,6 +880,53 @@ h3 {
 
   .feed-row .hint {
     text-align: right;
+  }
+
+  /* Выплаты — таблицей: кто / поставил / получил / итог */
+  .payouts thead {
+    position: static;
+    width: auto;
+    height: auto;
+    overflow: visible;
+    clip-path: none;
+    display: table-header-group;
+  }
+
+  .payouts tbody {
+    display: table-row-group;
+  }
+
+  .payouts tr {
+    display: table-row;
+    background: none;
+  }
+
+  .payouts tr.mine {
+    outline: none;
+    background: var(--surface);
+  }
+
+  .payouts th,
+  .payouts td {
+    display: table-cell;
+    padding: 0.5rem 0.75rem;
+    border-bottom: 1px solid var(--line);
+    text-align: right;
+  }
+
+  .payouts th:first-child,
+  .payouts thead th:first-child {
+    text-align: left;
+  }
+
+  .payouts thead th {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--muted);
+  }
+
+  .payouts td::before {
+    content: none;
   }
 }
 

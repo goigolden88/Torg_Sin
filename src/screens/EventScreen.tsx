@@ -3,7 +3,7 @@
 // ставка — с окном подтверждения и честной прикидкой выигрыша; «Лента ставок» и «Ваша позиция».
 // Автору — «Уточнить» и, пока приём идёт, «Отменить событие»; ведущему после закрытия — «Отменить»
 // с причиной. Состояние — с сервера раз в 5 с (useRoom); нет связи — последнее известное, ставить
-// нельзя. Деньги считает pool.ts — здесь не считаем заново. Исход (EventView.outcome) — не здесь
+// нельзя. Деньги считает pool.ts — здесь не считаем заново. Исход (EventView.outcome) — EventOutcome
 import { useCallback, useEffect, useRef, useState, type FormEvent, type MutableRefObject } from 'react'
 import { cancelEvent, clarifyEvent, placeBet } from '../api'
 import { currency as currencyOf, isCurrencyCode, parseAmount } from '../rules/currency'
@@ -16,6 +16,7 @@ import { ulid } from '../rules/ulid'
 import { savedEvents, type SavedRoom } from '../store/db'
 import { BackLink, useEscape } from './BackLink'
 import { money, nameOf, StatusLine } from './eventParts'
+import { EventOutcome } from './EventOutcome'
 import { useRoom, useServerNow, type Sync } from './useRoom'
 
 type Ask = { outcome: string; units: number }
@@ -90,6 +91,8 @@ export function EventScreen({ room, eventId, onUpdate }: { room: SavedRoom; even
         </p>
       )}
       {sync.state === 'fail' && <p className="error">{sync.text}</p>}
+
+      <EventOutcome room={room} event={event} now={now} sync={sync} onDone={refresh} />
 
       <Bars room={room} event={event} />
 

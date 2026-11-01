@@ -29,7 +29,8 @@ const TIMEOUT = 20_000 // ожидание экрана: опрос сервер
 
 type RoomsServer = { url: string; close: () => Promise<void> }
 type ServerModule = {
-  startServer: (options: { file: string; password: string | undefined; port: number }) => Promise<RoomsServer>
+  // now — подставные часы сервера (исход: сутки на возражение, 7 дней до «окончательно» — без ожидания)
+  startServer: (options: { file: string; password: string | undefined; port: number; now?: () => number }) => Promise<RoomsServer>
 }
 
 // ─── DevTools-протокол ───────────────────────────────────────────────────────
@@ -423,13 +424,12 @@ async function scenario(cdp: Cdp, size: Size, server: RoomsServer, startServer: 
   await stranger.shot('20-net-svyazi')
 }
 
-// Запрос сценария к серверу в обход экрана (событие с близким сроком закрытия, ставки на нём)
+// Запрос сценария к серверу в обход экрана (событие с близким сроком закрытия, ставки на нём);
+// key пустой — без ключа (создать комнату, заявка)
 async function api<T>(server: RoomsServer, path: string, key: string, body: object): Promise<T> {
-  const res = await fetch(server.url + path, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key },
-    body: JSON.stringify(body),
-  })
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (key) headers.Authorization = 'Bearer ' + key
+  const res = await fetch(server.url + path, { method: 'POST', headers, body: JSON.stringify(body) })
   const json = (await res.json()) as T
   if (!res.ok) throw new Error(`${path}: ${JSON.stringify(json)}`)
   return json
@@ -545,6 +545,142 @@ async function events(host: Device, friend: Device, size: Size, server: RoomsSer
   if (!eventHash.includes('/event/')) throw new Error('После «Завести событие» открылось не событие: ' + eventHash)
 }
 
+// Подтвердить действие с исходом в окне; двойное нажатие — одно действие (Р-13)
+async function confirmTwice(device: Device, done: string): Promise<void> {
+  await device.eval(`(() => {
+    const button = document.querySelector('.modal .button')
+    button.click()
+    button.click()
+  })()`)
+  await device.waitText(done)
+}
+
+// Исход события. Свой запасной сервер с подставными часами: сдвигаем их вперёд — приём закрыт,
+// сутки на возражение прошли, 7 дней до «окончательно» — без ожидания; отсчёт на сайте — от now
+// сервера. Комната «Рыбалка»: Аня — ведущая, Боря, Вера; на устройства — ссылкой для другого
+// устройства. Три события: ведущая не ставила — решает она; ставила — голосует Вера; все на один
+// исход — «без игры»
+async function outcomes(cdp: Cdp, size: Size, startServer: ServerModule['startServer']) {
+  console.log(`Исход события, ${size.width} px`)
+  const HOUR = 60 * 60 * 1000
+  let shift = 0
+  const server = await startServer({ file: ':memory:', password: PASSWORD, port: 0, now: () => Date.now() + shift })
+  try {
+    const room = await api<{ roomId: string; invite: string; key: string }>(server, '/rooms', '', {
+      password: PASSWORD,
+      name: 'Рыбалка',
+      currency: 'RUB',
+      hostName: 'Аня',
+    })
+    const rooms = `/rooms/${room.roomId}`
+    const join = async (name: string) => {
+      const j = await api<{ memberId: string; key: string }>(server, `${rooms}/join`, '', { invite: room.invite, name })
+      await api(server, `${rooms}/admit`, room.key, { request: j.memberId })
+      return j.key
+    }
+    const hostKey = room.key
+    const boryaKey = await join('Боря')
+    const veraKey = await join('Вера')
+    const open = async (name: string, key: string) => {
+      const { token } = await api<{ token: string }>(server, `${rooms}/device`, key, {})
+      const device = await Device.open(cdp, size, name)
+      await device.goto(`${SITE}#/device/${room.roomId}/${token}?server=${encodeURIComponent(server.url)}`)
+      await device.waitText('Открыть комнату здесь')
+      await device.click('Открыть комнату здесь')
+      await device.waitText('Участники')
+      return device
+    }
+    const host = await open('Аня', hostKey)
+    const borya = await open('Боря', boryaKey)
+    const vera = await open('Вера', veraKey)
+
+    // Событие с приёмом на 3 секунды по часам сервера и ставками
+    const event = async (key: string, condition: string, check: string, bets: [string, string, number][]) => {
+      const closesAt = Date.now() + shift + 3000
+      const { event } = await api<{ event: { id: string } }>(server, `${rooms}/events`, key, { condition, check, closesAt, expectedAt: closesAt + HOUR })
+      for (const [k, outcome, amount] of bets) await api(server, `${rooms}/events/${event.id}/bets`, k, { outcome, amount })
+      return { id: event.id, href: `${SITE}#/room/${room.roomId}/event/${event.id}` }
+    }
+    const pike = await event(boryaKey, 'Боря поймает щуку больше двух килограммов', 'Весы на причале, фото в общий чат', [
+      [boryaKey, '1', 30000],
+      [veraKey, '2', 50000],
+    ])
+    const ten = await event(hostKey, 'К обеду клюнет хотя бы десять рыб', 'Считаем улов в ведре в 14:00', [
+      [hostKey, '1', 40000],
+      [boryaKey, '2', 60000],
+    ])
+    const boat = await event(hostKey, 'Лодку на базе дадут без очереди', 'Кто первым придёт на базу — пишет в чат', [
+      [boryaKey, '1', 20000],
+      [veraKey, '1', 30000],
+    ])
+    shift += HOUR // приём закрыт у всех трёх
+
+    // Автор (Боря) предлагает «Да» — выбор, подтверждение
+    await borya.goto(pike.href)
+    await borya.waitText('Исход ещё не предложен')
+    await borya.click('Да')
+    await borya.click('Предложить исход')
+    await borya.waitText('Ставившие смогут возразить в течение суток')
+    await borya.shot('24-predlozhit-iskhod')
+    await confirmTwice(borya, 'возразить до')
+    await borya.shot('25-iskhod-predlozhen')
+
+    // Вера ставила на «Нет» — возражает с причиной; у Бори появляется само (опрос раз в 5 с)
+    await vera.goto(pike.href)
+    await vera.waitText('возразить до')
+    await vera.click('Возразить')
+    await vera.click('Возразить')
+    await vera.waitText('Нужна причина возражения')
+    await vera.fill('Причина возражения', 'Взвешивали вместе с садком')
+    await vera.click('Возразить')
+    await vera.waitText('Возразить против „Да“?')
+    await confirmTwice(vera, 'Возражение: Вера (вы), Взвешивали вместе с садком')
+    await vera.shot('26-vozrazhenie')
+    await borya.waitText('Возражение: Вера, Взвешивали вместе с садком')
+
+    // Ведущая не ставила — решает она
+    await host.goto(pike.href)
+    await host.waitText('решает ведущий')
+    await host.click('Нет')
+    await host.shot('27-reshenie-vedushchego')
+    await host.click('Решить')
+    await host.waitText('Утвердить „Нет“ решением ведущего?')
+    await confirmTwice(host, 'Утверждён „Нет“ — ведущим')
+    await borya.waitText('Утверждён „Нет“ — ведущим')
+    await borya.shot('28-utverzhden-vyplaty')
+    const objections = await borya.eval<number>(`[...document.querySelectorAll('.outcome-log > li')].filter((li) => li.innerText.startsWith('Возражение')).length`)
+    if (objections !== 1) throw new Error('Двойное нажатие дало возражений: ' + objections)
+
+    // Ведущая ставила — после возражения Бори голосует не ставившая Вера
+    await api(server, `${rooms}/events/${ten.id}/propose`, hostKey, { outcome: '1' })
+    await api(server, `${rooms}/events/${ten.id}/object`, boryaKey, { reason: 'Мальков не считаем' })
+    await vera.goto(ten.href)
+    await vera.waitText('голосуют не ставившие')
+    await vera.waitText('проголосовали 0 из 1')
+    await vera.click('Да')
+    await vera.shot('29-golosovanie')
+    await vera.click('Голосовать')
+    await vera.waitText('Голосовать за „Да“?')
+    await confirmTwice(vera, 'Утверждён „Да“ — голосованием')
+    await vera.shot('30-utverzhden-golosovaniem')
+
+    // Все ставили на «Да», «Да» и утверждён — сутки без возражений: без игры
+    await api(server, `${rooms}/events/${boat.id}/propose`, hostKey, { outcome: '1' })
+    shift += 25 * HOUR
+    await vera.goto(boat.href)
+    await vera.waitText('Утверждён „Да“ — без возражений')
+    await vera.waitText('Без игры: ставки возвращены')
+    await vera.shot('31-bez-igry')
+
+    // Через 7 дней после утверждения — «Окончательно»
+    shift += 7 * 24 * HOUR
+    await borya.waitText('Окончательно.')
+    await borya.shot('32-okonchatelno')
+  } finally {
+    await server.close()
+  }
+}
+
 // Раскладка компьютера: две комнаты, в открытой — два участника; меню развёрнуто и свёрнуто
 async function layout(cdp: Cdp, size: Size, server: RoomsServer) {
   console.log(`Раскладка компьютера, ${size.width} px`)
@@ -621,7 +757,10 @@ async function main(): Promise<void> {
     const launched = await launchChrome(profile)
     chrome = launched.process
     cdp = await Cdp.connect(launched.url)
-    for (const size of SIZES) await scenario(cdp, size, server, module.startServer)
+    for (const size of SIZES) {
+      await scenario(cdp, size, server, module.startServer)
+      await outcomes(cdp, size, module.startServer)
+    }
     for (const size of WIDE) await layout(cdp, size, server)
     console.log('Готово: снимки в', OUT)
   } finally {
