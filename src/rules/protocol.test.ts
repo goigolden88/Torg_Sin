@@ -6,7 +6,11 @@ import {
   isClarifyEventResponse,
   isCreateEventResponse,
   isCreateRoomResponse,
+  isDecideOutcomeResponse,
+  isObjectOutcomeResponse,
   isPlaceBetResponse,
+  isProposeOutcomeResponse,
+  isVoteOutcomeResponse,
   isDeviceLinkResponse,
   isErrorResponse,
   isHealth,
@@ -64,6 +68,22 @@ describe('ответы комнат', () => {
     bets: [{ id: 'B', memberId: 'M', outcome: '1', amount: 100, at: 3 }],
     cancelled: null,
     refunds: [],
+    outcome: null,
+  }
+  const mark = { id: 'P', at: 5, by: 'M', outcome: '1' }
+  const outcome = {
+    status: 'approved',
+    proposal: mark,
+    objectionUntil: 6,
+    objections: [{ id: 'O', at: 5, by: 'N', reason: 'Не так' }],
+    decision: { ...mark, id: 'D', by: 'H' },
+    voters: [],
+    votingUntil: null,
+    votes: [],
+    approved: { outcome: '1', at: 7, how: 'host', by: 'H' },
+    finalAt: 8,
+    void: false,
+    payouts: [{ memberId: 'M', staked: 100, payout: 150, net: 50 }],
   }
 
   it('узнаёт ответ на создание', () => {
@@ -89,6 +109,29 @@ describe('ответы комнат', () => {
     expect(isRoomStateResponse({ ...state, events: [{ ...view, bets: [{ id: 'B', memberId: 'M', outcome: '1' }] }] })).toBe(false)
     expect(isRoomStateResponse({ ...state, events: [{ ...view, cancelled: { at: 4 } }] })).toBe(false)
     expect(isRoomStateResponse({ ...state, events: [{ ...view, refunds: undefined }] })).toBe(false)
+  })
+  it('состояние комнаты: исход события', () => {
+    expect(isRoomStateResponse({ ...state, events: [{ ...view, outcome }] })).toBe(true)
+    const voting = { ...outcome, status: 'voting', decision: null, voters: ['A', 'B'], votingUntil: 9, votes: [{ ...mark, by: 'A' }], approved: null, finalAt: null, payouts: [] }
+    expect(isRoomStateResponse({ ...state, events: [{ ...view, outcome: voting }] })).toBe(true)
+    expect(isRoomStateResponse({ ...state, events: [{ ...view, outcome: undefined }] })).toBe(false)
+    expect(isRoomStateResponse({ ...state, events: [{ ...view, outcome: { ...outcome, status: 'потом' } }] })).toBe(false)
+    expect(isRoomStateResponse({ ...state, events: [{ ...view, outcome: { ...outcome, proposal: null } }] })).toBe(false)
+    expect(isRoomStateResponse({ ...state, events: [{ ...view, outcome: { ...outcome, objections: [{ id: 'O', at: 5, by: 'N' }] } }] })).toBe(false)
+    expect(isRoomStateResponse({ ...state, events: [{ ...view, outcome: { ...outcome, approved: { ...outcome.approved, how: 'жребий' } } }] })).toBe(false)
+    expect(isRoomStateResponse({ ...state, events: [{ ...view, outcome: { ...outcome, payouts: [{ memberId: 'M', payout: 1 }] } }] })).toBe(false)
+    expect(isRoomStateResponse({ ...state, events: [{ ...view, outcome: { ...outcome, void: undefined } }] })).toBe(false)
+  })
+  it('ответы действий с исходом', () => {
+    const v = PROTOCOL_VERSION
+    expect(isProposeOutcomeResponse({ v, proposal: mark })).toBe(true)
+    expect(isProposeOutcomeResponse({ v, proposal: { ...mark, outcome: 1 } })).toBe(false)
+    expect(isObjectOutcomeResponse({ v, objection: { id: 'O', at: 5, by: 'N', reason: 'Не так' } })).toBe(true)
+    expect(isObjectOutcomeResponse({ v, objection: mark })).toBe(false)
+    expect(isDecideOutcomeResponse({ v, decision: mark })).toBe(true)
+    expect(isDecideOutcomeResponse({ decision: mark })).toBe(false)
+    expect(isVoteOutcomeResponse({ v, vote: mark })).toBe(true)
+    expect(isVoteOutcomeResponse({ v, vote: null })).toBe(false)
   })
   it('ответы действий с событиями', () => {
     const v = PROTOCOL_VERSION

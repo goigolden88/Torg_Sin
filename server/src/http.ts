@@ -7,7 +7,7 @@ import {
   type Health,
   type RoomStateResponse,
 } from '../../src/rules/protocol'
-import { checkAmount, checkClarification, checkEventInput, checkReason, eventView } from '../../src/rules/event'
+import { checkAmount, checkClarification, checkEventInput, checkObjection, checkReason, eventView } from '../../src/rules/event'
 import { checkMemberName, checkRoomInput } from '../../src/rules/room'
 import { ulid } from '../../src/rules/ulid'
 import { deriveCreation, hashKey, randomToken, sameText, ULID_PATTERN } from './keys'
@@ -102,7 +102,7 @@ export async function handle(request: Request, deps: RoomsDeps): Promise<Respons
     if (r) return json(r.status, r.body)
   }
   // События-пул: /rooms/<номер>/events и /rooms/<номер>/events/<событие>/<действие>
-  const ev = /^\/rooms\/([^/]+)\/events(?:\/([^/]+)\/(bets|clarify|cancel))?$/.exec(path)
+  const ev = /^\/rooms\/([^/]+)\/events(?:\/([^/]+)\/(bets|clarify|cancel|propose|object|decide|vote))?$/.exec(path)
   if (ev && request.method === 'POST') {
     const r = await eventAction(ev[1], ev[2], ev[3], request, deps)
     return json(r.status, r.body)
@@ -110,7 +110,8 @@ export async function handle(request: Request, deps: RoomsDeps): Promise<Respons
   return notFound()
 }
 
-// POST /rooms/<номер>/events — завести; …/events/<событие>/bets | clarify | cancel
+// POST /rooms/<номер>/events — завести; …/events/<событие>/bets | clarify | cancel;
+// исход — …/propose | object | decide | vote
 async function eventAction(
   roomId: string,
   eventId: string | undefined,
@@ -139,6 +140,24 @@ async function eventAction(
         const text = checkClarification(body.text)
         if (!text.ok) return failure(400, text.error)
         return reply(await deps.act(roomId, { type: 'clarifyEvent', keyHash, event: eventId, text: text.value }))
+      }
+      case 'object': {
+        const reason = checkObjection(body.reason)
+        if (!reason.ok) return failure(400, reason.error)
+        const requestId = requestIdOf(body, deps)
+        if (!requestId) return failure(400, BAD_REQUEST_ID)
+        return reply(await deps.act(roomId, { type: 'objectOutcome', keyHash, event: eventId, reason: reason.value, requestId }))
+      }
+      case 'propose':
+      case 'decide':
+      case 'vote': {
+        if (typeof body.outcome !== 'string' || !body.outcome) return failure(400, NO_OUTCOME)
+        const requestId = requestIdOf(body, deps)
+        if (!requestId) return failure(400, BAD_REQUEST_ID)
+        const a = { keyHash, event: eventId, outcome: body.outcome, requestId }
+        if (action === 'propose') return reply(await deps.act(roomId, { type: 'proposeOutcome', ...a }))
+        if (action === 'decide') return reply(await deps.act(roomId, { type: 'decideOutcome', ...a }))
+        return reply(await deps.act(roomId, { type: 'voteOutcome', ...a }))
       }
       default: {
         const reason = checkReason(body.reason)

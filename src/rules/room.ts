@@ -51,6 +51,15 @@ export type LogEntry =
   | (EntryBase & { type: 'event.clarified'; event: string; text: string })
   // Событие отменено: до закрытия приёма — автором, после — ведущим с причиной; ставки возвращаются
   | (EntryBase & { type: 'event.cancelled'; event: string; reason: string | null })
+  // Исход события (этап 2, event.ts). Автор записи — кто действовал; requestId — номер запроса
+  // телефона: повтор узнаётся по нему. Исход предложен (автор события, ведущий):
+  | (EntryBase & { type: 'outcome.proposed'; event: string; outcome: string; requestId: string })
+  // Возражение ставившего против предложенного исхода, с причиной
+  | (EntryBase & { type: 'outcome.objected'; event: string; reason: string; requestId: string })
+  // Решение ведущего после возражения (ведущий не ставил и не предмет спора)
+  | (EntryBase & { type: 'outcome.decided'; event: string; outcome: string; requestId: string })
+  // Голос не ставившего после возражения (ведущий ставил или он предмет спора)
+  | (EntryBase & { type: 'outcome.voted'; event: string; outcome: string; requestId: string })
 
 export type Member = {
   id: string // номер участника: не привязан к способу входа (Р-03)
@@ -89,6 +98,10 @@ export function applyEntry(state: RoomState | null, e: LogEntry): RoomState | nu
     case 'bet.placed':
     case 'event.clarified':
     case 'event.cancelled':
+    case 'outcome.proposed':
+    case 'outcome.objected':
+    case 'outcome.decided':
+    case 'outcome.voted':
       return state
   }
 }

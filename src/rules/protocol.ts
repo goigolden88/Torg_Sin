@@ -56,14 +56,46 @@ export type Cancellation = { at: number; by: string; reason: string | null }
 // «приём идёт» / «приём закрыт» (по времени сервера) / «отменено»
 export type EventStatus = 'open' | 'closed' | 'cancelled'
 
+// Исход события: предложение, решение ведущего, голос — кто (by), когда, какой исход
+export type OutcomeMark = { id: string; at: number; by: string; outcome: string }
+// Возражение ставившего против предложенного исхода
+export type Objection = { id: string; at: number; by: string; reason: string }
+
+// «сутки на возражение» / «ждёт решения ведущего» / «голосование» / «ждёт суда» (этап 4) /
+// «утверждён» / «окончательный» (7 дней после утверждения без апелляции) — на время сервера
+export type OutcomeStatus = 'proposed' | 'disputed' | 'voting' | 'court' | 'approved' | 'final'
+
+// Как утверждён: сам — сутки без возражения (by — null); ведущим (by — ведущий);
+// голосованием (by — null)
+export type Approval = { outcome: string; at: number; how: 'unopposed' | 'host' | 'vote'; by: string | null }
+
+// Строка выплат по утверждённому исходу (pool.ts, settlePool)
+export type Payout = { memberId: string; staked: number; payout: number; net: number }
+
+export type OutcomeView = {
+  status: OutcomeStatus
+  proposal: OutcomeMark
+  objectionUntil: number // возразить можно до (не включая)
+  objections: Objection[]
+  decision: OutcomeMark | null
+  voters: string[] // кто голосует (не ставили и не предмет спора); голосования нет — пусто
+  votingUntil: number | null // голосование до (не включая)
+  votes: OutcomeMark[]
+  approved: Approval | null
+  finalAt: number | null // станет окончательным (не утверждён — null)
+  void: boolean // «без игры»: каждому — его сумма
+  payouts: Payout[] // по утверждённому исходу; не утверждён или событие отменено — пусто
+}
+
 // Событие в состоянии комнаты: ставки по порядку журнала, уточнения, статус; отменено —
-// refunds: каждому участнику — его сумма
+// refunds: каждому участнику — его сумма; outcome — исход (не предложен — null)
 export type EventView = EventInfo & {
   status: EventStatus
   clarifications: Clarification[]
   bets: Omit<BetInfo, 'event'>[]
   cancelled: Cancellation | null
   refunds: { memberId: string; amount: number }[]
+  outcome: OutcomeView | null
 }
 
 // POST /rooms/<номер>/events — завести событие. outcomes не задан — «Да» и «Нет»; requestId —
@@ -91,6 +123,21 @@ export type ClarifyEventResponse = { v: number; clarification: Clarification }
 // POST /rooms/<номер>/events/<событие>/cancel — отмена; после закрытия приёма — ведущий с причиной
 export type CancelEventRequest = { v?: number; reason?: string }
 export type CancelEventResponse = { v: number; cancelled: Cancellation }
+
+// Исход события. requestId — номер запроса (ULID): повтор с тем же номером — тот же ответ.
+// POST …/events/<событие>/propose — автор события (предмет спора — нет: тогда ведущий;
+// автор молчит 3 дня после «исход ожидается к» — и ведущий), после закрытия приёма
+export type ProposeOutcomeRequest = { v?: number; outcome: string; requestId?: string }
+export type ProposeOutcomeResponse = { v: number; proposal: OutcomeMark }
+// POST …/events/<событие>/object — ставивший, кроме предложившего, сутки после предложения
+export type ObjectOutcomeRequest = { v?: number; reason: string; requestId?: string }
+export type ObjectOutcomeResponse = { v: number; objection: Objection }
+// POST …/events/<событие>/decide — ведущий после возражения, если не ставил и не предмет спора
+export type DecideOutcomeRequest = { v?: number; outcome: string; requestId?: string }
+export type DecideOutcomeResponse = { v: number; decision: OutcomeMark }
+// POST …/events/<событие>/vote — не ставивший и не предмет, если ведущий ставил или он предмет
+export type VoteOutcomeRequest = { v?: number; outcome: string; requestId?: string }
+export type VoteOutcomeResponse = { v: number; vote: OutcomeMark }
 
 // Вход по ссылке (Р-03). Токены — в теле запроса, не в адресе: адреса попадают в журналы.
 // POST /rooms/<номер>/preview — что за комната по ссылке-приглашению: только название и ведущий
@@ -249,17 +296,56 @@ function isBet(r: Record<string, unknown>): boolean {
   return strings(r, 'id', 'memberId', 'outcome') && numbers(r, 'amount', 'at')
 }
 
+function isOutcomeMark(r: Record<string, unknown>): boolean {
+  return strings(r, 'id', 'by', 'outcome') && numbers(r, 'at')
+}
+
+function isObjection(r: Record<string, unknown>): boolean {
+  return strings(r, 'id', 'by', 'reason') && numbers(r, 'at')
+}
+
+const OUTCOME_STATUSES: readonly unknown[] = ['proposed', 'disputed', 'voting', 'court', 'approved', 'final']
+const APPROVALS: readonly unknown[] = ['unopposed', 'host', 'vote']
+
+function isApproval(r: Record<string, unknown>): boolean {
+  return strings(r, 'outcome') && numbers(r, 'at') && APPROVALS.includes(r.how) && (r.by === null || typeof r.by === 'string')
+}
+
+function nullable(x: unknown, item: (r: Record<string, unknown>) => boolean): boolean {
+  const r = record(x)
+  return x === null || (!!r && item(r))
+}
+
+function isOutcomeView(r: Record<string, unknown>): boolean {
+  const proposal = record(r.proposal)
+  return (
+    OUTCOME_STATUSES.includes(r.status) &&
+    !!proposal &&
+    isOutcomeMark(proposal) &&
+    numbers(r, 'objectionUntil') &&
+    list(r.objections, isObjection) &&
+    nullable(r.decision, isOutcomeMark) &&
+    Array.isArray(r.voters) &&
+    r.voters.every((v) => typeof v === 'string') &&
+    (r.votingUntil === null || typeof r.votingUntil === 'number') &&
+    list(r.votes, isOutcomeMark) &&
+    nullable(r.approved, isApproval) &&
+    (r.finalAt === null || typeof r.finalAt === 'number') &&
+    typeof r.void === 'boolean' &&
+    list(r.payouts, (p) => strings(p, 'memberId') && numbers(p, 'staked', 'payout', 'net'))
+  )
+}
+
 function isEventView(x: unknown): boolean {
   const r = record(x)
   if (!r || !isEventInfo(r)) return false
   if (r.status !== 'open' && r.status !== 'closed' && r.status !== 'cancelled') return false
-  const c = record(r.cancelled)
-  const cancelled = r.cancelled === null || (!!c && isCancellation(c))
   return (
-    cancelled &&
+    nullable(r.cancelled, isCancellation) &&
     list(r.clarifications, isClarification) &&
     list(r.bets, isBet) &&
-    list(r.refunds, (f) => strings(f, 'memberId') && numbers(f, 'amount'))
+    list(r.refunds, (f) => strings(f, 'memberId') && numbers(f, 'amount')) &&
+    nullable(r.outcome, isOutcomeView)
   )
 }
 
@@ -285,4 +371,28 @@ export function isCancelEventResponse(x: unknown): x is CancelEventResponse {
   const r = versioned(x)
   const c = r && record(r.cancelled)
   return !!c && isCancellation(c)
+}
+
+function markIn(x: unknown, field: string): boolean {
+  const r = versioned(x)
+  const m = r && record(r[field])
+  return !!m && isOutcomeMark(m)
+}
+
+export function isProposeOutcomeResponse(x: unknown): x is ProposeOutcomeResponse {
+  return markIn(x, 'proposal')
+}
+
+export function isObjectOutcomeResponse(x: unknown): x is ObjectOutcomeResponse {
+  const r = versioned(x)
+  const o = r && record(r.objection)
+  return !!o && isObjection(o)
+}
+
+export function isDecideOutcomeResponse(x: unknown): x is DecideOutcomeResponse {
+  return markIn(x, 'decision')
+}
+
+export function isVoteOutcomeResponse(x: unknown): x is VoteOutcomeResponse {
+  return markIn(x, 'vote')
 }

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  AUTHOR_SILENCE,
   BAD_AMOUNT,
   BAD_OUTCOMES,
   BAD_SUBJECT,
@@ -7,12 +8,23 @@ import {
   checkClarification,
   checkEventInput,
   checkEventTimes,
+  checkObjection,
   checkOutcomes,
   checkReason,
   CLOSE_PASSED,
+  eventOutcome,
   eventStatus,
   eventView,
+  eventVoters,
   EXPECTED_EARLY,
+  FINAL_TIME,
+  hostDecides,
+  LONG_OBJECTION,
+  mayPropose,
+  NEED_OBJECTION,
+  OBJECTION_TIME,
+  VOTING_TIME,
+  voteWinner,
   LONG_CHECK,
   LONG_CLARIFICATION,
   LONG_CONDITION,
@@ -211,5 +223,195 @@ describe('события из журнала', () => {
     expect(sameEvent(e, 'B', input)).toBe(false)
     expect(sameEvent(e, 'A', { ...input, closesAt: 2_001 })).toBe(false)
     expect(sameEvent(e, 'A', { ...input, outcomes: [...input.outcomes, { id: '3', title: OTHER }] })).toBe(false)
+  })
+})
+
+describe('исход события', () => {
+  const HOUR = 60 * 60 * 1000
+  const DAY = 24 * HOUR
+  const P = 10_000 // предложено
+  // Ведущий H; участники A (автор), B, C, D; приём до 2 000, исход к 3 000
+  const room: LogEntry[] = [
+    { id: 'R', at: 0, memberId: 'H', type: 'room.created', roomId: 'R', name: 'Дача', currency: 'RUB' },
+    ...['H', 'A', 'B', 'C', 'D'].map((m): LogEntry => ({ id: 'M' + m, at: 0, memberId: 'H', type: 'member.added', member: m, name: m })),
+  ]
+  function created(subject: string | null = null): LogEntry {
+    return {
+      id: 'E1',
+      at: 1_000,
+      memberId: 'A',
+      type: 'event.created',
+      condition: 'Условие',
+      check: 'Как проверяем',
+      outcomes: [
+        { id: '1', title: 'Да' },
+        { id: '2', title: 'Нет' },
+      ],
+      closesAt: 2_000,
+      expectedAt: 3_000,
+      subject,
+      requestId: 'Q0',
+    }
+  }
+  function bet(who: string, outcome: string, amount: number): LogEntry {
+    return { id: 'B' + who + outcome, at: 1_500, memberId: who, type: 'bet.placed', event: 'E1', outcome, amount, requestId: 'QB' + who + outcome }
+  }
+  const propose = (who: string, outcome: string, at = P): LogEntry => ({ id: 'P' + who, at, memberId: who, type: 'outcome.proposed', event: 'E1', outcome, requestId: 'QP' + who })
+  const object = (who: string, at: number): LogEntry => ({ id: 'O' + who + at, at, memberId: who, type: 'outcome.objected', event: 'E1', reason: 'Не так', requestId: 'QO' + who + at })
+  const decide = (who: string, outcome: string, at: number): LogEntry => ({ id: 'D' + who + at, at, memberId: who, type: 'outcome.decided', event: 'E1', outcome, requestId: 'QD' + who + at })
+  const vote = (who: string, outcome: string, at: number): LogEntry => ({ id: 'V' + who + at, at, memberId: who, type: 'outcome.voted', event: 'E1', outcome, requestId: 'QV' + who + at })
+  // A — 300 на «Да», B — 100 на «Нет»: ведущий не ставил
+  const base = [...room, created(), bet('A', '1', 300), bet('B', '2', 100)]
+  const outcomeAt = (log: LogEntry[], now: number) => eventOutcome(roomEvents(log)[0], now)
+
+  it('не предложен — исхода нет', () => {
+    expect(outcomeAt(base, P)).toBeNull()
+    expect(eventView(roomEvents(base)[0], P).outcome).toBeNull()
+  })
+
+  it('сутки без возражения — утверждён сам, по времени сервера; через 7 дней — окончательный', () => {
+    const log = [...base, propose('A', '1')]
+    expect(OBJECTION_TIME).toBe(DAY)
+    expect(FINAL_TIME).toBe(7 * DAY)
+    expect(outcomeAt(log, P + DAY - 1)).toMatchObject({ status: 'proposed', objectionUntil: P + DAY, approved: null, finalAt: null, payouts: [] })
+    const approved = outcomeAt(log, P + DAY)
+    expect(approved).toMatchObject({
+      status: 'approved',
+      proposal: { id: 'PA', at: P, by: 'A', outcome: '1' },
+      approved: { outcome: '1', at: P + DAY, how: 'unopposed', by: null },
+      finalAt: P + DAY + FINAL_TIME,
+      void: false,
+      payouts: [
+        { memberId: 'A', staked: 300, payout: 400, net: 100 },
+        { memberId: 'B', staked: 100, payout: 0, net: -100 },
+      ],
+    })
+    expect(outcomeAt(log, P + DAY + FINAL_TIME - 1)?.status).toBe('approved')
+    expect(outcomeAt(log, P + DAY + FINAL_TIME)?.status).toBe('final')
+    expect(JSON.stringify(approved)).not.toContain('QP')
+  })
+
+  it('без игры — каждому его сумма', () => {
+    const log = [...room, created(), bet('A', '1', 300), bet('B', '1', 100), propose('A', '1')]
+    expect(outcomeAt(log, P + DAY)).toMatchObject({
+      void: true,
+      payouts: [
+        { memberId: 'A', payout: 300, net: 0 },
+        { memberId: 'B', payout: 100, net: 0 },
+      ],
+    })
+  })
+
+  it('возражение, ведущий не ставил — ждёт решения ведущего; ведущий решил — утверждён им', () => {
+    const log = [...base, propose('A', '1'), object('B', P + HOUR)]
+    const roomEvent = roomEvents(log)[0]
+    expect(hostDecides(roomEvent)).toBe(true)
+    expect(eventVoters(roomEvent)).toEqual([])
+    // Сутки прошли — сам не утверждается
+    expect(outcomeAt(log, P + 10 * DAY)).toMatchObject({ status: 'disputed', approved: null, voters: [], votingUntil: null })
+    const decided = [...log, decide('H', '2', P + 2 * DAY)]
+    expect(outcomeAt(decided, P + 2 * DAY)).toMatchObject({
+      status: 'approved',
+      objections: [{ id: 'OB' + (P + HOUR), at: P + HOUR, by: 'B', reason: 'Не так' }],
+      decision: { by: 'H', outcome: '2', at: P + 2 * DAY },
+      approved: { outcome: '2', at: P + 2 * DAY, how: 'host', by: 'H' },
+      payouts: [
+        { memberId: 'A', payout: 0 },
+        { memberId: 'B', payout: 400 },
+      ],
+    })
+    expect(outcomeAt(decided, P + 9 * DAY)?.status).toBe('final')
+  })
+
+  it('ведущий ставил — голосуют не ставившие и не предмет; все проголосовали — итог сразу', () => {
+    const log = [...base, bet('H', '1', 50), propose('A', '1'), object('B', P + HOUR)]
+    const e = roomEvents(log)[0]
+    expect(hostDecides(e)).toBe(false)
+    expect(eventVoters(e)).toEqual(['C', 'D'])
+    expect(VOTING_TIME).toBe(72 * HOUR)
+    expect(outcomeAt(log, P + 2 * HOUR)).toMatchObject({ status: 'voting', voters: ['C', 'D'], votingUntil: P + HOUR + VOTING_TIME })
+    const one = [...log, vote('C', '2', P + 2 * HOUR)]
+    expect(outcomeAt(one, P + 3 * HOUR)).toMatchObject({ status: 'voting', votes: [{ by: 'C', outcome: '2' }] })
+    const all = [...one, vote('D', '2', P + 3 * HOUR)]
+    expect(outcomeAt(all, P + 3 * HOUR)).toMatchObject({ status: 'approved', approved: { outcome: '2', at: P + 3 * HOUR, how: 'vote', by: null } })
+  })
+
+  it('голосование: 72 часа — большинство поданных; ничья или никто не голосовал — ждёт суда', () => {
+    const log = [...base, bet('H', '1', 50), propose('A', '1'), object('B', P)]
+    const until = P + VOTING_TIME
+    const one = [...log, vote('C', '2', P + HOUR)]
+    expect(outcomeAt(one, until - 1)?.status).toBe('voting')
+    expect(outcomeAt(one, until)).toMatchObject({ status: 'approved', approved: { outcome: '2', at: until, how: 'vote' } })
+    expect(outcomeAt(log, until)).toMatchObject({ status: 'court', approved: null, payouts: [] })
+    const tie = [...log, vote('C', '1', P + HOUR), vote('D', '2', P + HOUR)]
+    expect(outcomeAt(tie, P + HOUR)).toMatchObject({ status: 'court', approved: null, finalAt: null })
+    expect(outcomeAt(tie, P + 100 * DAY)?.status).toBe('court')
+  })
+
+  it('ведущий — предмет спора: голосование; некому голосовать — сразу ждёт суда', () => {
+    // Ставили все, кроме ведущего; ведущий — предмет
+    const log = [...room, created('H'), bet('A', '1', 1), bet('B', '2', 1), bet('C', '1', 1), bet('D', '2', 1), propose('A', '1'), object('B', P)]
+    const e = roomEvents(log)[0]
+    expect(hostDecides(e)).toBe(false)
+    expect(eventVoters(e)).toEqual([])
+    expect(outcomeAt(log, P)).toMatchObject({ status: 'court', voters: [] })
+  })
+
+  it('записи не по правилам не действуют: возражение до предложения, второе от того же, решение без возражения, второй голос', () => {
+    const early = [...base, object('B', P - 1), decide('H', '2', P - 1), propose('A', '1')]
+    expect(outcomeAt(early, P)).toMatchObject({ status: 'proposed', objections: [], decision: null })
+    const log = [...base, bet('H', '1', 50), propose('A', '1'), propose('H', '2'), object('B', P), object('B', P + 1)]
+    const votes = [...log, vote('C', '1', P + 1), vote('C', '2', P + 2), vote('A', '2', P + 2)]
+    const view = outcomeAt(votes, P + 3)
+    expect(view?.proposal).toMatchObject({ by: 'A', outcome: '1' })
+    expect(view?.objections.length).toBe(1)
+    // Голос не голосующего (A ставил) не считается; у C — первый
+    expect(view?.votes).toEqual([{ id: 'VC' + (P + 1), at: P + 1, by: 'C', outcome: '1' }])
+  })
+
+  it('голосуют участники на миг первого возражения: впущенный позже — нет', () => {
+    const later: LogEntry = { id: 'ME', at: P + 1, memberId: 'H', type: 'member.added', member: 'E', name: 'E' }
+    const log = [...base, bet('H', '1', 50), propose('A', '1'), object('B', P), later, object('A', P + 2)]
+    expect(eventVoters(roomEvents(log)[0])).toEqual(['C', 'D'])
+  })
+
+  it('отменённое событие — без выплат по исходу (возврат — в refunds)', () => {
+    const log = [...base, propose('A', '1'), { id: 'X', at: P + 1, memberId: 'H', type: 'event.cancelled', event: 'E1', reason: 'Ошиблись' } as LogEntry]
+    const view = eventView(roomEvents(log)[0], P + DAY)
+    expect(view.outcome).toMatchObject({ payouts: [], void: false })
+    expect(view.refunds.length).toBe(2)
+  })
+
+  it('кто предлагает: автор; автор — предмет спора — ведущий; автор молчит 3 дня — и ведущий; предмет — никогда', () => {
+    const e = roomEvents(base)[0]
+    expect(AUTHOR_SILENCE).toBe(3 * DAY)
+    expect(mayPropose(e, 'A', 2_000)).toBe(true)
+    expect(mayPropose(e, 'H', 3_000 + AUTHOR_SILENCE - 1)).toBe(false)
+    expect(mayPropose(e, 'H', 3_000 + AUTHOR_SILENCE)).toBe(true)
+    expect(mayPropose(e, 'B', 3_000 + AUTHOR_SILENCE)).toBe(false)
+    const own = roomEvents([...room, { ...created('A') }])[0]
+    expect(mayPropose(own, 'A', 2_000)).toBe(false)
+    expect(mayPropose(own, 'H', 2_000)).toBe(true)
+    const aboutB = roomEvents([...room, created('B')])[0]
+    expect(mayPropose(aboutB, 'B', 3_000 + AUTHOR_SILENCE)).toBe(false)
+    const aboutHost = roomEvents([...room, created('H')])[0]
+    expect(mayPropose(aboutHost, 'H', 3_000 + AUTHOR_SILENCE)).toBe(false)
+  })
+
+  it('большинство поданных голосов; ничья и пусто — нет победителя', () => {
+    const m = (outcome: string) => ({ id: 'V', at: 0, by: 'X', outcome })
+    expect(voteWinner([m('1'), m('2'), m('1')])).toBe('1')
+    expect(voteWinner([m('3')])).toBe('3')
+    expect(voteWinner([m('1'), m('2')])).toBeNull()
+    expect(voteWinner([m('1'), m('1'), m('2'), m('2'), m('3')])).toBeNull()
+    expect(voteWinner([])).toBeNull()
+  })
+
+  it('причина возражения — не пустая, до 300 знаков', () => {
+    expect(checkObjection(' Видео смонтировано ')).toEqual({ ok: true, value: 'Видео смонтировано' })
+    expect(checkObjection('  ')).toEqual({ ok: false, error: NEED_OBJECTION })
+    expect(checkObjection(undefined)).toEqual({ ok: false, error: NEED_OBJECTION })
+    expect(checkObjection('я'.repeat(300))).toMatchObject({ ok: true })
+    expect(checkObjection('я'.repeat(301))).toEqual({ ok: false, error: LONG_OBJECTION })
   })
 })

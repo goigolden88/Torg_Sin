@@ -22,17 +22,24 @@ import {
 import {
   BAD_SUBJECT,
   betOf,
+  betOn,
   checkEventTimes,
   eventBank,
+  eventOutcome,
   eventStatus,
+  eventVoters,
+  hostDecides,
   infoOf,
+  markOut,
+  mayPropose,
   NEED_REASON,
+  objectionOut,
   roomEvents,
   sameEvent,
   type EventInput,
   type EventState,
 } from '../../src/rules/event'
-import type { BetInfo, Cancellation, Clarification, EventInfo } from '../../src/rules/protocol'
+import type { BetInfo, Cancellation, Clarification, EventInfo, Objection, OutcomeMark } from '../../src/rules/protocol'
 import { ulid } from '../../src/rules/ulid'
 import { deriveJoinKey, hashKey, randomToken, sameText } from './keys'
 
@@ -65,6 +72,25 @@ export const AUTHOR_ONLY = 'Это может только автор событ
 export const EVENT_TAKEN = 'Этот номер запроса уже занят другим событием'
 export const BET_TAKEN = 'Этот номер запроса уже занят другой ставкой'
 export const BANK_FULL = 'Банк события слишком велик для такой ставки'
+// Исход события
+export const BETS_OPEN = 'Приём ставок ещё идёт — исход предлагают после закрытия'
+export const PROPOSER_ONLY = 'Исход предлагает автор события, а если он молчит 3 дня после «исход ожидается к» — ведущий'
+export const SUBJECT_SILENT = 'Предмет спора не объявляет исход'
+export const ALREADY_PROPOSED = 'Исход уже предложен'
+export const NOT_PROPOSED = 'Исход ещё не предложен'
+export const OWN_PROPOSAL = 'Свой исход не оспаривают'
+export const BETTORS_ONLY = 'Возразить может только тот, кто ставил'
+export const ALREADY_OBJECTED = 'Вы уже возразили'
+export const OBJECTION_OVER = 'Сутки на возражение прошли'
+export const ALREADY_APPROVED = 'Исход уже утверждён'
+export const NO_OBJECTION = 'Возражений нет — решать нечего'
+export const HOST_INTERESTED = 'Ведущий ставил или он предмет спора — исход решает голосование'
+export const ALREADY_DECIDED = 'Ведущий уже решил'
+export const NO_VOTING = 'Голосования нет: возражение решает ведущий'
+export const VOTERS_ONLY = 'Голосуют только те, кто не ставил и не предмет спора'
+export const ALREADY_VOTED = 'Вы уже проголосовали'
+export const VOTING_OVER = 'Голосование закончено'
+export const REQUEST_USED = 'Этот номер запроса уже занят другим действием'
 
 // Ссылка для другого устройства живёт сутки
 export const DEVICE_LINK_TTL = 24 * 60 * 60 * 1000
@@ -194,6 +220,11 @@ export type RoomAction =
   | { type: 'placeBet'; keyHash: string; event: string; outcome: string; amount: number; requestId: string }
   | { type: 'clarifyEvent'; keyHash: string; event: string; text: string }
   | { type: 'cancelEvent'; keyHash: string; event: string; reason: string | null }
+  // Исход события: сроки — по времени сервера в момент запроса (будильника нет)
+  | { type: 'proposeOutcome'; keyHash: string; event: string; outcome: string; requestId: string }
+  | { type: 'objectOutcome'; keyHash: string; event: string; reason: string; requestId: string }
+  | { type: 'decideOutcome'; keyHash: string; event: string; outcome: string; requestId: string }
+  | { type: 'voteOutcome'; keyHash: string; event: string; outcome: string; requestId: string }
 
 export type JoinStatus = JoinRequest['status']
 
@@ -211,6 +242,10 @@ export type ActionValues = {
   placeBet: { bet: BetInfo }
   clarifyEvent: { clarification: Clarification }
   cancelEvent: { cancelled: Cancellation }
+  proposeOutcome: { proposal: OutcomeMark }
+  objectOutcome: { objection: Objection }
+  decideOutcome: { decision: OutcomeMark }
+  voteOutcome: { vote: OutcomeMark }
 }
 
 export type ActionType = RoomAction['type']
@@ -264,6 +299,18 @@ export async function act<K extends ActionType>(
       break
     case 'cancelEvent':
       r = await cancelEvent(storage, a, now)
+      break
+    case 'proposeOutcome':
+      r = await proposeOutcome(storage, a, now)
+      break
+    case 'objectOutcome':
+      r = await objectOutcome(storage, a, now)
+      break
+    case 'decideOutcome':
+      r = await decideOutcome(storage, a, now)
+      break
+    case 'voteOutcome':
+      r = await voteOutcome(storage, a, now)
       break
   }
   return r as ActionResult<K>
@@ -544,4 +591,126 @@ async function cancelEvent(
   }
   await append(storage, [{ id: ulid(now), at: now, memberId: c.me, type: 'event.cancelled', event: c.event.id, reason: a.reason }])
   return ok({ cancelled: { at: now, by: c.me, reason: a.reason } })
+}
+
+// Действие с исходом уже было с этим номером запроса: то же (участник, событие, содержимое) —
+// прежняя запись, ответ тот же и без новой записи; другое — номер занят. Не было — null
+function repeated<T extends { by: string; requestId: string }>(
+  events: readonly EventState[],
+  items: (e: EventState) => readonly T[],
+  requestId: string,
+  same: (e: EventState, x: T) => boolean,
+): { ok: true; value: T } | Failure | null {
+  for (const e of events) {
+    const x = items(e).find((i) => i.requestId === requestId)
+    if (x) return same(e, x) ? { ok: true, value: x } : fail(409, REQUEST_USED)
+  }
+  return null
+}
+
+type OutcomeAction = { keyHash: string; event: string; outcome: string; requestId: string }
+
+// Участник, события комнаты и событие по номеру — для действия с исходом. Повтор узнаётся
+// до проверки события: ответ потерялся — повтор получит тот же ответ и после сроков
+async function outcomeCaller(
+  storage: RoomStorage,
+  keyHash: string,
+): Promise<(Caller & { events: EventState[] }) | Failure> {
+  const c = await caller(storage, keyHash)
+  return c.ok ? { ...c, events: roomEvents(c.log) } : c
+}
+
+// Событие для действия с исходом: есть и не отменено
+function liveEvent(events: readonly EventState[], id: string): { ok: true; event: EventState } | Failure {
+  const event = events.find((e) => e.id === id)
+  if (!event) return fail(404, NO_EVENT)
+  if (event.cancelled) return fail(409, EVENT_CANCELLED)
+  return { ok: true, event }
+}
+
+// Предложить исход: после закрытия приёма — автор события (не предмет спора); автор — предмет
+// или молчит 3 дня после «исход ожидается к» — ведущий. Одно предложение на событие
+async function proposeOutcome(storage: RoomStorage, a: OutcomeAction, now: number): Promise<ActionResult<'proposeOutcome'>> {
+  const c = await outcomeCaller(storage, a.keyHash)
+  if (!c.ok) return c
+  const again = repeated(c.events, (e) => (e.proposal ? [e.proposal] : []), a.requestId, (e, x) => e.id === a.event && x.by === c.me && x.outcome === a.outcome)
+  if (again) return again.ok ? ok({ proposal: markOut(again.value) }) : again
+  const live = liveEvent(c.events, a.event)
+  if (!live.ok) return live
+  const { event } = live
+  if (event.proposal) return fail(409, ALREADY_PROPOSED)
+  if (eventStatus(event, now) === 'open') return fail(409, BETS_OPEN)
+  if (c.me === event.subjectId) return fail(403, SUBJECT_SILENT)
+  if (!mayPropose(event, c.me, now)) return fail(403, PROPOSER_ONLY)
+  if (!event.outcomes.some((o) => o.id === a.outcome)) return fail(400, NO_OUTCOME)
+  const proposal: OutcomeMark = { id: ulid(now), at: now, by: c.me, outcome: a.outcome }
+  await append(storage, [{ id: proposal.id, at: now, memberId: c.me, type: 'outcome.proposed', event: event.id, outcome: a.outcome, requestId: a.requestId }])
+  return ok({ proposal })
+}
+
+// Возразить: ставивший (кроме предложившего), сутки после предложения, с причиной; одно возражение
+// от участника. Утверждённый ведущим исход уже не оспорить — дальше апелляция (этап 4)
+async function objectOutcome(
+  storage: RoomStorage,
+  a: { keyHash: string; event: string; reason: string; requestId: string },
+  now: number,
+): Promise<ActionResult<'objectOutcome'>> {
+  const c = await outcomeCaller(storage, a.keyHash)
+  if (!c.ok) return c
+  const again = repeated(c.events, (e) => e.objections, a.requestId, (e, x) => e.id === a.event && x.by === c.me && x.reason === a.reason)
+  if (again) return again.ok ? ok({ objection: objectionOut(again.value) }) : again
+  const live = liveEvent(c.events, a.event)
+  if (!live.ok) return live
+  const { event } = live
+  if (!event.proposal) return fail(409, NOT_PROPOSED)
+  if (c.me === event.proposal.by) return fail(403, OWN_PROPOSAL)
+  if (!betOn(event, c.me)) return fail(403, BETTORS_ONLY)
+  if (event.objections.some((o) => o.by === c.me)) return fail(409, ALREADY_OBJECTED)
+  const view = eventOutcome(event, now)
+  if (view && now >= view.objectionUntil) return fail(409, OBJECTION_OVER)
+  if (view?.approved) return fail(409, ALREADY_APPROVED)
+  const objection: Objection = { id: ulid(now), at: now, by: c.me, reason: a.reason }
+  await append(storage, [{ id: objection.id, at: now, memberId: c.me, type: 'outcome.objected', event: event.id, reason: a.reason, requestId: a.requestId }])
+  return ok({ objection })
+}
+
+// Решение ведущего после возражения: любой исход события; только если ведущий не ставил и не
+// предмет спора (иначе — голосование). Одно решение
+async function decideOutcome(storage: RoomStorage, a: OutcomeAction, now: number): Promise<ActionResult<'decideOutcome'>> {
+  const c = await outcomeCaller(storage, a.keyHash)
+  if (!c.ok) return c
+  const again = repeated(c.events, (e) => (e.decision ? [e.decision] : []), a.requestId, (e, x) => e.id === a.event && x.by === c.me && x.outcome === a.outcome)
+  if (again) return again.ok ? ok({ decision: markOut(again.value) }) : again
+  const live = liveEvent(c.events, a.event)
+  if (!live.ok) return live
+  const { event } = live
+  if (c.me !== c.state.hostId) return fail(403, HOST_ONLY)
+  if (event.objections.length === 0) return fail(409, NO_OBJECTION)
+  if (!hostDecides(event)) return fail(403, HOST_INTERESTED)
+  if (event.decision) return fail(409, ALREADY_DECIDED)
+  if (!event.outcomes.some((o) => o.id === a.outcome)) return fail(400, NO_OUTCOME)
+  const decision: OutcomeMark = { id: ulid(now), at: now, by: c.me, outcome: a.outcome }
+  await append(storage, [{ id: decision.id, at: now, memberId: c.me, type: 'outcome.decided', event: event.id, outcome: a.outcome, requestId: a.requestId }])
+  return ok({ decision })
+}
+
+// Голос: ведущий ставил или он предмет спора — после возражения голосуют не ставившие и не предмет
+// (участники на миг первого возражения); 72 часа или пока не проголосуют все; голос — один
+async function voteOutcome(storage: RoomStorage, a: OutcomeAction, now: number): Promise<ActionResult<'voteOutcome'>> {
+  const c = await outcomeCaller(storage, a.keyHash)
+  if (!c.ok) return c
+  const again = repeated(c.events, (e) => e.votes, a.requestId, (e, x) => e.id === a.event && x.by === c.me && x.outcome === a.outcome)
+  if (again) return again.ok ? ok({ vote: markOut(again.value) }) : again
+  const live = liveEvent(c.events, a.event)
+  if (!live.ok) return live
+  const { event } = live
+  if (event.objections.length === 0) return fail(409, NO_OBJECTION)
+  if (hostDecides(event)) return fail(409, NO_VOTING)
+  if (!eventVoters(event).includes(c.me)) return fail(403, VOTERS_ONLY)
+  if (event.votes.some((v) => v.by === c.me)) return fail(409, ALREADY_VOTED)
+  if (eventOutcome(event, now)?.status !== 'voting') return fail(409, VOTING_OVER)
+  if (!event.outcomes.some((o) => o.id === a.outcome)) return fail(400, NO_OUTCOME)
+  const vote: OutcomeMark = { id: ulid(now), at: now, by: c.me, outcome: a.outcome }
+  await append(storage, [{ id: vote.id, at: now, memberId: c.me, type: 'outcome.voted', event: event.id, outcome: a.outcome, requestId: a.requestId }])
+  return ok({ vote })
 }
