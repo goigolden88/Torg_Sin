@@ -1,5 +1,6 @@
 // Снимки экранов для отчёта PR (Р-10: каждый экран — на 390 и 1280 px; раскладка компьютера —
-// меню развёрнуто и свёрнуто — ещё и на 1920 px): npm run shots.
+// меню развёрнуто и свёрнуто — ещё и на 1920 px; событие — на 1024, 1280, 1440, 1536 и 1920 px
+// с проверкой, что оно во всю свою ширину и по центру): npm run shots.
 // Собирает сайт, поднимает vite preview (порт 4173) и запасной сервер комнат (server/node) в памяти
 // с выдуманным паролем, затем ведёт Chrome без окна по сценарию «ведущий создаёт комнату → друг
 // просится → ведущий впускает…»: у каждого «устройства» своё хранилище (отдельный контекст
@@ -25,6 +26,14 @@ const SIZES: Size[] = [
 const WIDE: Size[] = [SIZES[1], { name: '1920', width: 1920, height: 1080 }]
 // Узкий компьютер: событие с развёрнутым меню должно получить свою ширину (≥ 640 px)
 const LAPTOP: Size = { name: '1024', width: 1024, height: 768 }
+// Событие на ширинах ноутбука и монитора: карточка — во всю свою ширину и по центру (#30)
+const EVENT_WIDTHS: Size[] = [
+  LAPTOP,
+  SIZES[1],
+  { name: '1440', width: 1440, height: 900 },
+  { name: '1536', width: 1536, height: 864 },
+  WIDE[1],
+]
 const TIMEOUT = 20_000 // ожидание экрана: опрос сервера — раз в 5 секунд
 
 type RoomsServer = { url: string; close: () => Promise<void> }
@@ -243,6 +252,13 @@ class Device {
     const path = join(OUT, `${this.size.name}-${file}.png`)
     await writeFile(path, Buffer.from(data, 'base64'))
     console.log('  снимок', path)
+  }
+
+  // Сменить ширину окна (раскладка события на ширинах компьютера)
+  async resize(size: Size): Promise<void> {
+    this.size = size
+    await this.metrics(size.height)
+    await sleep(200)
   }
 
   // Снимок на другой ширине (событие на 1024 px), затем — обратно
@@ -816,6 +832,143 @@ async function layout(cdp: Cdp, size: Size, server: RoomsServer) {
   if (await host.eval<string | null>(`localStorage.getItem('torgsin.navCollapsed')`)) throw new Error('Развёрнутое меню не запомнилось')
 }
 
+// Где стоит карточка открытого: ширина, поля слева и справа от неё до краёв области справа от
+// меню, доступная ширина (содержимое .main без полей), список и «Назад», прокрутка вбок; на
+// событии — график и таблица выплат внутри карточки
+type Placement = {
+  card: number
+  room: number
+  gapLeft: number
+  gapRight: number
+  list: boolean
+  back: boolean
+  scroll: number
+  inside: boolean
+  table: boolean
+}
+
+const PLACEMENT = `(() => {
+  const card = document.querySelector('.detail > .card')
+  const main = document.querySelector('.main')
+  const navRight = document.querySelector('.nav').getBoundingClientRect().right
+  const page = document.documentElement.clientWidth
+  const box = card.getBoundingClientRect()
+  const style = getComputedStyle(main)
+  const room = main.getBoundingClientRect().width - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight)
+  const parts = [...card.querySelectorAll('.chart-frame, .payouts')].map((el) => el.getBoundingClientRect())
+  const row = card.querySelector('.payouts tr')
+  return {
+    card: Math.round(box.width),
+    room: Math.round(room),
+    gapLeft: Math.round(box.left - navRight),
+    gapRight: Math.round(page - box.right),
+    list: document.querySelector('.rooms .list').offsetParent !== null,
+    back: [...card.querySelectorAll('a')].some((a) => a.offsetParent !== null && a.innerText.includes('Назад')),
+    scroll: document.documentElement.scrollWidth - page,
+    inside: parts.every((r) => r.left >= box.left - 0.5 && r.right <= box.right + 0.5),
+    table: !row || getComputedStyle(row).display === 'table-row',
+  }
+})()`
+
+// Событие и «Новое событие» на компьютере (#30): на 1024–1920 px, меню развёрнуто и свёрнуто,
+// карточка — во всю свою ширину (≈ 720 px) или всё доступное, если меньше, по центру области
+// справа от меню; списка комнат нет, «Назад» есть; график и выплаты — внутри карточки, таблицей.
+// Событие с графиком и утверждённым исходом с выплатами — на своём сервере с подставными часами
+async function eventWidth(cdp: Cdp, startServer: ServerModule['startServer']) {
+  console.log('Ширина события на компьютере')
+  const HOUR = 60 * 60 * 1000
+  let shift = 0
+  const server = await startServer({ file: ':memory:', password: PASSWORD, port: 0, now: () => Date.now() + shift })
+  try {
+    const room = await api<{ roomId: string; invite: string; key: string }>(server, '/rooms', '', {
+      password: PASSWORD,
+      name: 'Рыбалка',
+      currency: 'RUB',
+      hostName: 'Аня',
+    })
+    const rooms = `/rooms/${room.roomId}`
+    const j = await api<{ memberId: string; key: string }>(server, `${rooms}/join`, '', { invite: room.invite, name: 'Боря' })
+    await api(server, `${rooms}/admit`, room.key, { request: j.memberId })
+    const closesAt = Date.now() + 3000
+    const { event } = await api<{ event: { id: string } }>(server, `${rooms}/events`, room.key, {
+      condition: 'К обеду клюнет хотя бы десять рыб',
+      check: 'Считаем улов в ведре в 14:00',
+      closesAt,
+      expectedAt: closesAt + HOUR,
+    })
+    await api(server, `${rooms}/events/${event.id}/bets`, room.key, { outcome: '1', amount: 40000 })
+    await sleep(700) // точки графика — порознь по времени
+    await api(server, `${rooms}/events/${event.id}/bets`, j.key, { outcome: '2', amount: 60000 })
+    shift += HOUR // приём закрыт
+    await api(server, `${rooms}/events/${event.id}/propose`, room.key, { outcome: '1' })
+    shift += 25 * HOUR // сутки без возражений — утверждён, выплаты
+
+    const { token } = await api<{ token: string }>(server, `${rooms}/device`, room.key, {})
+    const host = await Device.open(cdp, SIZES[0], 'Аня')
+    await host.goto(`${SITE}#/device/${room.roomId}/${token}?server=${encodeURIComponent(server.url)}`)
+    await host.waitText('Открыть комнату здесь')
+    await host.click('Открыть комнату здесь')
+    await host.waitText('Участники')
+    const eventHref = `${SITE}#/room/${room.roomId}/event/${event.id}`
+    const newHref = `${SITE}#/room/${room.roomId}/event/new`
+    await host.goto(eventHref)
+    await host.waitText('Утверждён „Да“ — без возражений')
+    await host.waitCount('.payouts', 1)
+    await host.waitCount('.chart-plot', 1)
+    // Телефон — как было
+    const phone = await host.eval<Placement>(PLACEMENT)
+    if (phone.scroll > 0) throw new Error('Событие на 390 px: прокрутка вбок ' + JSON.stringify(phone))
+    await host.shot('33-sobytie-shirina')
+
+    const problems: string[] = []
+    const check = async (where: string) => {
+      const p = await host.eval<Placement>(PLACEMENT)
+      console.log(`  ${where}: ${JSON.stringify(p)}`)
+      const want = Math.min(720, p.room)
+      if (Math.abs(p.card - want) > 1) problems.push(`${where}: ширина ${p.card}, а нужно ${want}`)
+      if (Math.abs(p.gapLeft - p.gapRight) > 2) problems.push(`${where}: не по центру — слева ${p.gapLeft}, справа ${p.gapRight}`)
+      if (p.list) problems.push(`${where}: виден список комнат`)
+      if (!p.back) problems.push(`${where}: нет «Назад»`)
+      if (p.scroll > 0) problems.push(`${where}: прокрутка вбок ${p.scroll} px`)
+      if (!p.inside) problems.push(`${where}: график или выплаты вылезают из карточки`)
+      if (!p.table) problems.push(`${where}: выплаты не таблицей`)
+    }
+    const nav = (collapsed: boolean) =>
+      host.eval(`(() => {
+        if (document.querySelector('.app').classList.contains('nav-collapsed') !== ${collapsed}) document.querySelector('.nav-toggle').click()
+      })()`)
+    const open = async (href: string, text: string) => {
+      await host.goto(href)
+      await host.waitText(text)
+    }
+
+    for (const size of EVENT_WIDTHS) {
+      await host.resize(size)
+      for (const collapsed of [false, true]) {
+        await nav(collapsed)
+        await sleep(200)
+        const menu = collapsed ? 'меню свёрнуто' : 'меню развёрнуто'
+        await open(eventHref, 'Утверждён „Да“ — без возражений')
+        await host.waitCount('.chart-plot', 1)
+        await check(`событие, ${size.width} px, ${menu}`)
+        if (!collapsed && size.width !== 1536) await host.shot('33-sobytie-shirina')
+        if (collapsed && size.width === 1440) await host.shot('34-sobytie-shirina-menu-svernuto')
+        await open(newHref, 'Приём ставок до')
+        await check(`новое событие, ${size.width} px, ${menu}`)
+        if (!collapsed && size.width === 1440) await host.shot('35-novoe-sobytie-shirina')
+      }
+      await nav(false)
+    }
+    // Комната — по-прежнему «список + открытое» рядом
+    await host.resize(SIZES[1])
+    await open(`${SITE}#/room/${room.roomId}`, 'Участники')
+    if (!(await host.eval<boolean>(`document.querySelector('.rooms .list').offsetParent !== null`))) problems.push('комната: список комнат пропал')
+    if (problems.length) throw new Error('Раскладка события:\n' + problems.join('\n'))
+  } finally {
+    await server.close()
+  }
+}
+
 async function main(): Promise<void> {
   await rm(OUT, { recursive: true, force: true })
   await mkdir(OUT, { recursive: true })
@@ -838,6 +991,7 @@ async function main(): Promise<void> {
       await outcomes(cdp, size, module.startServer)
     }
     for (const size of WIDE) await layout(cdp, size, server)
+    await eventWidth(cdp, module.startServer)
     console.log('Готово: снимки в', OUT)
   } finally {
     if (cdp) {
