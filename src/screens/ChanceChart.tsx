@@ -8,7 +8,7 @@
 // точек — в пикселях экрана (vector-effect), подписи осей — обычным текстом поверх, в процентах
 import { useState, type KeyboardEvent, type PointerEvent } from 'react'
 import { formatDateTime } from '../rules/date'
-import { chanceHistory, formatChance } from '../rules/pool'
+import { chanceHistory, chancePercents, formatChance } from '../rules/pool'
 import type { EventView } from '../rules/protocol'
 import type { SavedRoom } from '../store/db'
 import { money, nameOf } from './eventParts'
@@ -44,6 +44,14 @@ export function ChanceChart({ room, event, now }: { room: SavedRoom; event: Even
   const selected = picked !== null && picked < points.length ? picked : null
   const bet = selected !== null ? event.bets[selected] : null
   const title = (id: string) => event.outcomes.find((o) => o.id === id)?.title ?? id
+  // Подписи процентов точки — на весь набор исходов (в сумме 100); высота линий — по сырым долям
+  const labels = (p: (typeof points)[number]) => {
+    const shares = ids.map((id) => p.chances[id] ?? 0)
+    const pct = chancePercents(shares)
+    return shares.map((s, i) => formatChance(s, pct[i]))
+  }
+  const lastLabels = labels(last)
+  const pickedLabels = selected !== null ? labels(points[selected]) : null
 
   // Ближайшая по времени ставка к точке касания
   function nearest(e: { currentTarget: HTMLDivElement; clientX: number }): number {
@@ -72,7 +80,7 @@ export function ChanceChart({ room, event, now }: { room: SavedRoom; event: Even
           <li key={o.id} className={`chart-key series-${i + 1}`}>
             <span className="chart-swatch" aria-hidden="true" />
             <span className="chart-key-title">{o.title}</span>
-            <span className="chart-key-chance">{formatChance(last.chances[o.id] ?? 0)}</span>
+            <span className="chart-key-chance">{lastLabels[i]}</span>
           </li>
         ))}
       </ul>
@@ -138,7 +146,7 @@ export function ChanceChart({ room, event, now }: { room: SavedRoom; event: Even
                 <li key={o.id} className={`chart-key series-${i + 1}`}>
                   <span className="chart-swatch" aria-hidden="true" />
                   <span className="chart-key-title">{o.title}</span>
-                  <span className="chart-key-chance">{formatChance(points[selected].chances[o.id] ?? 0)}</span>
+                  <span className="chart-key-chance">{pickedLabels?.[i]}</span>
                 </li>
               ))}
             </ul>

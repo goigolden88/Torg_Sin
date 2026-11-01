@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   chanceHistory,
+  chancePercents,
   formatChance,
   formatOdds,
   payoutIfWins,
@@ -35,6 +36,57 @@ describe('банк, коэффициент, вероятность', () => {
   it('крошечная доля — «< 1 %», а не «0 %»', () => {
     expect(formatChance(0.001)).toBe('< 1 %')
     expect(formatChance(0)).toBe('0 %')
+  })
+})
+
+describe('проценты события — в сумме ровно 100', () => {
+  const N = ' '
+  const sum = (xs: (number | null)[]) => xs.reduce<number>((s, x) => s + (x ?? 0), 0)
+  const percentsOf = (stakes: number[]) => {
+    const ids = stakes.map((_, i) => String(i))
+    const bets = stakes.flatMap((s, i) => (s > 0 ? [bet('a', String(i), s)] : []))
+    return chancePercents(poolOdds(ids, bets).outcomes.map((o) => o.chance))
+  }
+  it('банк 800: 300 и 500 — 38 % и 62 %, а не 38 и 63', () => {
+    expect(percentsOf([300, 500])).toEqual([38, 62])
+  })
+  it('три равные доли — 34, 33, 33: лишняя единица исходу выше в списке', () => {
+    expect(percentsOf([100, 100, 100])).toEqual([34, 33, 33])
+    expect(chancePercents([1 / 3, 1 / 3, 1 / 3])).toEqual([34, 33, 33])
+  })
+  it('две равные доли — 50 и 50', () => {
+    expect(percentsOf([7, 7])).toEqual([50, 50])
+  })
+  it('наибольший остаток получает единицу', () => {
+    // 16,67 · 33,33 · 50 → 17 · 33 · 50
+    expect(percentsOf([1, 2, 3])).toEqual([17, 33, 50])
+  })
+  it('доля меньше 0,5 % — 0, на экране «< 1 %»; остальные добирают до 100', () => {
+    // 33,3 · 33,3 · 33 · 0,4: остаток крошечной доли больше, но единицу она не получает
+    const p = chancePercents([0.333, 0.333, 0.33, 0.004])
+    expect(p).toEqual([34, 33, 33, 0])
+    expect(formatChance(0.004, p[3])).toBe(`<${N}1${N}%`)
+    expect(formatChance(0.333, p[0])).toBe(`34${N}%`)
+    expect(percentsOf([999, 1])).toEqual([100, 0])
+  })
+  it('исход без ставок — 0, банк пуст — нет процентов', () => {
+    expect(percentsOf([300, 0, 100])).toEqual([75, 0, 25])
+    expect(chancePercents([null, null])).toEqual([null, null])
+  })
+  it('сумма всегда 100', () => {
+    const sets = [
+      [1, 1, 1, 1, 1, 1, 1],
+      [3, 3, 3, 1],
+      [29, 71],
+      [1, 1000, 1000, 1000],
+      [13, 17, 19, 23, 29],
+      [300, 500],
+      [1, 1, 1],
+    ]
+    for (const s of sets) expect(sum(percentsOf(s))).toBe(100)
+    for (const p of chanceHistory(['a', 'b', 'c'], [bet('x', 'a', 1), bet('x', 'b', 2), bet('x', 'c', 4)])) {
+      expect(sum(chancePercents(['a', 'b', 'c'].map((o) => p.chances[o])))).toBe(100)
+    }
   })
 })
 
