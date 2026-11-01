@@ -4,7 +4,7 @@
 // Автору — «Уточнить» и, пока приём идёт, «Отменить событие»; ведущему после закрытия — «Отменить»
 // с причиной. Состояние — с сервера раз в 5 с (useRoom); нет связи — последнее известное, ставить
 // нельзя. Деньги считает pool.ts — здесь не считаем заново. Исход (EventView.outcome) — не здесь
-import { useCallback, useRef, useState, type FormEvent, type MutableRefObject } from 'react'
+import { useCallback, useEffect, useRef, useState, type FormEvent, type MutableRefObject } from 'react'
 import { cancelEvent, clarifyEvent, placeBet } from '../api'
 import { currency as currencyOf, isCurrencyCode, parseAmount } from '../rules/currency'
 import { formatDateTime } from '../rules/date'
@@ -19,6 +19,7 @@ import { money, nameOf, StatusLine } from './eventParts'
 import { useRoom, useServerNow, type Sync } from './useRoom'
 
 type Ask = { outcome: string; units: number }
+type Placed = { text: string; n: number } // n — номер принятой ставки на экране: поле суммы очищается
 type Panel = 'none' | 'clarify' | 'cancel'
 
 export function EventScreen({ room, eventId, onUpdate }: { room: SavedRoom; eventId: string; onUpdate: (room: SavedRoom) => void }) {
@@ -27,7 +28,7 @@ export function EventScreen({ room, eventId, onUpdate }: { room: SavedRoom; even
   const now = useServerNow(clock, !!event && !event.cancelled)
   const [ask, setAsk] = useState<Ask | null>(null)
   const [panel, setPanel] = useState<Panel>('none')
-  const [placed, setPlaced] = useState('')
+  const [placed, setPlaced] = useState<Placed | null>(null)
   const busy = useRef(false) // идёт запрос ставки — окно не закрывается
   const back = '#/room/' + room.id
 
@@ -125,7 +126,7 @@ export function EventScreen({ room, eventId, onUpdate }: { room: SavedRoom; even
           onClose={() => setAsk(null)}
           onPlaced={async (text) => {
             setAsk(null)
-            setPlaced(text)
+            setPlaced((prev) => ({ text, n: (prev?.n ?? 0) + 1 }))
             await refresh()
           }}
         />
@@ -180,11 +181,16 @@ function BetForm({
   event: EventView
   sync: Sync
   onAsk: (ask: Ask) => void
-  placed: string
+  placed: Placed | null
 }) {
   const [outcome, setOutcome] = useState(event.outcomes[0].id)
   const [amount, setAmount] = useState('')
   const [error, setError] = useState('')
+  // Ставка принята — сумма стирается: следующая вводится заново и снова с подтверждением
+  const placedN = placed?.n ?? 0
+  useEffect(() => {
+    if (placedN > 0) setAmount('')
+  }, [placedN])
   const code = isCurrencyCode(room.currency) ? room.currency : null
   const sign = code ? currencyOf(code).sign || code : room.currency
   const online = sync.state === 'ok'
@@ -222,7 +228,7 @@ function BetForm({
           {error}
         </p>
       )}
-      {placed && <p className="ok">{placed}</p>}
+      {placed && <p className="ok">{placed.text}</p>}
       {!online && <p className="hint">Ставить можно, когда есть связь с сервером.</p>}
       <div className="row">
         <button className="button" type="submit" disabled={!online}>

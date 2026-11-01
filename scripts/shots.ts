@@ -23,6 +23,8 @@ const SIZES: Size[] = [
 ]
 // Раскладка компьютера (меню слева, ширина содержимого) — ещё и на широком мониторе
 const WIDE: Size[] = [SIZES[1], { name: '1920', width: 1920, height: 1080 }]
+// Узкий компьютер: событие с развёрнутым меню должно получить свою ширину (≥ 640 px)
+const LAPTOP: Size = { name: '1024', width: 1024, height: 768 }
 const TIMEOUT = 20_000 // ожидание экрана: опрос сервера — раз в 5 секунд
 
 type RoomsServer = { url: string; close: () => Promise<void> }
@@ -179,9 +181,10 @@ class Device {
   async fill(label: string, value: string): Promise<void> {
     const done = await this.eval<boolean>(`(() => {
       const label = [...document.querySelectorAll('label')].find((l) => l.querySelector('span')?.textContent.trim() === ${JSON.stringify(label)})
-      const input = label?.querySelector('input')
+      const input = label?.querySelector('input, textarea')
       if (!input) return false
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, ${JSON.stringify(value)})
+      const proto = input instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype
+      Object.getOwnPropertyDescriptor(proto, 'value').set.call(input, ${JSON.stringify(value)})
       input.dispatchEvent(new Event('input', { bubbles: true }))
       return true
     })()`)
@@ -190,6 +193,34 @@ class Device {
 
   async value(selector: string): Promise<string> {
     return this.eval<string>(`document.querySelector(${JSON.stringify(selector)}).value`)
+  }
+
+  // Ждать, пока на экране станет n элементов selector (строки ленты ставок и т. п.)
+  async waitCount(selector: string, n: number, timeout = TIMEOUT): Promise<void> {
+    const started = Date.now()
+    let count = -1
+    while (Date.now() - started < timeout) {
+      count = await this.eval<number>(`document.querySelectorAll(${JSON.stringify(selector)}).length`).catch(() => -1)
+      if (count === n) return
+      await sleep(200)
+    }
+    throw new Error(`${this.name}: ждал ${n} × ${selector}, на экране ${count}`)
+  }
+
+  // Ключ телефона комнаты — из хранилища устройства (для запросов сценария к серверу в обход экрана)
+  async roomKey(roomId: string): Promise<string> {
+    return this.eval<string>(`new Promise((resolve, reject) => {
+      const open = indexedDB.open('torgsin')
+      open.onerror = () => reject(open.error)
+      open.onsuccess = () => {
+        const get = open.result.transaction('rooms').objectStore('rooms').get(${JSON.stringify(roomId)})
+        get.onsuccess = () => {
+          open.result.close()
+          resolve(get.result.key)
+        }
+        get.onerror = () => reject(get.error)
+      }
+    })`)
   }
 
   private metrics(height: number): Promise<unknown> {
@@ -211,6 +242,19 @@ class Device {
     const path = join(OUT, `${this.size.name}-${file}.png`)
     await writeFile(path, Buffer.from(data, 'base64'))
     console.log('  снимок', path)
+  }
+
+  // Снимок на другой ширине (событие на 1024 px), затем — обратно
+  async shotAt(size: Size, file: string): Promise<void> {
+    const own = this.size
+    this.size = size
+    try {
+      await this.metrics(size.height)
+      await this.shot(file)
+    } finally {
+      this.size = own
+      await this.metrics(own.height)
+    }
   }
 }
 
@@ -311,6 +355,8 @@ async function scenario(cdp: Cdp, size: Size, server: RoomsServer, startServer: 
   await other.waitText('Боря')
   await other.shot('12d-snova-v-komnate')
 
+  await events(host, friend, size, server)
+
   // Ссылка для другого устройства: ведущий выдаёт за Борю и отвязывает его старый телефон
   await host.waitText('Боря')
   await host.click('Ссылка для другого устройства')
@@ -375,6 +421,128 @@ async function scenario(cdp: Cdp, size: Size, server: RoomsServer, startServer: 
   const kept = await stranger.eval<string>(`document.querySelector('.join input').value`)
   if (kept !== 'Гена') throw new Error('Имя стёрлось: ' + kept)
   await stranger.shot('20-net-svyazi')
+}
+
+// Запрос сценария к серверу в обход экрана (событие с близким сроком закрытия, ставки на нём)
+async function api<T>(server: RoomsServer, path: string, key: string, body: object): Promise<T> {
+  const res = await fetch(server.url + path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key },
+    body: JSON.stringify(body),
+  })
+  const json = (await res.json()) as T
+  if (!res.ok) throw new Error(`${path}: ${JSON.stringify(json)}`)
+  return json
+}
+
+// Подтвердить ставку в окне; двойное нажатие — ставка должна быть одна (Р-13)
+async function confirmBet(device: Device): Promise<void> {
+  await device.eval(`(() => {
+    const button = document.querySelector('.modal .button')
+    button.click()
+    button.click()
+  })()`)
+  await device.waitText('Ставка принята')
+}
+
+// События: пусто → новое событие → друг ставит с подтверждением → у ведущего обновилось само →
+// ведущий ставит на другой исход → лента и позиция → приём закрыт → отменено ведущим с причиной →
+// свои варианты с «Другое» → отменено автором → список событий
+async function events(host: Device, friend: Device, size: Size, server: RoomsServer) {
+  const roomId = (await host.eval<string>('location.hash')).split('/')[2]
+  await host.waitText('Событий пока нет')
+  await host.shot('12e-sobytiy-net')
+
+  await host.click('Новое событие')
+  await host.waitText('Приём ставок до')
+  await host.fill('Условие', 'В субботу на даче будет дождь')
+  await host.fill('Как проверяем', 'Кто на даче — в полдень присылает фото неба в общий чат')
+  await host.shot('12f-novoe-sobytie')
+  await host.click('Завести событие')
+  await host.waitText('Банк пока пуст')
+  const eventHash = await host.eval<string>('location.hash')
+
+  // Друг видит событие в комнате и ставит 300 ₽ на «Да»
+  await friend.goto(SITE + '#/room/' + roomId)
+  await friend.waitText('В субботу на даче будет дождь')
+  await friend.waitText('осталось')
+  await friend.click('В субботу на даче будет дождь')
+  await friend.waitText('Банк пока пуст')
+  await friend.click('Да')
+  await friend.fill('Сумма, ₽', '300')
+  await friend.click('Поставить')
+  await friend.waitText('при нынешних ставках получите')
+  await friend.shot('12g-podtverzhdenie-stavki')
+  await confirmBet(friend)
+  await friend.waitCount('.feed-row', 1)
+
+  // У ведущего — сам, опросом раз в 5 с; ставит 450 ₽ на «Нет»
+  await host.waitCount('.feed-row', 1)
+  await host.click('Нет')
+  await host.fill('Сумма, ₽', '450')
+  await host.click('Поставить')
+  await host.waitText('при нынешних ставках получите')
+  await confirmBet(host)
+  await host.waitCount('.feed-row', 2)
+  await host.shot('12h-sobytie-s-bankom')
+  if (size.width >= 1024) await host.shotAt(LAPTOP, '12h-sobytie-s-bankom')
+  await friend.waitCount('.feed-row', 2)
+  await sleep(6000) // ещё опрос: двойное нажатие не дало второй ставки
+  await friend.waitCount('.feed-row', 2)
+  await friend.shot('12i-lenta-i-pozitsiya')
+
+  // Приём закрыт: событие со сроком через 8 секунд — через сервер, минуя экран
+  const hostKey = await host.roomKey(roomId)
+  const friendKey = await friend.roomKey(roomId)
+  const closesAt = Date.now() + 8000
+  const { event } = await api<{ event: { id: string } }>(server, `/rooms/${roomId}/events`, hostKey, {
+    condition: 'Электричка в 18:05 придёт без опоздания',
+    check: 'Табло на станции и фото в чат',
+    closesAt,
+    expectedAt: closesAt + 60 * 60 * 1000,
+  })
+  await api(server, `/rooms/${roomId}/events/${event.id}/bets`, friendKey, { outcome: '1', amount: 20000 })
+  await api(server, `/rooms/${roomId}/events/${event.id}/bets`, hostKey, { outcome: '2', amount: 50000 })
+  await host.goto(SITE + `#/room/${roomId}/event/${event.id}`)
+  await host.waitText('Приём ставок закрыт')
+  const betButton = await host.eval<boolean>(`[...document.querySelectorAll('button')].some((b) => b.innerText.trim() === 'Поставить')`)
+  if (betButton) throw new Error('После закрытия приёма кнопка «Поставить» осталась')
+  await host.shot('12j-priyom-zakryt')
+
+  // Ведущий отменяет закрытое: причина обязательна
+  await host.click('Отменить')
+  await host.click('Да, отменить')
+  await host.waitText('Нужна причина отмены')
+  await host.fill('Причина отмены', 'Электричку отменили — спорить не о чем')
+  await host.click('Да, отменить')
+  await host.waitText('отменено — ставки возвращены')
+  await host.shot('12k-otmeneno-vedushchim')
+
+  // Свои варианты: под ними видно «Другое»; автор отменяет, пока приём идёт
+  await friend.goto(SITE + `#/room/${roomId}/event/new`)
+  await friend.waitText('Приём ставок до')
+  await friend.fill('Условие', 'Кто первым доплывёт до буйка')
+  await friend.fill('Как проверяем', 'Смотрим с берега, Вера судит')
+  await friend.click('Свои варианты')
+  await friend.fill('Вариант 1', 'Аня')
+  await friend.fill('Вариант 2', 'Боря')
+  await friend.click('Вера')
+  await friend.shot('12l-novoe-svoi-varianty')
+  await friend.click('Завести событие')
+  await friend.waitText('Другое (ничего из перечисленного)')
+  await friend.waitText('Банк пока пуст')
+  await friend.click('Отменить событие')
+  await friend.waitText('Отменить событие?')
+  await friend.click('Да, отменить')
+  await friend.waitText('отменено — ставки возвращены')
+  await friend.shot('12m-otmeneno-avtorom')
+
+  // Список событий: открытые сверху, ниже закрытые и отменённые
+  await host.goto(SITE + '#/room/' + roomId)
+  await host.waitText('Закрытые и отменённые')
+  await host.waitText('Кто первым доплывёт до буйка')
+  await host.shot('12n-spisok-sobytiy')
+  if (!eventHash.includes('/event/')) throw new Error('После «Завести событие» открылось не событие: ' + eventHash)
 }
 
 // Раскладка компьютера: две комнаты, в открытой — два участника; меню развёрнуто и свёрнуто
