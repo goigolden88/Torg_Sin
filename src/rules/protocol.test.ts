@@ -1,8 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import {
   isAdmitResponse,
+  isCancelEventResponse,
   isClaimDeviceResponse,
+  isClarifyEventResponse,
+  isCreateEventResponse,
   isCreateRoomResponse,
+  isPlaceBetResponse,
   isDeviceLinkResponse,
   isErrorResponse,
   isHealth,
@@ -36,6 +40,30 @@ describe('ответы комнат', () => {
     room: { id: 'R', name: 'Дача', currency: 'RUB', hostId: 'M', createdAt: 1 },
     members: [{ id: 'M', name: 'Аня' }],
     me: 'M',
+    events: [],
+    now: 5,
+  }
+  const event = {
+    id: 'E',
+    at: 1,
+    authorId: 'M',
+    condition: 'Условие',
+    check: 'Как проверяем',
+    outcomes: [
+      { id: '1', title: 'Да' },
+      { id: '2', title: 'Нет' },
+    ],
+    closesAt: 10,
+    expectedAt: 20,
+    subjectId: null,
+  }
+  const view = {
+    ...event,
+    status: 'open',
+    clarifications: [{ id: 'C', at: 2, text: 'Уточнение' }],
+    bets: [{ id: 'B', memberId: 'M', outcome: '1', amount: 100, at: 3 }],
+    cancelled: null,
+    refunds: [],
   }
 
   it('узнаёт ответ на создание', () => {
@@ -48,6 +76,30 @@ describe('ответы комнат', () => {
     expect(isRoomStateResponse({ ...state, members: [{ id: 'M' }] })).toBe(false)
     expect(isRoomStateResponse({ ...state, room: { ...state.room, createdAt: '1' } })).toBe(false)
     expect(isRoomStateResponse({ ...state, me: undefined })).toBe(false)
+  })
+  it('состояние комнаты: события и время сервера', () => {
+    expect(isRoomStateResponse({ ...state, events: [view] })).toBe(true)
+    const cancelled = { ...view, status: 'cancelled', cancelled: { at: 4, by: 'M', reason: null }, refunds: [{ memberId: 'M', amount: 100 }] }
+    expect(isRoomStateResponse({ ...state, events: [cancelled] })).toBe(true)
+    expect(isRoomStateResponse({ ...state, events: [{ ...view, subjectId: 'M' }] })).toBe(true)
+    expect(isRoomStateResponse({ ...state, now: undefined })).toBe(false)
+    expect(isRoomStateResponse({ ...state, events: undefined })).toBe(false)
+    expect(isRoomStateResponse({ ...state, events: [{ ...view, status: 'потом' }] })).toBe(false)
+    expect(isRoomStateResponse({ ...state, events: [{ ...view, outcomes: [{ id: '1', title: 'Да' }] }] })).toBe(false)
+    expect(isRoomStateResponse({ ...state, events: [{ ...view, bets: [{ id: 'B', memberId: 'M', outcome: '1' }] }] })).toBe(false)
+    expect(isRoomStateResponse({ ...state, events: [{ ...view, cancelled: { at: 4 } }] })).toBe(false)
+    expect(isRoomStateResponse({ ...state, events: [{ ...view, refunds: undefined }] })).toBe(false)
+  })
+  it('ответы действий с событиями', () => {
+    const v = PROTOCOL_VERSION
+    expect(isCreateEventResponse({ v, event })).toBe(true)
+    expect(isCreateEventResponse({ v, event: { ...event, closesAt: '10' } })).toBe(false)
+    expect(isPlaceBetResponse({ v, bet: { id: 'B', event: 'E', memberId: 'M', outcome: '1', amount: 100, at: 3 } })).toBe(true)
+    expect(isPlaceBetResponse({ v, bet: { id: 'B', memberId: 'M', outcome: '1', amount: 100, at: 3 } })).toBe(false)
+    expect(isClarifyEventResponse({ v, clarification: { id: 'C', at: 2, text: 'Уточнение' } })).toBe(true)
+    expect(isClarifyEventResponse({ v, clarification: 'Уточнение' })).toBe(false)
+    expect(isCancelEventResponse({ v, cancelled: { at: 4, by: 'H', reason: 'Ошиблись' } })).toBe(true)
+    expect(isCancelEventResponse({ cancelled: { at: 4, by: 'H', reason: null } })).toBe(false)
   })
   it('узнаёт отказ', () => {
     expect(isErrorResponse({ v: PROTOCOL_VERSION, error: 'Нет такой комнаты' })).toBe(true)

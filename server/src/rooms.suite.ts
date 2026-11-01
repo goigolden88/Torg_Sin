@@ -2,14 +2,40 @@
 // (rooms.test.ts) и на SQLite запасной обёртки (server/node/rooms.test.ts)
 import { afterEach, describe, expect, it } from 'vitest'
 import {
+  BAD_AMOUNT,
+  BAD_OUTCOMES,
+  BAD_SUBJECT,
+  CLOSE_PASSED,
+  EXPECTED_EARLY,
+  LONG_CHECK,
+  LONG_CLARIFICATION,
+  LONG_CONDITION,
+  LONG_OUTCOME,
+  LONG_REASON,
+  NEED_CHECK,
+  NEED_CLARIFICATION,
+  NEED_CONDITION,
+  NEED_OUTCOME,
+  NEED_REASON,
+  NEED_TIMES,
+  OTHER,
+  SAME_OUTCOMES,
+} from '../../src/rules/event'
+import {
   isHealth,
+  isRoomStateResponse,
   PROTOCOL_VERSION,
+  type CancelEventResponse,
   type ClaimDeviceResponse,
+  type ClarifyEventResponse,
+  type CreateEventResponse,
   type CreateRoomResponse,
   type DeviceLinkResponse,
+  type EventView,
   type InviteResponse,
   type JoinRequestsResponse,
   type JoinRoomResponse,
+  type PlaceBetResponse,
   type RoomStateResponse,
 } from '../../src/rules/protocol'
 import { BAD_CURRENCY, LONG_MEMBER_NAME, LONG_ROOM_NAME, NAME_TAKEN, NEED_MEMBER_NAME, NEED_ROOM_NAME } from '../../src/rules/room'
@@ -21,12 +47,20 @@ import {
   ALREADY_REJECTED,
   append,
   APPEND_ONLY,
+  AUTHOR_ONLY,
   BAD_DEVICE_LINK,
   BAD_LINK,
+  BANK_FULL,
+  BET_TAKEN,
+  BETS_CLOSED,
   DEVICE_LINK_TTL,
+  EVENT_CANCELLED,
+  EVENT_TAKEN,
   HOST_ONLY,
   JOIN_TAKEN,
+  NO_EVENT,
   NO_MEMBER,
+  NO_OUTCOME,
   NO_REQUEST,
   NO_ROOM,
   readLog,
@@ -229,6 +263,8 @@ export function roomsSuite(storageName: string, start: (password: string | undef
           room: { id: created.roomId, name: 'Дача', currency: 'RUB', hostId: created.memberId, createdAt: s.clock.now },
           members: [{ id: created.memberId, name: 'Аня' }],
           me: created.memberId,
+          events: [],
+          now: s.clock.now,
         })
       })
 
@@ -254,42 +290,42 @@ export function roomsSuite(storageName: string, start: (password: string | undef
       })
     })
 
+    // Действие комнаты: POST с телом (или GET без него) и ключом телефона, если он есть
+    function send(s: TestServer, roomId: string, action: string, body?: unknown, key?: string): Promise<Response> {
+      const headers: Record<string, string> = key === undefined ? {} : { Authorization: 'Bearer ' + key }
+      const init: RequestInit = body === undefined ? { headers } : { method: 'POST', headers, body: JSON.stringify(body) }
+      return s.send(`/rooms/${roomId}/${action}`, init)
+    }
+
+    async function ok<T>(r: Promise<Response>): Promise<T> {
+      const res = await r
+      const body: unknown = await res.json()
+      expect({ status: res.status, body }).toMatchObject({ status: 200 })
+      return body as T
+    }
+
+    async function refused(r: Promise<Response>, status: number, error: string, join?: string): Promise<void> {
+      const res = await r
+      expect(res.status).toBe(status)
+      expect(await res.json()).toEqual(join ? { v: PROTOCOL_VERSION, error, join } : { v: PROTOCOL_VERSION, error })
+    }
+
+    function join(s: TestServer, room: CreateRoomResponse, name: string, requestId?: string): Promise<JoinRoomResponse> {
+      return ok<JoinRoomResponse>(send(s, room.roomId, 'join', { v: PROTOCOL_VERSION, invite: room.invite, name, requestId }))
+    }
+
+    // Подал заявку и впущен ведущим
+    async function member(s: TestServer, room: CreateRoomResponse, name: string): Promise<JoinRoomResponse> {
+      const j = await join(s, room, name)
+      await ok(send(s, room.roomId, 'admit', { request: j.memberId }, room.key))
+      return j
+    }
+
+    async function members(s: TestServer, roomId: string, key: string): Promise<string[]> {
+      return (await ok<RoomStateResponse>(get(s, roomId, key))).members.map((m) => m.name)
+    }
+
     describe('вход по ссылке (Р-03)', () => {
-      // Действие комнаты: POST с телом (или GET без него) и ключом телефона, если он есть
-      function send(s: TestServer, roomId: string, action: string, body?: unknown, key?: string): Promise<Response> {
-        const headers: Record<string, string> = key === undefined ? {} : { Authorization: 'Bearer ' + key }
-        const init: RequestInit = body === undefined ? { headers } : { method: 'POST', headers, body: JSON.stringify(body) }
-        return s.send(`/rooms/${roomId}/${action}`, init)
-      }
-
-      async function ok<T>(r: Promise<Response>): Promise<T> {
-        const res = await r
-        const body: unknown = await res.json()
-        expect({ status: res.status, body }).toMatchObject({ status: 200 })
-        return body as T
-      }
-
-      async function refused(r: Promise<Response>, status: number, error: string, join?: string): Promise<void> {
-        const res = await r
-        expect(res.status).toBe(status)
-        expect(await res.json()).toEqual(join ? { v: PROTOCOL_VERSION, error, join } : { v: PROTOCOL_VERSION, error })
-      }
-
-      function join(s: TestServer, room: CreateRoomResponse, name: string, requestId?: string): Promise<JoinRoomResponse> {
-        return ok<JoinRoomResponse>(send(s, room.roomId, 'join', { v: PROTOCOL_VERSION, invite: room.invite, name, requestId }))
-      }
-
-      // Подал заявку и впущен ведущим
-      async function member(s: TestServer, room: CreateRoomResponse, name: string): Promise<JoinRoomResponse> {
-        const j = await join(s, room, name)
-        await ok(send(s, room.roomId, 'admit', { request: j.memberId }, room.key))
-        return j
-      }
-
-      async function members(s: TestServer, roomId: string, key: string): Promise<string[]> {
-        return (await ok<RoomStateResponse>(get(s, roomId, key))).members.map((m) => m.name)
-      }
-
       it('по ссылке видно только название комнаты и имя ведущего', async () => {
         const s = await server()
         const room = await create(s)
@@ -544,6 +580,304 @@ export function roomsSuite(storageName: string, start: (password: string | undef
         const everything = JSON.stringify([...(await s.storage(room.roomId).list({ prefix: '' }))])
         for (const secret of [borya.key, vera.key, claimed.key, link.token, room.invite]) expect(everything).not.toContain(secret)
         expect(JSON.stringify(log)).not.toContain(renewed.invite)
+      })
+    })
+
+    describe('события-пул и ставки', () => {
+      const HOUR = 60 * 60 * 1000
+      const CONDITION = 'Вася пробежит 10 км до конца месяца'
+
+      function eventForm(s: TestServer, change: Record<string, unknown> = {}): Record<string, unknown> {
+        return {
+          v: PROTOCOL_VERSION,
+          condition: CONDITION,
+          check: 'Скрин из приложения с пробежкой',
+          closesAt: s.clock.now + HOUR,
+          expectedAt: s.clock.now + 2 * HOUR,
+          ...change,
+        }
+      }
+
+      // Комната: Аня — ведущая, Боря и Вера — участники
+      async function room3(s: TestServer) {
+        const room = await create(s)
+        const borya = await member(s, room, 'Боря')
+        const vera = await member(s, room, 'Вера')
+        return { room, borya, vera }
+      }
+
+      function newEvent(s: TestServer, roomId: string, key: string, body: unknown): Promise<CreateEventResponse> {
+        return ok<CreateEventResponse>(send(s, roomId, 'events', body, key))
+      }
+
+      function bet(s: TestServer, roomId: string, key: string, eventId: string, body: unknown): Promise<Response> {
+        return send(s, roomId, `events/${eventId}/bets`, { v: PROTOCOL_VERSION, ...(body as object) }, key)
+      }
+
+      async function eventsOf(s: TestServer, roomId: string, key: string): Promise<EventView[]> {
+        const state = await ok<RoomStateResponse>(get(s, roomId, key))
+        expect(isRoomStateResponse(state)).toBe(true)
+        expect(state.now).toBe(s.clock.now)
+        return state.events
+      }
+
+      async function eventEntries(s: TestServer, roomId: string): Promise<string[]> {
+        return (await readLog(s.storage(roomId))).map((e) => e.type).filter((t) => t.startsWith('event.') || t.startsWith('bet.'))
+      }
+
+      it('участник заводит событие — оно в состоянии комнаты у всех; исходы по умолчанию «Да» и «Нет»', async () => {
+        const s = await server()
+        const { room, borya, vera } = await room3(s)
+        const form = eventForm(s, { subject: vera.memberId })
+        const { event } = await newEvent(s, room.roomId, borya.key, form)
+        expect(event).toEqual({
+          id: expect.stringMatching(/^[0-9A-HJKMNP-TV-Z]{26}$/),
+          at: s.clock.now,
+          authorId: borya.memberId,
+          condition: CONDITION,
+          check: 'Скрин из приложения с пробежкой',
+          outcomes: [
+            { id: '1', title: 'Да' },
+            { id: '2', title: 'Нет' },
+          ],
+          closesAt: form.closesAt,
+          expectedAt: form.expectedAt,
+          subjectId: vera.memberId,
+        })
+        const expected = { ...event, status: 'open', clarifications: [], bets: [], cancelled: null, refunds: [] }
+        for (const key of [room.key, borya.key, vera.key]) expect(await eventsOf(s, room.roomId, key)).toEqual([expected])
+        expect(await eventEntries(s, room.roomId)).toEqual(['event.created'])
+        // Без предмета спора — null
+        const second = await newEvent(s, room.roomId, room.key, eventForm(s))
+        expect(second.event.subjectId).toBeNull()
+        expect((await eventsOf(s, room.roomId, vera.key)).map((e) => e.id)).toEqual([event.id, second.event.id])
+      })
+
+      it('свои исходы — сервер добавляет «Другое» последним; повторы и лишние — 400', async () => {
+        const s = await server()
+        const { room } = await room3(s)
+        const { event } = await newEvent(s, room.roomId, room.key, eventForm(s, { outcomes: [' Вася ', 'Петя', 'Гоша'] }))
+        expect(event.outcomes).toEqual([
+          { id: '1', title: 'Вася' },
+          { id: '2', title: 'Петя' },
+          { id: '3', title: 'Гоша' },
+          { id: '4', title: OTHER },
+        ])
+        const cases: [unknown, string][] = [
+          [['Вася', ' вАСЯ '], SAME_OUTCOMES],
+          [['Вася', 'Другое (ничего из перечисленного)'], SAME_OUTCOMES],
+          [['один'], BAD_OUTCOMES],
+          [['1', '2', '3', '4', '5', '6', '7'], BAD_OUTCOMES],
+          [['Вася', 'я'.repeat(41)], LONG_OUTCOME],
+          [['Вася', ''], NEED_OUTCOME],
+        ]
+        for (const [outcomes, error] of cases) await refused(send(s, room.roomId, 'events', eventForm(s, { outcomes }), room.key), 400, error)
+        expect(await eventEntries(s, room.roomId)).toEqual(['event.created'])
+      })
+
+      it('форма с ошибкой или прошедший срок — 400 с понятным текстом, событие не заводится', async () => {
+        const s = await server()
+        const { room, borya } = await room3(s)
+        const now = s.clock.now
+        const cases: [Record<string, unknown>, string][] = [
+          [{ closesAt: now }, CLOSE_PASSED],
+          [{ closesAt: now - HOUR, expectedAt: now }, CLOSE_PASSED],
+          [{ expectedAt: now + HOUR - 1 }, EXPECTED_EARLY],
+          [{ closesAt: undefined }, NEED_TIMES],
+          [{ condition: '  ' }, NEED_CONDITION],
+          [{ condition: 'я'.repeat(301) }, LONG_CONDITION],
+          [{ check: '' }, NEED_CHECK],
+          [{ check: 'я'.repeat(301) }, LONG_CHECK],
+          [{ subject: ulid() }, BAD_SUBJECT],
+          [{ requestId: 'abc' }, BAD_REQUEST_ID],
+        ]
+        for (const [change, error] of cases) await refused(send(s, room.roomId, 'events', eventForm(s, change), borya.key), 400, error)
+        expect(CLOSE_PASSED).toBe('Срок «приём ставок до» уже прошёл — выберите время позже')
+        // 300 знаков — можно; «исход к» ровно в «приём до» — можно
+        await newEvent(s, room.roomId, borya.key, eventForm(s, { condition: 'я'.repeat(300), expectedAt: now + HOUR }))
+        // Без ключа, с ключом заявки, другая версия
+        const gosha = await join(s, room, 'Гоша')
+        await refused(send(s, room.roomId, 'events', eventForm(s)), 403, NEED_KEY)
+        await refused(send(s, room.roomId, 'events', eventForm(s), gosha.key), 403, WAITING, 'waiting')
+        expect((await send(s, room.roomId, 'events', eventForm(s, { v: PROTOCOL_VERSION + 1 }), borya.key)).status).toBe(400)
+        expect(await eventEntries(s, room.roomId)).toEqual(['event.created'])
+      })
+
+      it('ставки: кто, на что, сколько, когда — несколько раз и на разные исходы; автор и предмет тоже ставят', async () => {
+        const s = await server()
+        const { room, borya, vera } = await room3(s)
+        const { event } = await newEvent(s, room.roomId, borya.key, eventForm(s, { subject: vera.memberId }))
+        const first = await ok<PlaceBetResponse>(bet(s, room.roomId, borya.key, event.id, { outcome: '1', amount: 300 }))
+        expect(first).toEqual({
+          v: PROTOCOL_VERSION,
+          bet: { id: expect.any(String), event: event.id, memberId: borya.memberId, outcome: '1', amount: 300, at: s.clock.now },
+        })
+        s.clock.now += 1000
+        await ok(bet(s, room.roomId, vera.key, event.id, { outcome: '2', amount: 100 }))
+        s.clock.now += 1000
+        await ok(bet(s, room.roomId, borya.key, event.id, { outcome: '2', amount: 50 }))
+        const [view] = await eventsOf(s, room.roomId, room.key)
+        expect(view.bets.map((b) => [b.memberId, b.outcome, b.amount, b.at])).toEqual([
+          [borya.memberId, '1', 300, s.clock.now - 2000],
+          [vera.memberId, '2', 100, s.clock.now - 1000],
+          [borya.memberId, '2', 50, s.clock.now],
+        ])
+        expect(await eventEntries(s, room.roomId)).toEqual(['event.created', 'bet.placed', 'bet.placed', 'bet.placed'])
+        // Сумма — целое > 0; исход и событие — существующие
+        for (const amount of [0, -5, 1.5, '100', undefined, Number.MAX_SAFE_INTEGER + 1]) {
+          await refused(bet(s, room.roomId, vera.key, event.id, { outcome: '1', amount }), 400, BAD_AMOUNT)
+        }
+        await refused(bet(s, room.roomId, vera.key, event.id, { outcome: '3', amount: 10 }), 400, NO_OUTCOME)
+        await refused(bet(s, room.roomId, vera.key, ulid(), { outcome: '1', amount: 10 }), 404, NO_EVENT)
+        await refused(bet(s, room.roomId, vera.key, 'не-номер', { outcome: '1', amount: 10 }), 404, NO_EVENT)
+        await refused(bet(s, room.roomId, 'someone-elses-key', event.id, { outcome: '1', amount: 10 }), 403, WRONG_KEY)
+        // Банк не выходит за безопасное целое
+        await refused(bet(s, room.roomId, vera.key, event.id, { outcome: '1', amount: Number.MAX_SAFE_INTEGER - 400 }), 400, BANK_FULL)
+        expect((await eventsOf(s, room.roomId, room.key))[0].bets.length).toBe(3)
+      })
+
+      it('ставка в момент или после «приём до» по времени сервера — «Приём ставок закрыт», даже если сервер лежал', async () => {
+        const s = await server()
+        const { room, borya, vera } = await room3(s)
+        const { event } = await newEvent(s, room.roomId, borya.key, eventForm(s))
+        s.clock.now = event.closesAt - 1
+        await ok(bet(s, room.roomId, vera.key, event.id, { outcome: '1', amount: 100 }))
+        expect((await eventsOf(s, room.roomId, vera.key))[0].status).toBe('open')
+        s.clock.now = event.closesAt
+        await refused(bet(s, room.roomId, vera.key, event.id, { outcome: '2', amount: 100 }), 409, BETS_CLOSED)
+        expect(BETS_CLOSED).toBe('Приём ставок закрыт')
+        expect((await eventsOf(s, room.roomId, vera.key))[0].status).toBe('closed')
+        // Сервер лежал неделю: в срок никто не закрывал — закрыто по времени запроса
+        s.clock.now += 7 * 24 * HOUR
+        await refused(bet(s, room.roomId, borya.key, event.id, { outcome: '2', amount: 100 }), 409, BETS_CLOSED)
+        expect(await eventEntries(s, room.roomId)).toEqual(['event.created', 'bet.placed'])
+      })
+
+      it('двойное «Поставить» (тот же номер запроса) — одна ставка и тот же ответ; другой суммой или исходом — 409', async () => {
+        const s = await server()
+        const { room, borya, vera } = await room3(s)
+        const { event } = await newEvent(s, room.roomId, borya.key, eventForm(s))
+        const requestId = ulid(s.clock.now)
+        const body = { outcome: '1', amount: 100, requestId }
+        const first = await ok<PlaceBetResponse>(bet(s, room.roomId, vera.key, event.id, body))
+        s.clock.now += 1500
+        expect(await ok(bet(s, room.roomId, vera.key, event.id, body))).toEqual(first)
+        const [a, b] = await Promise.all([bet(s, room.roomId, vera.key, event.id, body), bet(s, room.roomId, vera.key, event.id, body)])
+        expect([await a.json(), await b.json()]).toEqual([first, first])
+        await refused(bet(s, room.roomId, vera.key, event.id, { ...body, amount: 200 }), 409, BET_TAKEN)
+        await refused(bet(s, room.roomId, vera.key, event.id, { ...body, outcome: '2' }), 409, BET_TAKEN)
+        await refused(bet(s, room.roomId, borya.key, event.id, body), 409, BET_TAKEN)
+        // Ответ потерялся, повтор пришёл после срока — та же ставка, не отказ
+        s.clock.now = event.closesAt + 1
+        expect(await ok(bet(s, room.roomId, vera.key, event.id, body))).toEqual(first)
+        expect((await eventsOf(s, room.roomId, vera.key))[0].bets.length).toBe(1)
+      })
+
+      it('двойное создание события (тот же номер запроса) — одно событие и тот же ответ; другая форма — 409', async () => {
+        const s = await server()
+        const { room, borya, vera } = await room3(s)
+        const form = eventForm(s, { requestId: ulid(s.clock.now), outcomes: ['Вася', 'Петя'] })
+        const first = await newEvent(s, room.roomId, borya.key, form)
+        s.clock.now += 1500
+        expect(await newEvent(s, room.roomId, borya.key, form)).toEqual(first)
+        const [a, b] = await Promise.all([newEvent(s, room.roomId, borya.key, form), newEvent(s, room.roomId, borya.key, form)])
+        expect([a, b]).toEqual([first, first])
+        await refused(send(s, room.roomId, 'events', { ...form, condition: 'Другое условие' }, borya.key), 409, EVENT_TAKEN)
+        await refused(send(s, room.roomId, 'events', form, vera.key), 409, EVENT_TAKEN)
+        // Повтор после «приём до» — то же событие, не отказ
+        s.clock.now = first.event.closesAt + 1
+        expect(await newEvent(s, room.roomId, borya.key, form)).toEqual(first)
+        expect(await eventEntries(s, room.roomId)).toEqual(['event.created'])
+      })
+
+      it('уточнение — только автор; видно всем под условием со временем; условие и исходы не меняются', async () => {
+        const s = await server()
+        const { room, borya, vera } = await room3(s)
+        const { event } = await newEvent(s, room.roomId, borya.key, eventForm(s))
+        s.clock.now += 1000
+        const clarify = (key: string, text: unknown) => send(s, room.roomId, `events/${event.id}/clarify`, { text }, key)
+        const r = await ok<ClarifyEventResponse>(clarify(borya.key, ' Дорожка в зале тоже считается '))
+        expect(r).toEqual({ v: PROTOCOL_VERSION, clarification: { id: expect.any(String), at: s.clock.now, text: 'Дорожка в зале тоже считается' } })
+        await refused(clarify(vera.key, 'Моё уточнение'), 403, AUTHOR_ONLY)
+        await refused(clarify(room.key, 'Уточнение ведущего'), 403, AUTHOR_ONLY)
+        await refused(clarify(borya.key, ' '), 400, NEED_CLARIFICATION)
+        await refused(clarify(borya.key, 'я'.repeat(301)), 400, LONG_CLARIFICATION)
+        await refused(send(s, room.roomId, `events/${ulid()}/clarify`, { text: 'а' }, borya.key), 404, NO_EVENT)
+        const [view] = await eventsOf(s, room.roomId, vera.key)
+        expect(view.clarifications).toEqual([r.clarification])
+        expect(view).toMatchObject({ condition: event.condition, check: event.check, outcomes: event.outcomes })
+        expect(AUTHOR_ONLY).toBe('Это может только автор события')
+      })
+
+      it('автор отменяет до закрытия приёма — «отменено», ставки возвращаются, новых ставок нет', async () => {
+        const s = await server()
+        const { room, borya, vera } = await room3(s)
+        const { event } = await newEvent(s, room.roomId, borya.key, eventForm(s))
+        await ok(bet(s, room.roomId, borya.key, event.id, { outcome: '1', amount: 300 }))
+        await ok(bet(s, room.roomId, vera.key, event.id, { outcome: '2', amount: 100 }))
+        await ok(bet(s, room.roomId, borya.key, event.id, { outcome: '2', amount: 50 }))
+        const cancel = (key: string, body: unknown = {}) => send(s, room.roomId, `events/${event.id}/cancel`, body, key)
+        await refused(cancel(vera.key), 403, AUTHOR_ONLY)
+        await refused(cancel(room.key), 403, AUTHOR_ONLY)
+        s.clock.now += 1000
+        // Тело не нужно: POST без тела
+        const r = await ok<CancelEventResponse>(
+          s.send(`/rooms/${room.roomId}/events/${event.id}/cancel`, { method: 'POST', headers: { Authorization: 'Bearer ' + borya.key } }),
+        )
+        expect(r).toEqual({ v: PROTOCOL_VERSION, cancelled: { at: s.clock.now, by: borya.memberId, reason: null } })
+        const [view] = await eventsOf(s, room.roomId, vera.key)
+        expect(view.status).toBe('cancelled')
+        expect(view.cancelled).toEqual(r.cancelled)
+        expect(view.refunds).toEqual([
+          { memberId: borya.memberId, amount: 350 },
+          { memberId: vera.memberId, amount: 100 },
+        ])
+        await refused(bet(s, room.roomId, vera.key, event.id, { outcome: '1', amount: 10 }), 409, EVENT_CANCELLED)
+        // Повтор отмены — тот же ответ без новой записи
+        s.clock.now += 1000
+        expect(await ok(cancel(borya.key))).toEqual(r)
+        expect(await eventEntries(s, room.roomId)).toEqual(['event.created', 'bet.placed', 'bet.placed', 'bet.placed', 'event.cancelled'])
+      })
+
+      it('после закрытия приёма отменяет только ведущий и только с причиной', async () => {
+        const s = await server()
+        const { room, borya, vera } = await room3(s)
+        const { event } = await newEvent(s, room.roomId, borya.key, eventForm(s))
+        await ok(bet(s, room.roomId, vera.key, event.id, { outcome: '1', amount: 100 }))
+        s.clock.now = event.closesAt
+        const cancel = (key: string, body: unknown = {}) => send(s, room.roomId, `events/${event.id}/cancel`, body, key)
+        await refused(cancel(borya.key, { reason: 'Передумал' }), 403, HOST_ONLY)
+        await refused(cancel(room.key), 400, NEED_REASON)
+        await refused(cancel(room.key, { reason: '  ' }), 400, NEED_REASON)
+        await refused(cancel(room.key, { reason: 'я'.repeat(301) }), 400, LONG_REASON)
+        const r = await ok<CancelEventResponse>(cancel(room.key, { reason: ' Условие поняли по-разному ' }))
+        expect(r.cancelled).toEqual({ at: s.clock.now, by: room.memberId, reason: 'Условие поняли по-разному' })
+        const [view] = await eventsOf(s, room.roomId, borya.key)
+        expect(view).toMatchObject({ status: 'cancelled', refunds: [{ memberId: vera.memberId, amount: 100 }] })
+        expect(NEED_REASON).toBe('Нужна причина отмены')
+      })
+
+      it('чужой метод и адрес событий — 404; ставка в журнале не хранит лишнего', async () => {
+        const s = await server()
+        const { room, borya } = await room3(s)
+        expect((await s.send(`/rooms/${room.roomId}/events`, { headers: { Authorization: 'Bearer ' + borya.key } })).status).toBe(404)
+        const { event } = await newEvent(s, room.roomId, borya.key, eventForm(s))
+        expect((await send(s, room.roomId, `events/${event.id}/nope`, {}, borya.key)).status).toBe(404)
+        await ok(bet(s, room.roomId, borya.key, event.id, { outcome: '1', amount: 100 }))
+        const log = await readLog(s.storage(room.roomId))
+        expect(log.at(-1)).toEqual({
+          id: expect.any(String),
+          at: s.clock.now,
+          memberId: borya.memberId,
+          type: 'bet.placed',
+          event: event.id,
+          outcome: '1',
+          amount: 100,
+          requestId: expect.stringMatching(/^[0-9A-HJKMNP-TV-Z]{26}$/),
+        })
+        // Номера запросов — только в журнале сервера, не в ответе сайту
+        const state = JSON.stringify(await ok(get(s, room.roomId, borya.key)))
+        expect(state).not.toContain('requestId')
       })
     })
 

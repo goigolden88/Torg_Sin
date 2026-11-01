@@ -32,6 +32,25 @@ export type LogEntry =
   | (EntryBase & { type: 'device.issued'; member: string; unlink: boolean; expiresAt: number })
   // По ссылке для другого устройства участник получил новый ключ; автор — участник
   | (EntryBase & { type: 'device.linked'; member: string; unlink: boolean })
+  // События-пул (этап 2, event.ts). Номер события — id записи event.created; автор — кто завёл.
+  // outcomes — все исходы по порядку, со «Другое» в конце, если исходы свои; subject — предмет
+  // спора (участник) или null; requestId — номер запроса телефона: повтор узнаётся по нему
+  | (EntryBase & {
+      type: 'event.created'
+      condition: string
+      check: string
+      outcomes: { id: string; title: string }[]
+      closesAt: number // приём ставок до (UTC, мс), не включая
+      expectedAt: number // исход ожидается к
+      subject: string | null
+      requestId: string
+    })
+  // Ставка участника (автор) на исход события; отменить нельзя
+  | (EntryBase & { type: 'bet.placed'; event: string; outcome: string; amount: number; requestId: string })
+  // Уточнение автора события под условием; условие, «как проверяем» и исходы не меняются
+  | (EntryBase & { type: 'event.clarified'; event: string; text: string })
+  // Событие отменено: до закрытия приёма — автором, после — ведущим с причиной; ставки возвращаются
+  | (EntryBase & { type: 'event.cancelled'; event: string; reason: string | null })
 
 export type Member = {
   id: string // номер участника: не привязан к способу входа (Р-03)
@@ -64,6 +83,12 @@ export function applyEntry(state: RoomState | null, e: LogEntry): RoomState | nu
     case 'invite.changed':
     case 'device.issued':
     case 'device.linked':
+      return state
+    // События и ставки считает roomEvents (event.ts)
+    case 'event.created':
+    case 'bet.placed':
+    case 'event.clarified':
+    case 'event.cancelled':
       return state
   }
 }

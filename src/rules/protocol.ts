@@ -24,13 +24,73 @@ export type CreateRoomRequest = {
 // телефона — ключ дальше идёт в заголовке Authorization: Bearer <ключ>
 export type CreateRoomResponse = { v: number; roomId: string; invite: string; memberId: string; key: string }
 
-// GET /rooms/<номер> с ключом телефона: состояние комнаты; me — номер владельца ключа
+// GET /rooms/<номер> с ключом телефона: состояние комнаты; me — номер владельца ключа;
+// events — события-пул по порядку создания; now — время сервера (UTC, мс): по нему сайт
+// считает отсчёт до закрытия приёма, а не по часам телефона
 export type RoomStateResponse = {
   v: number
   room: { id: string; name: string; currency: string; hostId: string; createdAt: number }
   members: { id: string; name: string }[]
   me: string
+  events: EventView[]
+  now: number
 }
+
+// Событие-пул: что не меняется никогда. Исход — номер и текст; свои исходы кончаются «Другое»
+export type EventInfo = {
+  id: string
+  at: number // заведено
+  authorId: string
+  condition: string
+  check: string // как проверяем
+  outcomes: { id: string; title: string }[]
+  closesAt: number // приём ставок до (не включая)
+  expectedAt: number // исход ожидается к
+  subjectId: string | null // предмет спора — участник комнаты, если спор о нём
+}
+
+export type BetInfo = { id: string; event: string; memberId: string; outcome: string; amount: number; at: number }
+export type Clarification = { id: string; at: number; text: string }
+export type Cancellation = { at: number; by: string; reason: string | null }
+
+// «приём идёт» / «приём закрыт» (по времени сервера) / «отменено»
+export type EventStatus = 'open' | 'closed' | 'cancelled'
+
+// Событие в состоянии комнаты: ставки по порядку журнала, уточнения, статус; отменено —
+// refunds: каждому участнику — его сумма
+export type EventView = EventInfo & {
+  status: EventStatus
+  clarifications: Clarification[]
+  bets: Omit<BetInfo, 'event'>[]
+  cancelled: Cancellation | null
+  refunds: { memberId: string; amount: number }[]
+}
+
+// POST /rooms/<номер>/events — завести событие. outcomes не задан — «Да» и «Нет»; requestId —
+// номер запроса (ULID): повтор с тем же номером — то же событие и тот же ответ
+export type CreateEventRequest = {
+  v?: number
+  condition: string
+  check: string
+  outcomes?: string[]
+  closesAt: number
+  expectedAt: number
+  subject?: string
+  requestId?: string
+}
+export type CreateEventResponse = { v: number; event: EventInfo }
+
+// POST /rooms/<номер>/events/<событие>/bets — ставка; сумма — целое > 0 в минимальных единицах
+export type PlaceBetRequest = { v?: number; outcome: string; amount: number; requestId?: string }
+export type PlaceBetResponse = { v: number; bet: BetInfo }
+
+// POST /rooms/<номер>/events/<событие>/clarify — уточнение автора
+export type ClarifyEventRequest = { v?: number; text: string }
+export type ClarifyEventResponse = { v: number; clarification: Clarification }
+
+// POST /rooms/<номер>/events/<событие>/cancel — отмена; после закрытия приёма — ведущий с причиной
+export type CancelEventRequest = { v?: number; reason?: string }
+export type CancelEventResponse = { v: number; cancelled: Cancellation }
 
 // Вход по ссылке (Р-03). Токены — в теле запроса, не в адресе: адреса попадают в журналы.
 // POST /rooms/<номер>/preview — что за комната по ссылке-приглашению: только название и ведущий
@@ -149,8 +209,80 @@ export function isRoomStateResponse(x: unknown): x is RoomStateResponse {
   const room = r && record(r.room)
   if (!r || !room || typeof r.v !== 'number' || typeof r.me !== 'string' || !Array.isArray(r.members)) return false
   if (!strings(room, 'id', 'name', 'currency', 'hostId') || typeof room.createdAt !== 'number') return false
+  if (typeof r.now !== 'number' || !Array.isArray(r.events) || !r.events.every(isEventView)) return false
   return r.members.every((m) => {
     const member = record(m)
     return !!member && strings(member, 'id', 'name')
   })
+}
+
+function numbers(r: Record<string, unknown>, ...names: string[]): boolean {
+  return names.every((n) => typeof r[n] === 'number')
+}
+
+function list(x: unknown, item: (r: Record<string, unknown>) => boolean): boolean {
+  return Array.isArray(x) && x.every((i) => {
+    const r = record(i)
+    return !!r && item(r)
+  })
+}
+
+function isEventInfo(r: Record<string, unknown>): boolean {
+  return (
+    strings(r, 'id', 'authorId', 'condition', 'check') &&
+    numbers(r, 'at', 'closesAt', 'expectedAt') &&
+    (r.subjectId === null || typeof r.subjectId === 'string') &&
+    list(r.outcomes, (o) => strings(o, 'id', 'title')) &&
+    (r.outcomes as unknown[]).length >= 2
+  )
+}
+
+function isClarification(r: Record<string, unknown>): boolean {
+  return strings(r, 'id', 'text') && numbers(r, 'at')
+}
+
+function isCancellation(r: Record<string, unknown>): boolean {
+  return strings(r, 'by') && numbers(r, 'at') && (r.reason === null || typeof r.reason === 'string')
+}
+
+function isBet(r: Record<string, unknown>): boolean {
+  return strings(r, 'id', 'memberId', 'outcome') && numbers(r, 'amount', 'at')
+}
+
+function isEventView(x: unknown): boolean {
+  const r = record(x)
+  if (!r || !isEventInfo(r)) return false
+  if (r.status !== 'open' && r.status !== 'closed' && r.status !== 'cancelled') return false
+  const c = record(r.cancelled)
+  const cancelled = r.cancelled === null || (!!c && isCancellation(c))
+  return (
+    cancelled &&
+    list(r.clarifications, isClarification) &&
+    list(r.bets, isBet) &&
+    list(r.refunds, (f) => strings(f, 'memberId') && numbers(f, 'amount'))
+  )
+}
+
+export function isCreateEventResponse(x: unknown): x is CreateEventResponse {
+  const r = versioned(x)
+  const event = r && record(r.event)
+  return !!event && isEventInfo(event)
+}
+
+export function isPlaceBetResponse(x: unknown): x is PlaceBetResponse {
+  const r = versioned(x)
+  const bet = r && record(r.bet)
+  return !!bet && isBet(bet) && strings(bet, 'event')
+}
+
+export function isClarifyEventResponse(x: unknown): x is ClarifyEventResponse {
+  const r = versioned(x)
+  const c = r && record(r.clarification)
+  return !!c && isClarification(c)
+}
+
+export function isCancelEventResponse(x: unknown): x is CancelEventResponse {
+  const r = versioned(x)
+  const c = r && record(r.cancelled)
+  return !!c && isCancellation(c)
 }
