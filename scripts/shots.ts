@@ -1,4 +1,5 @@
-// Снимки экранов для отчёта PR (Р-10: каждый экран — на 390 и 1280 px): npm run shots.
+// Снимки экранов для отчёта PR (Р-10: каждый экран — на 390 и 1280 px; раскладка компьютера —
+// меню развёрнуто и свёрнуто — ещё и на 1920 px): npm run shots.
 // Собирает сайт, поднимает vite preview (порт 4173) и запасной сервер комнат (server/node) в памяти
 // с выдуманным паролем, затем ведёт Chrome без окна по сценарию «ведущий создаёт комнату → друг
 // просится → ведущий впускает…»: у каждого «устройства» своё хранилище (отдельный контекст
@@ -224,6 +225,9 @@ async function scenario(cdp: Cdp, size: Size, server: RoomsServer, startServer: 
   const host = await Device.open(cdp, size, 'ведущий')
   await host.goto(SITE + '#/')
   await host.waitText('Комнат пока нет')
+  // Кнопка сворачивания меню — только на компьютере (от 1024 px)
+  const toggle = await host.eval<boolean>(`document.querySelector('.nav-toggle').offsetParent !== null`)
+  if (toggle !== size.width >= 1024) throw new Error(`Кнопка сворачивания меню ${toggle ? 'видна' : 'не видна'} на ${size.width} px`)
   // Комнату ведущий создаёт на сервере снимков: адрес — в его «Настройках»
   await host.eval(`localStorage.setItem('torgsin.server', ${JSON.stringify(server.url)})`)
   await host.shot('01-moi-komnaty-pusto')
@@ -405,6 +409,31 @@ async function layout(cdp: Cdp, size: Size, server: RoomsServer) {
   await host.reload()
   await host.waitText('Боря')
   await host.shot('21-komnata-menu-razvernuto')
+
+  // Свернуть меню: подписи скрыты, у значков — всплывающая подпись; положение помнится после перезагрузки
+  await host.click('«')
+  await sleep(200)
+  const collapsed = await host.eval<{ app: boolean; labels: boolean; titles: string[]; toggle: string | null }>(`({
+    app: document.querySelector('.app').classList.contains('nav-collapsed'),
+    labels: [...document.querySelectorAll('.nav-label')].some((el) => el.offsetParent !== null),
+    titles: [...document.querySelectorAll('.nav-item')].map((el) => el.title),
+    toggle: document.querySelector('.nav-toggle').getAttribute('aria-label'),
+  })`)
+  if (!collapsed.app || collapsed.labels || collapsed.titles.some((t) => !t) || collapsed.toggle !== 'Развернуть меню')
+    throw new Error('Меню не свернулось: ' + JSON.stringify(collapsed))
+  await host.shot('22-komnata-menu-svernuto')
+  await host.reload()
+  await host.waitText('Боря')
+  if (!(await host.eval<boolean>(`document.querySelector('.app').classList.contains('nav-collapsed')`)))
+    throw new Error('После перезагрузки меню развернулось')
+  await host.goto(SITE + '#/')
+  await host.waitText('Выберите комнату слева')
+  await host.shot('23-moi-komnaty-menu-svernuto')
+  // Развернуть обратно
+  await host.click('»')
+  await sleep(200)
+  if (await host.eval<boolean>(`document.querySelector('.app').classList.contains('nav-collapsed')`)) throw new Error('Меню не развернулось')
+  if (await host.eval<string | null>(`localStorage.getItem('torgsin.navCollapsed')`)) throw new Error('Развёрнутое меню не запомнилось')
 }
 
 async function main(): Promise<void> {

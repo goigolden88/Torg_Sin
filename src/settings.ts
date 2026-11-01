@@ -1,9 +1,28 @@
-// Настройки устройства (не данные комнат): адрес сервера и пароль компании — в localStorage,
-// не в IndexedDB
+// Настройки устройства (не данные комнат): адрес сервера, пароль компании, свёрнутое меню —
+// в localStorage, не в IndexedDB
 import { DEFAULT_SERVER, normalizeServer } from './rules/address'
 
 const SERVER_KEY = 'torgsin.server'
 const PASSWORD_KEY = 'torgsin.password'
+const NAV_KEY = 'torgsin.navCollapsed'
+
+// Меню слева на компьютере свёрнуто до значков; по умолчанию — развёрнуто
+export function getNavCollapsed(): boolean {
+  try {
+    return localStorage.getItem(NAV_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+export function setNavCollapsed(collapsed: boolean): void {
+  try {
+    if (collapsed) localStorage.setItem(NAV_KEY, '1')
+    else localStorage.removeItem(NAV_KEY)
+  } catch {
+    // localStorage недоступен (частный режим) — положение меню просто не запомнится
+  }
+}
 
 // Пароль компании, которым на этом устройстве уже создали комнату; нет — пусто
 export function getPassword(): string {

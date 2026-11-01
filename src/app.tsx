@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import { parseDeviceLink, parseInviteLink } from './rules/link'
 import { Rooms, type RoomsView } from './screens/Rooms'
 import { Settings } from './screens/Settings'
+import { getNavCollapsed, setNavCollapsed } from './settings'
 
 type Tab = 'rooms' | 'settings'
 type Route = { tab: 'settings' } | { tab: 'rooms'; view: RoomsView }
@@ -45,16 +46,37 @@ export function App() {
     return () => window.removeEventListener('hashchange', onHash)
   }, [])
 
+  // Меню слева сворачивается до значков — только на компьютере (кнопку и свёрнутый вид
+  // показывает CSS от 1024 px); положение — настройка устройства
+  const [collapsed, setCollapsed] = useState(getNavCollapsed)
+  const toggleNav = () => {
+    setNavCollapsed(!collapsed)
+    setCollapsed(!collapsed)
+  }
+  const toggleLabel = collapsed ? 'Развернуть меню' : 'Свернуть меню'
+
   return (
-    <div className="app">
+    <div className={'app' + (collapsed ? ' nav-collapsed' : '')}>
       <nav className="nav" aria-label="Разделы">
-        <div className="brand">ТоргСин</div>
+        <div className="nav-head">
+          <span className="brand">ТоргСин</span>
+          <button className="nav-toggle" type="button" onClick={toggleNav} aria-expanded={!collapsed} aria-label={toggleLabel} title={toggleLabel}>
+            <span aria-hidden="true">{collapsed ? '»' : '«'}</span>
+          </button>
+        </div>
         {TABS.map((t) => (
-          <a key={t.id} href={t.id === 'rooms' ? '#/' : '#/' + t.id} className="nav-item" aria-current={route.tab === t.id ? 'page' : undefined}>
+          <a
+            key={t.id}
+            href={t.id === 'rooms' ? '#/' : '#/' + t.id}
+            className="nav-item"
+            aria-current={route.tab === t.id ? 'page' : undefined}
+            aria-label={t.label}
+            title={collapsed ? t.label : undefined}
+          >
             <span className="nav-icon" aria-hidden="true">
               {t.icon}
             </span>
-            <span>{t.label}</span>
+            <span className="nav-label">{t.label}</span>
           </a>
         ))}
       </nav>
