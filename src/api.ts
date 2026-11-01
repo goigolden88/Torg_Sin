@@ -6,6 +6,10 @@ import {
   isClaimDeviceResponse,
   isClarifyEventResponse,
   isCreateEventResponse,
+  isDecideOutcomeResponse,
+  isObjectOutcomeResponse,
+  isProposeOutcomeResponse,
+  isVoteOutcomeResponse,
   isCreateRoomResponse,
   isPlaceBetResponse,
   isDeviceLinkResponse,
@@ -24,6 +28,10 @@ import {
   type ClarifyEventResponse,
   type CreateEventRequest,
   type CreateEventResponse,
+  type DecideOutcomeResponse,
+  type ObjectOutcomeResponse,
+  type ProposeOutcomeResponse,
+  type VoteOutcomeResponse,
   type PlaceBetRequest,
   type PlaceBetResponse,
   type CreateRoomRequest,
@@ -174,4 +182,33 @@ export function cancelEvent(
   reason: string | null,
 ): Promise<Result<CancelEventResponse>> {
   return call(eventUrl(server, roomId, eventId, 'cancel'), post(reason ? { reason } : {}, key), isCancelEventResponse)
+}
+
+// Исход события (Р-17): повтор с тем же requestId — тот же ответ без второй записи (Р-13)
+type OutcomeCall = { outcome: string; requestId: string }
+
+// POST …/events/<событие>/propose — предложить исход после закрытия приёма
+export function proposeOutcome(server: string, roomId: string, key: string, eventId: string, request: OutcomeCall): Promise<Result<ProposeOutcomeResponse>> {
+  return call(eventUrl(server, roomId, eventId, 'propose'), post(request, key), isProposeOutcomeResponse)
+}
+
+// POST …/events/<событие>/object — возразить ставившему, с причиной, сутки после предложения
+export function objectOutcome(
+  server: string,
+  roomId: string,
+  key: string,
+  eventId: string,
+  request: { reason: string; requestId: string },
+): Promise<Result<ObjectOutcomeResponse>> {
+  return call(eventUrl(server, roomId, eventId, 'object'), post(request, key), isObjectOutcomeResponse)
+}
+
+// POST …/events/<событие>/decide — решение ведущего после возражения
+export function decideOutcome(server: string, roomId: string, key: string, eventId: string, request: OutcomeCall): Promise<Result<DecideOutcomeResponse>> {
+  return call(eventUrl(server, roomId, eventId, 'decide'), post(request, key), isDecideOutcomeResponse)
+}
+
+// POST …/events/<событие>/vote — голос не ставившего
+export function voteOutcome(server: string, roomId: string, key: string, eventId: string, request: OutcomeCall): Promise<Result<VoteOutcomeResponse>> {
+  return call(eventUrl(server, roomId, eventId, 'vote'), post(request, key), isVoteOutcomeResponse)
 }
