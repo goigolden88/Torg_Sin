@@ -375,11 +375,42 @@ describe('исход события', () => {
     expect(eventVoters(roomEvents(log)[0])).toEqual(['C', 'D'])
   })
 
+  const cancel = (at: number): LogEntry => ({ id: 'X' + at, at, memberId: 'H', type: 'event.cancelled', event: 'E1', reason: 'Ошиблись' })
+
   it('отменённое событие — без выплат по исходу (возврат — в refunds)', () => {
-    const log = [...base, propose('A', '1'), { id: 'X', at: P + 1, memberId: 'H', type: 'event.cancelled', event: 'E1', reason: 'Ошиблись' } as LogEntry]
+    const log = [...base, propose('A', '1'), cancel(P + 1)]
     const view = eventView(roomEvents(log)[0], P + DAY)
-    expect(view.outcome).toMatchObject({ payouts: [], void: false })
+    expect(view.outcome).toMatchObject({ status: 'cancelled', payouts: [], void: false, finalAt: null })
     expect(view.refunds.length).toBe(2)
+  })
+
+  it('отменено после утверждения — «отменено», без выплат и finalAt, окончательным не станет', () => {
+    const log = [...base, propose('A', '1'), cancel(P + 2 * DAY)]
+    const view = eventView(roomEvents(log)[0], P + 2 * DAY)
+    expect(view.outcome).toMatchObject({ status: 'cancelled', approved: { outcome: '1', how: 'unopposed' }, finalAt: null, void: false, payouts: [] })
+    expect(view.refunds).toEqual([
+      { memberId: 'A', amount: 300 },
+      { memberId: 'B', amount: 100 },
+    ])
+    expect(outcomeAt(log, P + 100 * DAY)?.status).toBe('cancelled')
+    const decided = [...base, propose('A', '1'), object('B', P + HOUR), decide('H', '2', P + 2 * HOUR), cancel(P + 3 * HOUR)]
+    expect(outcomeAt(decided, P + 100 * DAY)).toMatchObject({ status: 'cancelled', finalAt: null, payouts: [] })
+  })
+
+  it('отменено во время голосования или суда — «отменено»', () => {
+    const voting = [...base, bet('H', '1', 50), propose('A', '1'), object('B', P), cancel(P + HOUR)]
+    expect(outcomeAt(voting, P + 2 * HOUR)?.status).toBe('cancelled')
+    expect(outcomeAt(voting, P + VOTING_TIME + 1)).toMatchObject({ status: 'cancelled', approved: null, finalAt: null })
+  })
+
+  it('событие ведущего о себе: предлагает любой участник, кроме ведущего-предмета; голосуют не ставившие', () => {
+    const own: LogEntry = { ...created('H'), memberId: 'H' }
+    const e = roomEvents([...room, own])[0]
+    for (const m of ['A', 'B', 'C', 'D']) expect(mayPropose(e, m, 2_000)).toBe(true)
+    expect(mayPropose(e, 'H', 3_000 + AUTHOR_SILENCE)).toBe(false)
+    const log = [...room, own, bet('A', '1', 100), bet('B', '2', 100), propose('C', '1'), propose('D', '2'), object('B', P)]
+    const view = outcomeAt(log, P)
+    expect(view).toMatchObject({ status: 'voting', proposal: { by: 'C', outcome: '1' }, voters: ['C', 'D'] })
   })
 
   it('кто предлагает: автор; автор — предмет спора — ведущий; автор молчит 3 дня — и ведущий; предмет — никогда', () => {
@@ -392,6 +423,7 @@ describe('исход события', () => {
     const own = roomEvents([...room, { ...created('A') }])[0]
     expect(mayPropose(own, 'A', 2_000)).toBe(false)
     expect(mayPropose(own, 'H', 2_000)).toBe(true)
+    expect(mayPropose(own, 'B', 3_000 + AUTHOR_SILENCE)).toBe(false)
     const aboutB = roomEvents([...room, created('B')])[0]
     expect(mayPropose(aboutB, 'B', 3_000 + AUTHOR_SILENCE)).toBe(false)
     const aboutHost = roomEvents([...room, created('H')])[0]
