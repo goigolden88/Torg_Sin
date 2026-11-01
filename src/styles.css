@@ -15,6 +15,15 @@
   --gold-text: #1a1408;
   --ok: #5cc88a;
   --error: #ff7a7a;
+  /* Исходы на графике — по порядку исходов события, не по месту; тёмные ступени палитры, где
+     соседние цвета различимы и при нарушениях цветового зрения */
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --series-3: #199e70;
+  --series-4: #c98500;
+  --series-5: #d55181;
+  --series-6: #008300;
+  --series-7: #9085e9;
   --radius: 14px;
   --tap: 44px; /* меньше кнопки на телефоне не бывает */
   --nav-h: 64px;
@@ -666,6 +675,163 @@ h3 {
 .feed-who,
 .position-title {
   font-weight: 600;
+}
+
+/* График вероятности по ставкам: легенда, слева подписи 0–100 %, рисунок по ширине, под ним —
+   начало и конец оси времени и подпись выбранной ставки. Рисунок тянется по контейнеру (SVG
+   в рамке 0…100), толщина линий и точек — в пикселях экрана */
+.series-1 { --c: var(--series-1); }
+.series-2 { --c: var(--series-2); }
+.series-3 { --c: var(--series-3); }
+.series-4 { --c: var(--series-4); }
+.series-5 { --c: var(--series-5); }
+.series-6 { --c: var(--series-6); }
+.series-7 { --c: var(--series-7); }
+
+.chart {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.chart-legend,
+.chart-tip-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 1rem;
+}
+
+.chart-key {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.chart-swatch {
+  flex: none;
+  width: 0.8rem;
+  height: 0.8rem;
+  border-radius: 0.2rem;
+  background: var(--c);
+}
+
+.chart-key-chance {
+  flex: none;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.chart-frame {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-rows: clamp(9rem, 45vw, 15rem) auto;
+  column-gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.chart-y {
+  position: relative;
+  width: 2.6rem;
+}
+
+.chart-y span,
+.chart-x {
+  font-size: 0.75rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.chart-y span {
+  position: absolute;
+  right: 0;
+  transform: translateY(-50%);
+  white-space: nowrap;
+}
+
+.chart-plot {
+  position: relative;
+  min-width: 0;
+  cursor: crosshair;
+  touch-action: pan-y; /* прокрутка страницы пальцем остаётся; нажатие — выбор ставки */
+  border-radius: 4px;
+}
+
+.chart-plot:focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 4px;
+}
+
+.chart-plot svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.chart-grid {
+  stroke: var(--line);
+  stroke-width: 1;
+}
+
+.chart-base {
+  stroke: var(--muted);
+  stroke-width: 1;
+}
+
+.chart-guide {
+  stroke: var(--muted);
+  stroke-width: 1;
+  stroke-dasharray: 4 3;
+}
+
+.chart-line {
+  fill: none;
+  stroke: var(--c);
+  stroke-width: 2;
+  stroke-linejoin: round;
+}
+
+.chart-dots,
+.chart-dot-on {
+  fill: none;
+  stroke: var(--c);
+  stroke-linecap: round;
+  stroke-width: 8;
+}
+
+.chart-dot-on {
+  stroke-width: 14;
+}
+
+.chart-x {
+  grid-column: 2;
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding-top: 0.35rem;
+}
+
+.chart-tip {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0.5rem 0.75rem;
+  border-radius: 10px;
+  background: var(--surface-2);
+}
+
+.chart-tip p {
+  margin: 0;
+}
+
+.chart-tip-head {
+  font-weight: 600;
+  overflow-wrap: anywhere;
 }
 
 /* Исход события: статус сверху, ход исхода, действия, выплаты */

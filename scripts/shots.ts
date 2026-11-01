@@ -445,6 +445,21 @@ async function confirmBet(device: Device): Promise<void> {
   await device.waitText('Ставка принята')
 }
 
+// Выбрать точку графика вероятности: место по ширине рисунка (0 — начало оси, 1 — конец);
+// hover — наведением мыши (компьютер), иначе нажатием (телефон)
+async function pickPoint(device: Device, fraction: number, hover: boolean): Promise<void> {
+  const done = await device.eval<boolean>(`(() => {
+    const plot = document.querySelector('.chart-plot')
+    if (!plot) return false
+    const box = plot.getBoundingClientRect()
+    const init = { bubbles: true, clientX: box.left + box.width * ${fraction}, clientY: box.top + box.height / 2 }
+    if (${hover}) plot.dispatchEvent(new PointerEvent('pointermove', { ...init, pointerType: 'mouse' }))
+    else plot.dispatchEvent(new MouseEvent('click', init))
+    return true
+  })()`)
+  if (!done) throw new Error('Нет графика вероятности')
+}
+
 // События: пусто → новое событие → друг ставит с подтверждением → у ведущего обновилось само →
 // ведущий ставит на другой исход → лента и позиция → приём закрыт → отменено ведущим с причиной →
 // свои варианты с «Другое» → отменено автором → список событий
@@ -475,6 +490,9 @@ async function events(host: Device, friend: Device, size: Size, server: RoomsSer
   await friend.shot('12g-podtverzhdenie-stavki')
   await confirmBet(friend)
   await friend.waitCount('.feed-row', 1)
+  // Одна ставка — графика ещё нет
+  await friend.waitText('График появится после второй ставки')
+  await friend.shot('12g1-grafik-malo-stavok')
 
   // У ведущего — сам, опросом раз в 5 с; ставит 450 ₽ на «Нет»
   await host.waitCount('.feed-row', 1)
@@ -484,16 +502,74 @@ async function events(host: Device, friend: Device, size: Size, server: RoomsSer
   await host.waitText('при нынешних ставках получите')
   await confirmBet(host)
   await host.waitCount('.feed-row', 2)
+  await host.waitCount('.chart-plot', 1)
   await host.shot('12h-sobytie-s-bankom')
   if (size.width >= 1024) await host.shotAt(LAPTOP, '12h-sobytie-s-bankom')
+  // Подпись ставки: на телефоне — нажатием, на компьютере — наведением
+  await pickPoint(host, 1, size.width >= 1024)
+  await host.waitText('После этой ставки')
+  await host.waitText('Аня (вы): 450')
+  await host.shot('12h1-grafik-da-net')
+  // У друга график появился сам, опросом, без перезагрузки
+  await friend.waitCount('.chart-plot', 1)
   await friend.waitCount('.feed-row', 2)
   await sleep(6000) // ещё опрос: двойное нажатие не дало второй ставки
   await friend.waitCount('.feed-row', 2)
   await friend.shot('12i-lenta-i-pozitsiya')
 
-  // Приём закрыт: событие со сроком через 8 секунд — через сервер, минуя экран
+  // График с 4 исходами (3 своих и «Другое») и с 7 (6 своих и «Другое»): ставки — через сервер,
+  // с паузой, чтобы точки разошлись по времени
   const hostKey = await host.roomKey(roomId)
   const friendKey = await friend.roomKey(roomId)
+  const many = async (condition: string, titles: string[], bets: [string, string, number][], file: string) => {
+    const closesAt = Date.now() + 24 * 60 * 60 * 1000
+    const { event } = await api<{ event: { id: string } }>(server, `/rooms/${roomId}/events`, hostKey, {
+      condition,
+      check: 'Фото в общий чат',
+      outcomes: titles,
+      closesAt,
+      expectedAt: closesAt + 60 * 60 * 1000,
+    })
+    for (const [key, outcome, amount] of bets) {
+      await sleep(700)
+      await api(server, `/rooms/${roomId}/events/${event.id}/bets`, key, { outcome, amount })
+    }
+    await host.goto(SITE + `#/room/${roomId}/event/${event.id}`)
+    await host.waitCount('.chart-key', titles.length + 1)
+    await pickPoint(host, 0.75, size.width >= 1024)
+    await host.waitText('После этой ставки')
+    await host.shot(file)
+  }
+  await many(
+    'Какую рыбу поймаем первой',
+    ['Окунь', 'Щука', 'Лещ'],
+    [
+      [friendKey, '1', 20000],
+      [hostKey, '2', 30000],
+      [friendKey, '3', 10000],
+      [hostKey, '4', 15000],
+      [friendKey, '2', 25000],
+      [hostKey, '1', 40000],
+    ],
+    '12i1-grafik-4-iskhoda',
+  )
+  await many(
+    'Кто приедет на дачу последним',
+    ['Аня', 'Боря', 'Вера', 'Гена', 'Дима', 'Женя'],
+    [
+      [friendKey, '1', 10000],
+      [hostKey, '2', 20000],
+      [friendKey, '3', 15000],
+      [hostKey, '4', 5000],
+      [friendKey, '5', 12000],
+      [hostKey, '6', 8000],
+      [friendKey, '7', 6000],
+      [hostKey, '3', 20000],
+    ],
+    '12i2-grafik-7-iskhodov',
+  )
+
+  // Приём закрыт: событие со сроком через 8 секунд — через сервер, минуя экран
   const closesAt = Date.now() + 8000
   const { event } = await api<{ event: { id: string } }>(server, `/rooms/${roomId}/events`, hostKey, {
     condition: 'Электричка в 18:05 придёт без опоздания',
