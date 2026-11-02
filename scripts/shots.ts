@@ -177,6 +177,20 @@ class Device {
     throw new Error(`${this.name}: не дождался «${text}». На экране:\n${screen}`)
   }
 
+  // Ждать текст внутри блока selector («Ваша позиция»); неразрывные пробелы сумм — как обычные.
+  // Возвращает весь текст блока — для проверки, чего в нём быть не должно
+  async waitIn(selector: string, text: string, timeout = TIMEOUT): Promise<string> {
+    const read = `(document.querySelector(${JSON.stringify(selector)})?.innerText ?? '').replace(/\\u00a0/g, ' ')`
+    const started = Date.now()
+    let seen = ''
+    while (Date.now() - started < timeout) {
+      seen = await this.eval<string>(read).catch(() => '')
+      if (seen.includes(text)) return seen
+      await sleep(200)
+    }
+    throw new Error(`${this.name}: в ${selector} не дождался «${text}». В блоке:\n${seen}`)
+  }
+
   // Нажать видимую кнопку, ссылку или подпись (флажок, выбор) по тексту: сначала точное совпадение, потом начало
   async click(text: string): Promise<void> {
     const done = await this.eval<boolean>(`(() => {
@@ -689,6 +703,18 @@ async function outcomes(cdp: Cdp, size: Size, startServer: ServerModule['startSe
     const borya = await open('Боря', boryaKey)
     const vera = await open('Вера', veraKey)
 
+    // «Ваша позиция» после утверждения (#39): итог из строки выплат, без прикидки «если выиграет».
+    // Снимки позиции на компьютере — ещё и на 1440 px
+    const POSITION = 'section[aria-label="Ваша позиция"]'
+    const position = async (device: Device, text: string) => {
+      const seen = await device.waitIn(POSITION, text)
+      if (seen.includes('если выиграет')) throw new Error(`После утверждения в «Вашей позиции» осталась прикидка:\n${seen}`)
+    }
+    const shotWide = async (device: Device, file: string) => {
+      await device.shot(file)
+      if (size.width >= 1024) await device.shotAt(EVENT_WIDTHS[2], file)
+    }
+
     // Событие с приёмом на 3 секунды по часам сервера и ставками
     const event = async (key: string, condition: string, check: string, bets: [string, string, number][]) => {
       const closesAt = Date.now() + shift + 3000
@@ -700,9 +726,11 @@ async function outcomes(cdp: Cdp, size: Size, startServer: ServerModule['startSe
       [boryaKey, '1', 30000],
       [veraKey, '2', 50000],
     ])
+    // Аня ставит на оба исхода — в позиции общая сумма и ставки по исходам
     const ten = await event(hostKey, 'К обеду клюнет хотя бы десять рыб', 'Считаем улов в ведре в 14:00', [
       [hostKey, '1', 40000],
       [boryaKey, '2', 60000],
+      [hostKey, '2', 10000],
     ])
     const boat = await event(hostKey, 'Лодку на базе дадут без очереди', 'Кто первым придёт на базу — пишет в чат', [
       [boryaKey, '1', 20000],
@@ -718,6 +746,7 @@ async function outcomes(cdp: Cdp, size: Size, startServer: ServerModule['startSe
     await borya.waitText('Ставившие смогут возразить в течение суток')
     await borya.shot('24-predlozhit-iskhod')
     await confirmTwice(borya, 'возразить до')
+    await borya.waitIn(POSITION, 'если выиграет — получите') // не утверждён — прикидка, как прежде
     await borya.shot('25-iskhod-predlozhen')
 
     // Вера ставила на «Нет» — возражает с причиной; у Бори появляется само (опрос раз в 5 с)
@@ -741,8 +770,14 @@ async function outcomes(cdp: Cdp, size: Size, startServer: ServerModule['startSe
     await host.click('Решить')
     await host.waitText('Утвердить „Нет“ решением ведущего?')
     await confirmTwice(host, 'Утверждён „Нет“ — ведущим')
+    await position(host, 'Вы не ставили.')
+    // Боря ставил 300 ₽ на «Да» — проиграл; Вера 500 ₽ на «Нет» — забрала банк
     await borya.waitText('Утверждён „Нет“ — ведущим')
-    await borya.shot('28-utverzhden-vyplaty')
+    await position(borya, 'Утверждён „Нет“: вы поставили 300 ₽, получите 0 ₽ — итог −300 ₽')
+    await shotWide(borya, '28-utverzhden-vyplaty')
+    await vera.waitText('Утверждён „Нет“ — ведущим')
+    await position(vera, 'Утверждён „Нет“: вы поставили 500 ₽, получите 800 ₽ — итог +300 ₽')
+    await shotWide(vera, '28a-pozitsiya-vyigral')
     const objections = await borya.eval<number>(`[...document.querySelectorAll('.outcome-log > li')].filter((li) => li.innerText.startsWith('Возражение')).length`)
     if (objections !== 1) throw new Error('Двойное нажатие дало возражений: ' + objections)
 
@@ -758,6 +793,12 @@ async function outcomes(cdp: Cdp, size: Size, startServer: ServerModule['startSe
     await vera.waitText('Голосовать за „Да“?')
     await confirmTwice(vera, 'Утверждён „Да“ — голосованием')
     await vera.shot('30-utverzhden-golosovaniem')
+    // Аня: 400 ₽ на «Да» и 100 ₽ на «Нет» — банк 1 100 ₽ целиком её
+    await host.goto(ten.href)
+    await host.waitText('Утверждён „Да“ — голосованием')
+    await position(host, 'Утверждён „Да“: вы поставили 500 ₽, получите 1 100 ₽ — итог +600 ₽')
+    await position(host, 'ваши ставки: „Да“ 400 ₽, „Нет“ 100 ₽')
+    await shotWide(host, '30a-pozitsiya-neskolko-iskhodov')
 
     // Все ставили на «Да», «Да» и утверждён — сутки без возражений: без игры
     await api(server, `${rooms}/events/${boat.id}/propose`, hostKey, { outcome: '1' })
@@ -765,12 +806,15 @@ async function outcomes(cdp: Cdp, size: Size, startServer: ServerModule['startSe
     await vera.goto(boat.href)
     await vera.waitText('Утверждён „Да“ — без возражений')
     await vera.waitText('Без игры: ставки возвращены')
-    await vera.shot('31-bez-igry')
+    await position(vera, 'Без игры — вам вернётся 300 ₽.')
+    await shotWide(vera, '31-bez-igry')
 
-    // Через 7 дней после утверждения — «Окончательно»
+    // Через 7 дней после утверждения — «Окончательно»: «получили», «вернулось»
     shift += 7 * 24 * HOUR
     await borya.waitText('Окончательно.')
-    await borya.shot('32-okonchatelno')
+    await position(borya, 'Утверждён „Нет“: вы поставили 300 ₽, получили 0 ₽ — итог −300 ₽')
+    await shotWide(borya, '32-okonchatelno')
+    await position(vera, 'Без игры — вам вернулось 300 ₽.')
   } finally {
     await server.close()
   }

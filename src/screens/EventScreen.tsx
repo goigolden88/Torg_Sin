@@ -328,18 +328,42 @@ function ConfirmBet({
 }
 
 // «Ваша позиция»: мои ставки по исходам и сколько получу при каждом исходе по нынешним ставкам
-// (settlePool); отменено — сколько вернётся (refunds)
+// (settlePool); отменено — сколько вернётся (refunds); исход утверждён — мой итог из таблицы выплат
+// (outcome.payouts): поставил, получил, плюс или минус — без прикидки
 function Position({ room, event }: { room: SavedRoom; event: EventView }) {
   const me = room.memberId
   const mine = event.bets.filter((b) => b.memberId === me)
   const staked = (outcome: string) => mine.filter((b) => b.outcome === outcome).reduce((s, b) => s + b.amount, 0)
+  const o = event.outcome
+  const approved = !event.cancelled && o && o.status !== 'cancelled' ? o.approved : null
+  const result = approved ? o?.payouts.find((p) => p.memberId === me) : undefined
 
   let body
   if (mine.length === 0) {
-    body = <p className="hint">Вы ещё не ставили.</p>
+    body = <p className="hint">{approved ? 'Вы не ставили.' : 'Вы ещё не ставили.'}</p>
   } else if (event.cancelled) {
     const refund = event.refunds.find((r) => r.memberId === me)?.amount ?? 0
     body = <p>Событие отменено — вам вернётся {money(refund, room.currency)}.</p>
+  } else if (approved && o && result) {
+    const sum = (n: number) => money(n, room.currency)
+    const final = o.status === 'final'
+    const title = event.outcomes.find((x) => x.id === approved.outcome)?.title ?? approved.outcome
+    const on = event.outcomes.filter((x) => staked(x.id) > 0)
+    body = (
+      <div className="position-total">
+        {o.void ? (
+          <p>
+            Без игры — вам {final ? 'вернулось' : 'вернётся'} {sum(result.payout)}.
+          </p>
+        ) : (
+          <p>
+            Утверждён „{title}“: вы поставили {sum(result.staked)}, {final ? 'получили' : 'получите'} {sum(result.payout)} — итог{' '}
+            <span className={result.net > 0 ? 'win' : result.net < 0 ? 'loss' : ''}>{(result.net > 0 ? '+' : '') + sum(result.net)}</span>
+          </p>
+        )}
+        {on.length > 1 && <p className="hint">ваши ставки: {on.map((x) => `„${x.title}“ ${sum(staked(x.id))}`).join(', ')}</p>}
+      </div>
+    )
   } else {
     body = (
       <ul className="position">
