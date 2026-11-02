@@ -959,12 +959,15 @@ h3 {
   color: var(--muted);
 }
 
-.payouts .win {
+/* «Итог» в «Выплатах» и в «Вашей позиции» — одним видом */
+.payouts .win,
+.position-total .win {
   color: var(--ok);
   font-weight: 600;
 }
 
-.payouts .loss {
+.payouts .loss,
+.position-total .loss {
   color: var(--error);
   font-weight: 600;
 }
