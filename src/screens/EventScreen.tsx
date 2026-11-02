@@ -59,68 +59,74 @@ export function EventScreen({ room, eventId, onUpdate }: { room: SavedRoom; even
   const mayClarify = isAuthor && status !== 'cancelled'
   const mayCancel = (status === 'open' && isAuthor) || (status === 'closed' && isHost)
 
+  // Две обёртки-колонки: «всё про спор и мою ставку» и «график + лента». На телефоне, планшете и
+  // 1024–1279 px — одна под другой (порядок блоков прежний), от 1280 px — рядом (styles.css)
   return (
     <div className="card event">
-      <BackLink href={back} />
-      <h2 className="event-title">{event.condition}</h2>
-      <p className="event-check">
-        <span className="hint">Как проверяем: </span>
-        {event.check}
-      </p>
-      {event.clarifications.length > 0 && (
-        <ul className="clarifications" aria-label="Уточнения">
-          {event.clarifications.map((c) => (
-            <li key={c.id}>
-              <span className="hint">Уточнение, {formatDateTime(c.at)}: </span>
-              {c.text}
-            </li>
-          ))}
-        </ul>
-      )}
-      <p className="hint">
-        Автор — {nameOf(room, event.authorId)} · предмет спора — {nameOf(room, event.subjectId)} · исход ожидается к{' '}
-        {formatDateTime(event.expectedAt)}
-      </p>
-      <p>
-        <StatusLine event={event} now={now} />
-      </p>
-      {event.cancelled && (
-        <p className="hint">
-          Отмена: {nameOf(room, event.cancelled.by)}
-          {event.cancelled.by === event.authorId ? ' (автор)' : ''}, {formatDateTime(event.cancelled.at)}
-          {event.cancelled.reason ? `. Причина: ${event.cancelled.reason}` : ''}
+      <div className="event-main">
+        <BackLink href={back} />
+        <h2 className="event-title">{event.condition}</h2>
+        <p className="event-check">
+          <span className="hint">Как проверяем: </span>
+          {event.check}
         </p>
-      )}
-      {sync.state === 'fail' && <p className="error">{sync.text}</p>}
+        {event.clarifications.length > 0 && (
+          <ul className="clarifications" aria-label="Уточнения">
+            {event.clarifications.map((c) => (
+              <li key={c.id}>
+                <span className="hint">Уточнение, {formatDateTime(c.at)}: </span>
+                {c.text}
+              </li>
+            ))}
+          </ul>
+        )}
+        <p className="hint">
+          Автор — {nameOf(room, event.authorId)} · предмет спора — {nameOf(room, event.subjectId)} · исход ожидается к{' '}
+          {formatDateTime(event.expectedAt)}
+        </p>
+        <p>
+          <StatusLine event={event} now={now} />
+        </p>
+        {event.cancelled && (
+          <p className="hint">
+            Отмена: {nameOf(room, event.cancelled.by)}
+            {event.cancelled.by === event.authorId ? ' (автор)' : ''}, {formatDateTime(event.cancelled.at)}
+            {event.cancelled.reason ? `. Причина: ${event.cancelled.reason}` : ''}
+          </p>
+        )}
+        {sync.state === 'fail' && <p className="error">{sync.text}</p>}
 
-      <EventOutcome room={room} event={event} now={now} sync={sync} onDone={refresh} />
+        <EventOutcome room={room} event={event} now={now} sync={sync} onDone={refresh} />
 
-      <Bars room={room} event={event} />
+        <Bars room={room} event={event} />
 
-      {status === 'open' && <BetForm room={room} event={event} sync={sync} onAsk={setAsk} placed={placed} />}
+        {status === 'open' && <BetForm room={room} event={event} sync={sync} onAsk={setAsk} placed={placed} />}
 
-      {mayClarify || mayCancel ? (
-        <div className="row">
-          {mayClarify && (
-            <button className="button secondary" type="button" onClick={() => setPanel(panel === 'clarify' ? 'none' : 'clarify')} aria-expanded={panel === 'clarify'}>
-              Уточнить
-            </button>
-          )}
-          {mayCancel && (
-            <button className="button secondary" type="button" onClick={() => setPanel(panel === 'cancel' ? 'none' : 'cancel')} aria-expanded={panel === 'cancel'}>
-              {status === 'open' ? 'Отменить событие' : 'Отменить'}
-            </button>
-          )}
-        </div>
-      ) : null}
-      {panel === 'clarify' && <ClarifyPanel room={room} event={event} onDone={refresh} onClose={() => setPanel('none')} />}
-      {panel === 'cancel' && mayCancel && (
-        <CancelPanel room={room} event={event} status={status} onDone={refresh} onClose={() => setPanel('none')} />
-      )}
+        {mayClarify || mayCancel ? (
+          <div className="row">
+            {mayClarify && (
+              <button className="button secondary" type="button" onClick={() => setPanel(panel === 'clarify' ? 'none' : 'clarify')} aria-expanded={panel === 'clarify'}>
+                Уточнить
+              </button>
+            )}
+            {mayCancel && (
+              <button className="button secondary" type="button" onClick={() => setPanel(panel === 'cancel' ? 'none' : 'cancel')} aria-expanded={panel === 'cancel'}>
+                {status === 'open' ? 'Отменить событие' : 'Отменить'}
+              </button>
+            )}
+          </div>
+        ) : null}
+        {panel === 'clarify' && <ClarifyPanel room={room} event={event} onDone={refresh} onClose={() => setPanel('none')} />}
+        {panel === 'cancel' && mayCancel && (
+          <CancelPanel room={room} event={event} status={status} onDone={refresh} onClose={() => setPanel('none')} />
+        )}
 
-      <Position room={room} event={event} />
-      <ChanceChart room={room} event={event} now={now} />
-      <Feed room={room} event={event} />
+        <Position room={room} event={event} />
+      </div>
+      <div className="event-side">
+        <ChanceChart room={room} event={event} now={now} />
+        <Feed room={room} event={event} />
+      </div>
 
       {ask && (
         <ConfirmBet

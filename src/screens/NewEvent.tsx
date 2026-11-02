@@ -95,104 +95,110 @@ export function NewEvent({ room, onUpdate }: { room: SavedRoom; onUpdate: (room:
       <BackLink href={back} />
       <h2>Новое событие</h2>
       {sync.state === 'fail' && <p className="error">{sync.text}</p>}
+      {/* Поля — в двух обёртках-колонках: до 1280 px одна под другой, шире — рядом (styles.css);
+          порядок в разметке и переход по Tab — прежние, сверху вниз */}
       <form className="form" onSubmit={submit}>
-        <label className="field">
-          <span>Условие</span>
-          <textarea
-            className="input textarea"
-            value={condition}
-            onChange={(e) => setCondition(e.target.value)}
-            maxLength={MAX_EVENT_TEXT * 2}
-            rows={2}
-            placeholder="Например: в субботу на даче будет дождь"
-          />
-        </label>
-        <label className="field">
-          <span>Как проверяем</span>
-          <textarea
-            className="input textarea"
-            value={check}
-            onChange={(e) => setCheck(e.target.value)}
-            maxLength={MAX_EVENT_TEXT * 2}
-            rows={2}
-            placeholder="Например: кто на даче — присылает фото"
-          />
-        </label>
-
-        <fieldset className="field">
-          <legend>Исходы</legend>
-          <div className="chips">
-            <label className="chip">
-              <input type="radio" name="mode" checked={mode === 'yes-no'} onChange={() => setMode('yes-no')} />
-              <span>Да / Нет</span>
-            </label>
-            <label className="chip">
-              <input type="radio" name="mode" checked={mode === 'own'} onChange={() => setMode('own')} />
-              <span>Свои варианты</span>
-            </label>
-          </div>
-          {mode === 'own' && (
-            <div className="outcomes-edit">
-              {own.map((value, i) => (
-                <div key={i} className="outcome-edit">
-                  <label className="field">
-                    <span>Вариант {i + 1}</span>
-                    <input className="input" value={value} onChange={(e) => setOutcome(i, e.target.value)} maxLength={MAX_OUTCOME * 2} autoComplete="off" />
-                  </label>
-                  {own.length > MIN_OUTCOMES && (
-                    <button
-                      className="button secondary"
-                      type="button"
-                      aria-label={`Убрать вариант ${i + 1}`}
-                      onClick={() => setOwn((list) => list.filter((_, j) => j !== i))}
-                    >
-                      Убрать
-                    </button>
-                  )}
-                </div>
-              ))}
-              {own.length < MAX_OUTCOMES && (
-                <div className="row">
-                  <button className="button secondary" type="button" onClick={() => setOwn((list) => [...list, ''])}>
-                    Добавить вариант
-                  </button>
-                </div>
-              )}
-              <p className="hint">
-                Последним добавится «{OTHER}» — на случай, если не сбудется ни один вариант.
-              </p>
-            </div>
-          )}
-        </fieldset>
-
-        <div className="times">
+        <div className="form-col">
           <label className="field">
-            <span>Приём ставок до</span>
-            <input className="input" type="datetime-local" value={closes} onChange={(e) => setCloses(e.target.value)} />
+            <span>Условие</span>
+            <textarea
+              className="input textarea"
+              value={condition}
+              onChange={(e) => setCondition(e.target.value)}
+              maxLength={MAX_EVENT_TEXT * 2}
+              rows={2}
+              placeholder="Например: в субботу на даче будет дождь"
+            />
           </label>
           <label className="field">
-            <span>Исход ожидается к</span>
-            <input className="input" type="datetime-local" value={expected} onChange={(e) => setExpected(e.target.value)} />
+            <span>Как проверяем</span>
+            <textarea
+              className="input textarea"
+              value={check}
+              onChange={(e) => setCheck(e.target.value)}
+              maxLength={MAX_EVENT_TEXT * 2}
+              rows={2}
+              placeholder="Например: кто на даче — присылает фото"
+            />
           </label>
         </div>
-        <p className="hint">Время — местное, на этом устройстве. Приём закрывается по часам сервера.</p>
 
-        <fieldset className="field">
-          <legend>Предмет спора</legend>
-          <div className="chips">
-            <label className="chip">
-              <input type="radio" name="subject" checked={subject === ''} onChange={() => setSubject('')} />
-              <span>Никто</span>
-            </label>
-            {room.members.map((m) => (
-              <label key={m.id} className="chip">
-                <input type="radio" name="subject" checked={subject === m.id} onChange={() => setSubject(m.id)} />
-                <span>{m.id === room.memberId ? `${m.name} (вы)` : m.name}</span>
+        <div className="form-col">
+          <fieldset className="field">
+            <legend>Исходы</legend>
+            <div className="chips">
+              <label className="chip">
+                <input type="radio" name="mode" checked={mode === 'yes-no'} onChange={() => setMode('yes-no')} />
+                <span>Да / Нет</span>
               </label>
-            ))}
+              <label className="chip">
+                <input type="radio" name="mode" checked={mode === 'own'} onChange={() => setMode('own')} />
+                <span>Свои варианты</span>
+              </label>
+            </div>
+            {mode === 'own' && (
+              <div className="outcomes-edit">
+                {own.map((value, i) => (
+                  <div key={i} className="outcome-edit">
+                    <label className="field">
+                      <span>Вариант {i + 1}</span>
+                      <input className="input" value={value} onChange={(e) => setOutcome(i, e.target.value)} maxLength={MAX_OUTCOME * 2} autoComplete="off" />
+                    </label>
+                    {own.length > MIN_OUTCOMES && (
+                      <button
+                        className="button secondary"
+                        type="button"
+                        aria-label={`Убрать вариант ${i + 1}`}
+                        onClick={() => setOwn((list) => list.filter((_, j) => j !== i))}
+                      >
+                        Убрать
+                      </button>
+                    )}
+                  </div>
+                ))}
+                {own.length < MAX_OUTCOMES && (
+                  <div className="row">
+                    <button className="button secondary" type="button" onClick={() => setOwn((list) => [...list, ''])}>
+                      Добавить вариант
+                    </button>
+                  </div>
+                )}
+                <p className="hint">
+                  Последним добавится «{OTHER}» — на случай, если не сбудется ни один вариант.
+                </p>
+              </div>
+            )}
+          </fieldset>
+
+          <div className="times">
+            <label className="field">
+              <span>Приём ставок до</span>
+              <input className="input" type="datetime-local" value={closes} onChange={(e) => setCloses(e.target.value)} />
+            </label>
+            <label className="field">
+              <span>Исход ожидается к</span>
+              <input className="input" type="datetime-local" value={expected} onChange={(e) => setExpected(e.target.value)} />
+            </label>
           </div>
-          <span className="hint">Если спор о ком-то из участников («Боря подтянется 20 раз»): он может ставить, но не объявляет исход.</span>
-        </fieldset>
+          <p className="hint">Время — местное, на этом устройстве. Приём закрывается по часам сервера.</p>
+
+          <fieldset className="field">
+            <legend>Предмет спора</legend>
+            <div className="chips">
+              <label className="chip">
+                <input type="radio" name="subject" checked={subject === ''} onChange={() => setSubject('')} />
+                <span>Никто</span>
+              </label>
+              {room.members.map((m) => (
+                <label key={m.id} className="chip">
+                  <input type="radio" name="subject" checked={subject === m.id} onChange={() => setSubject(m.id)} />
+                  <span>{m.id === room.memberId ? `${m.name} (вы)` : m.name}</span>
+                </label>
+              ))}
+            </div>
+            <span className="hint">Если спор о ком-то из участников («Боря подтянется 20 раз»): он может ставить, но не объявляет исход.</span>
+          </fieldset>
+        </div>
 
         {error && (
           <p className="error" role="alert">
