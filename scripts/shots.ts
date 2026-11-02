@@ -1,6 +1,6 @@
 // Снимки экранов для отчёта PR (Р-10: каждый экран — на 390 и 1280 px; раскладка компьютера —
-// меню развёрнуто и свёрнуто — ещё и на 1920 px; событие — на 1024, 1280, 1440, 1536 и 1920 px
-// с проверкой, что оно во всю свою ширину и по центру): npm run shots.
+// меню развёрнуто и свёрнуто — ещё и на 1920 px; событие — на 1024, 1280, 1440, 1536, 1920 и
+// 2560 px с проверкой, что оно во всю ширину области, по центру и от 1280 px в две колонки): npm run shots.
 // Собирает сайт, поднимает vite preview (порт 4173) и запасной сервер комнат (server/node) в памяти
 // с выдуманным паролем, затем ведёт Chrome без окна по сценарию «ведущий создаёт комнату → друг
 // просится → ведущий впускает…»: у каждого «устройства» своё хранилище (отдельный контекст
@@ -26,14 +26,17 @@ const SIZES: Size[] = [
 const WIDE: Size[] = [SIZES[1], { name: '1920', width: 1920, height: 1080 }]
 // Узкий компьютер: событие с развёрнутым меню должно получить свою ширину (≥ 640 px)
 const LAPTOP: Size = { name: '1024', width: 1024, height: 768 }
-// Событие на ширинах ноутбука и монитора: карточка — во всю свою ширину и по центру (#30)
+// Событие на ширинах ноутбука и монитора: карточка — во всю ширину области, не шире
+// --content-max, по центру; от 1280 px — две колонки (#38)
 const EVENT_WIDTHS: Size[] = [
   LAPTOP,
   SIZES[1],
   { name: '1440', width: 1440, height: 900 },
   { name: '1536', width: 1536, height: 864 },
   WIDE[1],
+  { name: '2560', width: 2560, height: 1440 },
 ]
+const CONTENT_MAX = 1600 // --content-max, 100 rem при шрифте 16 px
 const TIMEOUT = 20_000 // ожидание экрана: опрос сервера — раз в 5 секунд
 
 type RoomsServer = { url: string; close: () => Promise<void> }
@@ -834,7 +837,10 @@ async function layout(cdp: Cdp, size: Size, server: RoomsServer) {
 
 // Где стоит карточка открытого: ширина, поля слева и справа от неё до краёв области справа от
 // меню, доступная ширина (содержимое .main без полей), список и «Назад», прокрутка вбок; на
-// событии — график и таблица выплат внутри карточки
+// событии — график и таблица выплат внутри карточки, длинное условие не вылезает; колонки:
+// левая (.event-main или первая .form-col) и правая (.event-side или вторая .form-col),
+// «Ваша позиция» — её правый край
+type Box = { left: number; right: number; top: number; bottom: number; width: number }
 type Placement = {
   card: number
   room: number
@@ -845,6 +851,9 @@ type Placement = {
   scroll: number
   inside: boolean
   table: boolean
+  left: Box | null
+  right: Box | null
+  position: Box | null
 }
 
 const PLACEMENT = `(() => {
@@ -855,8 +864,14 @@ const PLACEMENT = `(() => {
   const box = card.getBoundingClientRect()
   const style = getComputedStyle(main)
   const room = main.getBoundingClientRect().width - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight)
-  const parts = [...card.querySelectorAll('.chart-frame, .payouts')].map((el) => el.getBoundingClientRect())
+  const parts = [...card.querySelectorAll('.chart-frame, .payouts, .event-title, .event-main, .event-side, .form-col')].map((el) => el.getBoundingClientRect())
   const row = card.querySelector('.payouts tr')
+  const rect = (el) => {
+    if (!el) return null
+    const r = el.getBoundingClientRect()
+    return { left: Math.round(r.left), right: Math.round(r.right), top: Math.round(r.top), bottom: Math.round(r.bottom), width: Math.round(r.width) }
+  }
+  const cols = card.querySelectorAll('.form-col')
   return {
     card: Math.round(box.width),
     room: Math.round(room),
@@ -867,12 +882,17 @@ const PLACEMENT = `(() => {
     scroll: document.documentElement.scrollWidth - page,
     inside: parts.every((r) => r.left >= box.left - 0.5 && r.right <= box.right + 0.5),
     table: !row || getComputedStyle(row).display === 'table-row',
+    left: rect(card.querySelector('.event-main') || cols[0]),
+    right: rect(card.querySelector('.event-side') || cols[1]),
+    position: rect(card.querySelector('section[aria-label="Ваша позиция"]')),
   }
 })()`
 
-// Событие и «Новое событие» на компьютере (#30): на 1024–1920 px, меню развёрнуто и свёрнуто,
-// карточка — во всю свою ширину (≈ 720 px) или всё доступное, если меньше, по центру области
-// справа от меню; списка комнат нет, «Назад» есть; график и выплаты — внутри карточки, таблицей.
+// Событие и «Новое событие» на компьютере (#30, #38): на 1024–2560 px, меню развёрнуто и свёрнуто,
+// карточка — во всю ширину области справа от меню (не шире --content-max), область — по центру;
+// списка комнат нет, «Назад» есть; график и выплаты — внутри карточки, таблицей. От 1280 px —
+// две колонки: правая (график и лента; у формы — исходы и сроки) — справа от левой, её верх —
+// не ниже середины левой; ≈ 55 / 45 у события. Уже — одна под другой.
 // Событие с графиком и утверждённым исходом с выплатами — на своём сервере с подставными часами
 async function eventWidth(cdp: Cdp, startServer: ServerModule['startServer']) {
   console.log('Ширина события на компьютере')
@@ -921,17 +941,26 @@ async function eventWidth(cdp: Cdp, startServer: ServerModule['startServer']) {
     await host.shot('33-sobytie-shirina')
 
     const problems: string[] = []
-    const check = async (where: string) => {
+    const check = async (where: string, width: number, event: boolean) => {
       const p = await host.eval<Placement>(PLACEMENT)
       console.log(`  ${where}: ${JSON.stringify(p)}`)
-      const want = Math.min(720, p.room)
-      if (Math.abs(p.card - want) > 1) problems.push(`${where}: ширина ${p.card}, а нужно ${want}`)
+      if (Math.abs(p.card - p.room) > 1) problems.push(`${where}: ширина ${p.card}, а область ${p.room}`)
+      if (p.room > CONTENT_MAX + 1) problems.push(`${where}: область ${p.room} шире ${CONTENT_MAX}`)
       if (Math.abs(p.gapLeft - p.gapRight) > 2) problems.push(`${where}: не по центру — слева ${p.gapLeft}, справа ${p.gapRight}`)
       if (p.list) problems.push(`${where}: виден список комнат`)
       if (!p.back) problems.push(`${where}: нет «Назад»`)
       if (p.scroll > 0) problems.push(`${where}: прокрутка вбок ${p.scroll} px`)
-      if (!p.inside) problems.push(`${where}: график или выплаты вылезают из карточки`)
+      if (!p.inside) problems.push(`${where}: условие, колонки, график или выплаты вылезают из карточки`)
       if (!p.table) problems.push(`${where}: выплаты не таблицей`)
+      const { left, right, position } = p
+      if (!left || !right || (event && !position)) return void problems.push(`${where}: нет колонок или «Вашей позиции»`)
+      if (width >= 1280) {
+        const edge = event && position ? Math.max(left.right, position.right) : left.right
+        if (right.left < edge) problems.push(`${where}: правая колонка (${right.left}) не справа от левой (${edge})`)
+        if (right.top > (left.top + left.bottom) / 2) problems.push(`${where}: правая колонка начинается ниже середины левой`)
+        const share = left.width / (left.width + right.width)
+        if (event && Math.abs(share - 0.55) > 0.02) problems.push(`${where}: левая колонка — ${Math.round(share * 100)} %, а нужно ≈ 55 %`)
+      } else if (right.top < left.bottom) problems.push(`${where}: до 1280 px колонки должны идти одна под другой`)
     }
     const nav = (collapsed: boolean) =>
       host.eval(`(() => {
@@ -950,19 +979,46 @@ async function eventWidth(cdp: Cdp, startServer: ServerModule['startServer']) {
         const menu = collapsed ? 'меню свёрнуто' : 'меню развёрнуто'
         await open(eventHref, 'Утверждён „Да“ — без возражений')
         await host.waitCount('.chart-plot', 1)
-        await check(`событие, ${size.width} px, ${menu}`)
+        await check(`событие, ${size.width} px, ${menu}`, size.width, true)
         if (!collapsed && size.width !== 1536) await host.shot('33-sobytie-shirina')
         if (collapsed && size.width === 1440) await host.shot('34-sobytie-shirina-menu-svernuto')
         await open(newHref, 'Приём ставок до')
-        await check(`новое событие, ${size.width} px, ${menu}`)
+        await check(`новое событие, ${size.width} px, ${menu}`, size.width, false)
         if (!collapsed && size.width === 1440) await host.shot('35-novoe-sobytie-shirina')
       }
       await nav(false)
     }
-    // Комната — по-прежнему «список + открытое» рядом
-    await host.resize(SIZES[1])
-    await open(`${SITE}#/room/${room.roomId}`, 'Участники')
-    if (!(await host.eval<boolean>(`document.querySelector('.rooms .list').offsetParent !== null`))) problems.push('комната: список комнат пропал')
+    // Комната — «список + открытое» рядом: список ≈ 340 px, открытое — остаток области
+    for (const size of [SIZES[1], EVENT_WIDTHS[2], EVENT_WIDTHS[5]]) {
+      await host.resize(size)
+      await open(`${SITE}#/room/${room.roomId}`, 'Участники')
+      const split = await host.eval<{ list: number; detail: number; room: number; gap: number; scroll: number } | null>(`(() => {
+        const list = document.querySelector('.rooms .list')
+        const detail = document.querySelector('.rooms .detail')
+        if (list.offsetParent === null) return null
+        const main = document.querySelector('.main')
+        const style = getComputedStyle(main)
+        const l = list.getBoundingClientRect()
+        const d = detail.getBoundingClientRect()
+        return {
+          list: Math.round(l.width),
+          detail: Math.round(d.width),
+          room: Math.round(main.getBoundingClientRect().width - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight)),
+          gap: Math.round(d.left - l.right),
+          scroll: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        }
+      })()`)
+      console.log(`  комната, ${size.width} px: ${JSON.stringify(split)}`)
+      if (!split) {
+        problems.push(`комната, ${size.width} px: список комнат пропал`)
+        continue
+      }
+      if (Math.abs(split.list - 340) > 1) problems.push(`комната, ${size.width} px: список ${split.list}, а нужно ≈ 340`)
+      if (Math.abs(split.list + split.gap + split.detail - split.room) > 1) problems.push(`комната, ${size.width} px: открытое не на всё место области`)
+      if (split.room > CONTENT_MAX + 1) problems.push(`комната, ${size.width} px: область ${split.room} шире ${CONTENT_MAX}`)
+      if (split.scroll > 0) problems.push(`комната, ${size.width} px: прокрутка вбок ${split.scroll} px`)
+      if (size.width === 1440) await host.shot('37-komnata-shirina')
+    }
     if (problems.length) throw new Error('Раскладка события:\n' + problems.join('\n'))
   } finally {
     await server.close()
