@@ -1,12 +1,12 @@
-// Исход события на экране события (Р-05, Р-17, Р-19): что предложено, возражения, решение ведущего,
-// голосование, «ждёт суда», «утверждён» с таблицей выплат, «окончательно», отмена. Кто какие кнопки
+// Исход события на экране события (Р-05, Р-17, Р-19, Р-21): что предложено, согласия, возражения,
+// решение ведущего, голосование, «ждёт суда», «утверждён» с таблицей выплат, «окончательно», отмена. Кто какие кнопки
 // видит — из состояния события с сервера (кто ставил, предмет, ведущий, голосующие) теми же
 // правилами, что у сервера (mayPropose, hostDecides, betOn); статус и выплаты считает сервер
 // (EventView.outcome) — здесь только показ. Каждое действие — с окном подтверждения; номер запроса
 // — по событию, действию и выбору, хранится до ответа (двойное нажатие и повтор после «нет связи» —
 // одно действие, Р-13). Esc закрывает окно и форму здесь, не уводя с экрана
 import { useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
-import { decideOutcome, objectOutcome, proposeOutcome, voteOutcome, type Result } from '../api'
+import { agreeOutcome, decideOutcome, objectOutcome, proposeOutcome, voteOutcome, type Result } from '../api'
 import { formatDateTime } from '../rules/date'
 import { AUTHOR_SILENCE, betOn, checkObjection, eventStatus, hostDecides, mayPropose, MAX_EVENT_TEXT } from '../rules/event'
 import { formatOdds, poolOdds } from '../rules/pool'
@@ -22,7 +22,7 @@ const CHOICE = {
   propose: {
     send: proposeOutcome,
     question: (t: string) => `Предложить „${t}“?`,
-    note: 'Ставившие смогут возразить в течение суток. Предложение не отозвать.',
+    note: 'Ставившие смогут согласиться или возразить в течение суток. Предложение не отозвать.',
     button: 'Предложить',
     busyLabel: 'Предлагаю…',
   },
@@ -92,6 +92,7 @@ export function EventOutcome({
   // Приём ещё идёт — исхода нет и быть не может
   if (!o && status !== 'closed') return null
 
+  const iAgreed = !!o && o.agreements.some((x) => x.by === me)
   const mayObject =
     !!o &&
     !o.approved &&
@@ -99,7 +100,10 @@ export function EventOutcome({
     o.proposal.by !== me &&
     betOn(event, me) &&
     now < o.objectionUntil &&
-    !o.objections.some((x) => x.by === me)
+    !o.objections.some((x) => x.by === me) &&
+    !iAgreed
+  // Согласиться — пока возражений нет (Р-21)
+  const mayAgree = mayObject && !!o && o.status === 'proposed' && o.objections.length === 0
   const mayDecide = !!o && o.status === 'disputed' && !o.decision && me === room.hostId && hostDecides(roles)
   const mayVote =
     !!o && o.status === 'voting' && o.voters.includes(me) && !o.votes.some((v) => v.by === me) && o.votingUntil !== null && now < o.votingUntil
@@ -131,6 +135,19 @@ export function EventOutcome({
     })
   }
 
+  function agreed() {
+    if (!o) return
+    setAsk({
+      slot: event.id + '/agree',
+      form: formKey(room.id, event.id, 'agree', o.proposal.id),
+      question: `Согласиться с исходом „${title(o.proposal.outcome)}“?`,
+      note: 'Согласие не отозвать. Когда согласятся все ставившие, исход утвердится сразу и станет окончательным.',
+      button: 'Согласен',
+      busyLabel: 'Отправляю…',
+      send: (requestId) => agreeOutcome(room.server, room.id, room.key, event.id, { requestId }),
+    })
+  }
+
   return (
     <section className="outcome" aria-label="Исход" onKeyDown={onKey}>
       <h3>Исход</h3>
@@ -147,11 +164,17 @@ export function EventOutcome({
           <ObjectForm disabled={!online} onObject={objected} onClose={() => setObjecting(false)} />
         ) : (
           <div className="row">
+            {mayAgree && (
+              <button className="button" type="button" onClick={agreed} disabled={!online}>
+                Согласен с исходом
+              </button>
+            )}
             <button className="button secondary" type="button" onClick={() => setObjecting(true)} disabled={!online}>
               Возразить
             </button>
           </div>
         ))}
+      {iAgreed && o?.status === 'proposed' && <p className="hint agreed-mine">Вы согласны с исходом.</p>}
 
       {ask && (
         <ConfirmAction
@@ -189,10 +212,11 @@ function NotProposed({ room, event, now }: { room: SavedRoom; event: EventView; 
   )
 }
 
-const HOW: Record<'unopposed' | 'host' | 'vote', string> = {
+const HOW: Record<'unopposed' | 'host' | 'vote' | 'agreed', string> = {
   unopposed: 'без возражений',
   host: 'ведущим',
   vote: 'голосованием',
+  agreed: 'все ставившие согласны',
 }
 
 // Исход предложен: строка статуса сверху, ниже — история (предложение, возражения, решение, голоса)
@@ -237,10 +261,13 @@ function OutcomeState({
     )
   } else if (o.status === 'proposed') {
     head = (
-      <p className="outcome-head">
-        {proposed}
-        {now < o.objectionUntil ? `, возразить до ${formatDateTime(o.objectionUntil)}` : ' — сутки на возражение прошли'}
-      </p>
+      <>
+        <p className="outcome-head">
+          {proposed}
+          {now < o.objectionUntil ? `, возразить до ${formatDateTime(o.objectionUntil)}` : ' — сутки на возражение прошли'}
+        </p>
+        <Agreed event={event} o={o} who={who} />
+      </>
     )
   } else if (o.status === 'disputed') {
     head = (
@@ -264,6 +291,14 @@ function OutcomeState({
       {head}
       <ul className="outcome-log" aria-label="Ход исхода">
         {(o.status !== 'proposed' || approved) && <li>{proposed}</li>}
+        {(o.status !== 'proposed' || approved) &&
+          o.agreements.map((x) => (
+            <li key={x.id}>
+              Согласие: {who(x.by)}
+              <span className="hint"> · {formatDateTime(x.at)}</span>
+            </li>
+          ))}
+        {approved?.how === 'agreed' && <li>Все ставившие согласны — утверждён {formatDateTime(approved.at)}</li>}
         {o.objections.map((x) => (
           <li key={x.id}>
             Возражение: {who(x.by)}, {x.reason}
@@ -279,6 +314,19 @@ function OutcomeState({
       </ul>
       {approved && o.status !== 'cancelled' && <Payouts room={room} event={event} o={o} winner={approved.outcome} title={title} />}
     </>
+  )
+}
+
+// Согласия, пока исход ждёт возражений (Р-21): «Согласны N из M ставивших» и кто. Предложивший
+// согласен, если ставил; ставил только он (или никто) — исход утверждён сразу и сюда не попадает
+function Agreed({ event, o, who }: { event: EventView; o: OutcomeView; who: (id: string) => string }) {
+  const agreed = [...(betOn(event, o.proposal.by) ? [o.proposal.by] : []), ...o.agreements.map((x) => x.by)]
+  const total = agreed.length + o.awaiting.length
+  if (o.awaiting.length === 0) return null
+  return (
+    <p className="hint agreed">
+      Согласны {agreed.length} из {total} ставивших{agreed.length > 0 ? `: ${agreed.map(who).join(', ')}` : ''}. Согласятся все — исход сразу станет окончательным.
+    </p>
   )
 }
 

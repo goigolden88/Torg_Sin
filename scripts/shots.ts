@@ -743,7 +743,7 @@ async function outcomes(cdp: Cdp, size: Size, startServer: ServerModule['startSe
     await borya.waitText('Исход ещё не предложен')
     await borya.click('Да')
     await borya.click('Предложить исход')
-    await borya.waitText('Ставившие смогут возразить в течение суток')
+    await borya.waitText('Ставившие смогут согласиться или возразить в течение суток')
     await borya.shot('24-predlozhit-iskhod')
     await confirmTwice(borya, 'возразить до')
     await borya.waitIn(POSITION, 'если выиграет — получите') // не утверждён — прикидка, как прежде
@@ -815,6 +815,44 @@ async function outcomes(cdp: Cdp, size: Size, startServer: ServerModule['startSe
     await position(borya, 'Утверждён „Нет“: вы поставили 300 ₽, получили 0 ₽ — итог −300 ₽')
     await shotWide(borya, '32-okonchatelno')
     await position(vera, 'Без игры — вам вернулось 300 ₽.')
+
+    // Согласие с исходом (Р-21). «Костёр»: ставили Боря и Вера, Боря предложил — у Веры «Согласны
+    // 1 из 2» и кнопка; согласилась — все согласны, окончательно сразу. «Палатка»: ставили трое,
+    // Аня предложила, Боря согласился, Вера молчит — у Бори «Вы согласны с исходом»
+    const fire = await event(boryaKey, 'Костёр разведём с одной спички', 'Смотрим все вместе у мангала', [
+      [boryaKey, '1', 20000],
+      [veraKey, '2', 10000],
+    ])
+    const tent = await event(hostKey, 'Палатку поставим за десять минут', 'Засекаем на телефоне Ани', [
+      [hostKey, '1', 10000],
+      [boryaKey, '1', 10000],
+      [veraKey, '2', 20000],
+    ])
+    shift += HOUR // приём закрыт у обоих
+    await api(server, `${rooms}/events/${fire.id}/propose`, boryaKey, { outcome: '1' })
+    await vera.goto(fire.href)
+    await vera.waitText('Согласны 1 из 2 ставивших: Боря')
+    await vera.shot('38-soglasny-1-iz-2')
+    await vera.click('Согласен с исходом')
+    await vera.waitText('Согласие не отозвать. Когда согласятся все ставившие, исход утвердится сразу и станет окончательным.')
+    await vera.shot('38a-soglasie-podtverzhdenie')
+    await confirmTwice(vera, 'Все ставившие согласны — утверждён')
+    await vera.waitText('Утверждён „Да“ — все ставившие согласны')
+    await vera.waitText('Окончательно.')
+    await position(vera, 'Утверждён „Да“: вы поставили 100 ₽, получили 0 ₽ — итог −100 ₽')
+    await shotWide(vera, '39-vse-soglasny-okonchatelno')
+    const agreements = await vera.eval<number>(`[...document.querySelectorAll('.outcome-log > li')].filter((li) => li.innerText.startsWith('Согласие')).length`)
+    if (agreements !== 1) throw new Error('Двойное нажатие дало согласий: ' + agreements)
+
+    await api(server, `${rooms}/events/${tent.id}/propose`, hostKey, { outcome: '1' })
+    await api(server, `${rooms}/events/${tent.id}/agree`, boryaKey, {})
+    await borya.goto(tent.href)
+    await borya.waitText('Вы согласны с исходом.')
+    await borya.waitText('Согласны 2 из 3 ставивших: Аня, Боря (вы)')
+    if (await borya.eval<boolean>(`[...document.querySelectorAll('button')].some((b) => /Согласен|Возразить/.test(b.innerText))`)) {
+      throw new Error('У согласившегося остались кнопки «Согласен» или «Возразить»')
+    }
+    await borya.shot('40-vy-soglasny')
   } finally {
     await server.close()
   }

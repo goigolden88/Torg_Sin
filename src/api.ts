@@ -2,6 +2,7 @@
 // server — адрес сервера комнаты (у комнаты свой, из ссылки или с создания; «Настройки» — только для новых)
 import {
   isAdmitResponse,
+  isAgreeOutcomeResponse,
   isCancelEventResponse,
   isClaimDeviceResponse,
   isClarifyEventResponse,
@@ -23,6 +24,7 @@ import {
   joinMark,
   PROTOCOL_VERSION,
   type AdmitResponse,
+  type AgreeOutcomeResponse,
   type CancelEventResponse,
   type ClaimDeviceResponse,
   type ClarifyEventResponse,
@@ -201,6 +203,11 @@ export function objectOutcome(
   request: { reason: string; requestId: string },
 ): Promise<Result<ObjectOutcomeResponse>> {
   return call(eventUrl(server, roomId, eventId, 'object'), post(request, key), isObjectOutcomeResponse)
+}
+
+// POST …/events/<событие>/agree — согласие ставившего с предложенным исходом (Р-21)
+export function agreeOutcome(server: string, roomId: string, key: string, eventId: string, request: { requestId: string }): Promise<Result<AgreeOutcomeResponse>> {
+  return call(eventUrl(server, roomId, eventId, 'agree'), post(request, key), isAgreeOutcomeResponse)
 }
 
 // POST …/events/<событие>/decide — решение ведущего после возражения
