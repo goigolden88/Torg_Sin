@@ -439,6 +439,86 @@ describe('исход события', () => {
     expect(voteWinner([])).toBeNull()
   })
 
+  const agree = (who: string, at: number): LogEntry => ({ id: 'G' + who + at, at, memberId: who, type: 'outcome.agreed', event: 'E1', requestId: 'QG' + who + at })
+
+  it('согласны все ставившие — утверждён и окончательный в миг последнего согласия', () => {
+    // A (предложивший) — 300 на «Да», B — 100 на «Нет», C — 50 на «Нет»
+    const log = [...base, bet('C', '2', 50), propose('A', '1'), agree('B', P + HOUR)]
+    expect(outcomeAt(log, P + HOUR)).toMatchObject({
+      status: 'proposed',
+      agreements: [{ id: 'GB' + (P + HOUR), at: P + HOUR, by: 'B' }],
+      awaiting: ['C'],
+      approved: null,
+      finalAt: null,
+    })
+    const all = [...log, agree('C', P + 2 * HOUR)]
+    const view = outcomeAt(all, P + 2 * HOUR)
+    expect(view).toMatchObject({
+      status: 'final',
+      awaiting: [],
+      approved: { outcome: '1', at: P + 2 * HOUR, how: 'agreed', by: null },
+      finalAt: P + 2 * HOUR,
+      void: false,
+      payouts: [
+        { memberId: 'A', staked: 300, payout: 450, net: 150 },
+        { memberId: 'B', staked: 100, payout: 0, net: -100 },
+        { memberId: 'C', staked: 50, payout: 0, net: -50 },
+      ],
+    })
+    expect(view?.agreements.map((a) => a.by)).toEqual(['B', 'C'])
+    expect(JSON.stringify(view)).not.toContain('QG')
+  })
+
+  it('согласны не все — «на возражении», через сутки утверждён сам, через неделю — окончательный', () => {
+    const log = [...base, bet('C', '2', 50), propose('A', '1'), agree('C', P + HOUR)]
+    expect(outcomeAt(log, P + DAY - 1)).toMatchObject({ status: 'proposed', awaiting: ['B'], approved: null })
+    expect(outcomeAt(log, P + DAY)).toMatchObject({
+      status: 'approved',
+      awaiting: [],
+      approved: { outcome: '1', at: P + DAY, how: 'unopposed' },
+      finalAt: P + DAY + FINAL_TIME,
+    })
+    expect(outcomeAt(log, P + DAY + FINAL_TIME)?.status).toBe('final')
+  })
+
+  it('возражение после части согласий — путь возражения; согласие после возражения не действует', () => {
+    const log = [...base, bet('C', '2', 50), propose('A', '1'), agree('C', P + HOUR), object('B', P + 2 * HOUR)]
+    expect(outcomeAt(log, P + 2 * HOUR)).toMatchObject({ status: 'disputed', approved: null, awaiting: [] })
+    // B возразил; согласие C после этого и повторное согласие не считаются
+    const late = [...base, bet('C', '2', 50), propose('A', '1'), object('B', P + HOUR), agree('C', P + 2 * HOUR)]
+    expect(outcomeAt(late, P + 2 * HOUR)).toMatchObject({ status: 'disputed', agreements: [], approved: null })
+    const decided = [...log, decide('H', '2', P + 3 * HOUR)]
+    expect(outcomeAt(decided, P + 3 * HOUR)).toMatchObject({ status: 'approved', approved: { how: 'host', outcome: '2' }, finalAt: P + 3 * HOUR + FINAL_TIME })
+  })
+
+  it('возражение от согласившегося не действует: все согласны — окончательный', () => {
+    const log = [...base, propose('A', '1'), agree('B', P + HOUR), object('B', P + 2 * HOUR)]
+    expect(outcomeAt(log, P + 2 * HOUR)).toMatchObject({ status: 'final', objections: [], approved: { how: 'agreed', at: P + HOUR } })
+  })
+
+  it('согласия не по правилам не считаются: до предложения, от не ставившего, от предложившего, второе, после суток', () => {
+    const log = [...base, agree('B', P - 1), propose('A', '1'), agree('A', P + 1), agree('C', P + 2), agree('H', P + 3)]
+    expect(outcomeAt(log, P + 4)).toMatchObject({ status: 'proposed', agreements: [], awaiting: ['B'] })
+    const late = [...base, propose('A', '1'), agree('B', P + DAY)]
+    expect(outcomeAt(late, P + DAY)).toMatchObject({ status: 'approved', agreements: [], approved: { how: 'unopposed' } })
+    const twice = [...base, bet('C', '2', 50), propose('A', '1'), agree('B', P + 1), agree('B', P + 2)]
+    expect(outcomeAt(twice, P + 3)?.agreements).toEqual([{ id: 'GB' + (P + 1), at: P + 1, by: 'B' }])
+  })
+
+  it('ставил на несколько исходов — одно согласие', () => {
+    const log = [...base, bet('B', '1', 20), propose('A', '1'), agree('B', P + HOUR)]
+    expect(outcomeAt(log, P + HOUR)).toMatchObject({ status: 'final', approved: { how: 'agreed', at: P + HOUR } })
+  })
+
+  it('кроме предложившего, никто не ставил — утверждён и окончательный в миг предложения', () => {
+    const alone = [...room, created(), bet('A', '1', 300), propose('A', '1')]
+    expect(outcomeAt(alone, P)).toMatchObject({ status: 'final', awaiting: [], approved: { outcome: '1', at: P, how: 'agreed' }, finalAt: P, void: true })
+    const nobody = [...room, created(), propose('A', '1')]
+    expect(outcomeAt(nobody, P)).toMatchObject({ status: 'final', finalAt: P, payouts: [] })
+    // Событие отменено — «отменено», как раньше
+    expect(outcomeAt([...alone, cancel(P + 1)], P + 2)).toMatchObject({ status: 'cancelled', finalAt: null, payouts: [] })
+  })
+
   it('причина возражения — не пустая, до 300 знаков', () => {
     expect(checkObjection(' Видео смонтировано ')).toEqual({ ok: true, value: 'Видео смонтировано' })
     expect(checkObjection('  ')).toEqual({ ok: false, error: NEED_OBJECTION })

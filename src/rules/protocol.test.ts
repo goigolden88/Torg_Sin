@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   isAdmitResponse,
+  isAgreeOutcomeResponse,
   isCancelEventResponse,
   isClaimDeviceResponse,
   isClarifyEventResponse,
@@ -76,6 +77,8 @@ describe('ответы комнат', () => {
     proposal: mark,
     objectionUntil: 6,
     objections: [{ id: 'O', at: 5, by: 'N', reason: 'Не так' }],
+    agreements: [],
+    awaiting: [],
     decision: { ...mark, id: 'D', by: 'H' },
     voters: [],
     votingUntil: null,
@@ -124,12 +127,25 @@ describe('ответы комнат', () => {
     expect(isRoomStateResponse({ ...state, events: [{ ...view, outcome: { ...outcome, payouts: [{ memberId: 'M', payout: 1 }] } }] })).toBe(false)
     expect(isRoomStateResponse({ ...state, events: [{ ...view, outcome: { ...outcome, void: undefined } }] })).toBe(false)
   })
+  it('состояние комнаты: согласия с исходом (Р-21)', () => {
+    const agreed = { ...outcome, objections: [], decision: null, agreements: [{ id: 'G', at: 6, by: 'N' }], approved: { outcome: '1', at: 6, how: 'agreed', by: null }, status: 'final', finalAt: 6 }
+    expect(isRoomStateResponse({ ...state, events: [{ ...view, outcome: agreed }] })).toBe(true)
+    const waiting = { ...outcome, status: 'proposed', objections: [], decision: null, agreements: [{ id: 'G', at: 6, by: 'N' }], awaiting: ['K'], approved: null, finalAt: null, payouts: [] }
+    expect(isRoomStateResponse({ ...state, events: [{ ...view, outcome: waiting }] })).toBe(true)
+    // Старый сервер — без согласий: не то, что ждём
+    expect(isRoomStateResponse({ ...state, events: [{ ...view, outcome: { ...outcome, agreements: undefined } }] })).toBe(false)
+    expect(isRoomStateResponse({ ...state, events: [{ ...view, outcome: { ...outcome, awaiting: [1] } }] })).toBe(false)
+    expect(isRoomStateResponse({ ...state, events: [{ ...view, outcome: { ...outcome, agreements: [{ id: 'G', by: 'N' }] } }] })).toBe(false)
+  })
   it('ответы действий с исходом', () => {
     const v = PROTOCOL_VERSION
     expect(isProposeOutcomeResponse({ v, proposal: mark })).toBe(true)
     expect(isProposeOutcomeResponse({ v, proposal: { ...mark, outcome: 1 } })).toBe(false)
     expect(isObjectOutcomeResponse({ v, objection: { id: 'O', at: 5, by: 'N', reason: 'Не так' } })).toBe(true)
     expect(isObjectOutcomeResponse({ v, objection: mark })).toBe(false)
+    expect(isAgreeOutcomeResponse({ v, agreement: { id: 'G', at: 6, by: 'N' } })).toBe(true)
+    expect(isAgreeOutcomeResponse({ v, agreement: { id: 'G', by: 'N' } })).toBe(false)
+    expect(isAgreeOutcomeResponse({ agreement: { id: 'G', at: 6, by: 'N' } })).toBe(false)
     expect(isDecideOutcomeResponse({ v, decision: mark })).toBe(true)
     expect(isDecideOutcomeResponse({ decision: mark })).toBe(false)
     expect(isVoteOutcomeResponse({ v, vote: mark })).toBe(true)

@@ -102,7 +102,7 @@ export async function handle(request: Request, deps: RoomsDeps): Promise<Respons
     if (r) return json(r.status, r.body)
   }
   // События-пул: /rooms/<номер>/events и /rooms/<номер>/events/<событие>/<действие>
-  const ev = /^\/rooms\/([^/]+)\/events(?:\/([^/]+)\/(bets|clarify|cancel|propose|object|decide|vote))?$/.exec(path)
+  const ev = /^\/rooms\/([^/]+)\/events(?:\/([^/]+)\/(bets|clarify|cancel|propose|object|agree|decide|vote))?$/.exec(path)
   if (ev && request.method === 'POST') {
     const r = await eventAction(ev[1], ev[2], ev[3], request, deps)
     return json(r.status, r.body)
@@ -111,7 +111,7 @@ export async function handle(request: Request, deps: RoomsDeps): Promise<Respons
 }
 
 // POST /rooms/<номер>/events — завести; …/events/<событие>/bets | clarify | cancel;
-// исход — …/propose | object | decide | vote
+// исход — …/propose | object | agree | decide | vote
 async function eventAction(
   roomId: string,
   eventId: string | undefined,
@@ -147,6 +147,11 @@ async function eventAction(
         const requestId = requestIdOf(body, deps)
         if (!requestId) return failure(400, BAD_REQUEST_ID)
         return reply(await deps.act(roomId, { type: 'objectOutcome', keyHash, event: eventId, reason: reason.value, requestId }))
+      }
+      case 'agree': {
+        const requestId = requestIdOf(body, deps)
+        if (!requestId) return failure(400, BAD_REQUEST_ID)
+        return reply(await deps.act(roomId, { type: 'agreeOutcome', keyHash, event: eventId, requestId }))
       }
       case 'propose':
       case 'decide':

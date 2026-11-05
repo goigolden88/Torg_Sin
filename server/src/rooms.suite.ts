@@ -24,6 +24,7 @@ import {
   SAME_OUTCOMES,
 } from '../../src/rules/event'
 import {
+  isAgreeOutcomeResponse,
   isDecideOutcomeResponse,
   isHealth,
   isObjectOutcomeResponse,
@@ -31,6 +32,7 @@ import {
   isRoomStateResponse,
   isVoteOutcomeResponse,
   PROTOCOL_VERSION,
+  type AgreeOutcomeResponse,
   type CancelEventResponse,
   type ClaimDeviceResponse,
   type ClarifyEventResponse,
@@ -54,7 +56,10 @@ import { ulid } from '../../src/rules/ulid'
 import { BAD_REQUEST_ID, CREATION_OFF, NEED_KEY, WRONG_PASSWORD } from './http'
 import { hashKey } from './keys'
 import {
+  AGREE_BETTORS_ONLY,
+  AGREEMENT_CLOSED,
   ALREADY_ADMITTED,
+  ALREADY_AGREED,
   ALREADY_APPROVED,
   ALREADY_DECIDED,
   ALREADY_OBJECTED,
@@ -86,6 +91,7 @@ import {
   NO_VOTING,
   NOT_PROPOSED,
   OBJECTION_OVER,
+  OWN_AGREEMENT,
   OWN_PROPOSAL,
   PROPOSER_ONLY,
   readLog,
@@ -1267,6 +1273,110 @@ export function roomsSuite(storageName: string, start: (password: string | undef
           await refused(act(s, room.roomId, room.key, voting.id, 'decide', { outcome: '1' }), 409, EVENT_CANCELLED)
           expect(await outcomeOf(s, room.roomId, vera.key, voting.id)).toMatchObject({ status: 'cancelled', approved: null, finalAt: null })
           expect(await outcomeOf(s, room.roomId, vera.key, early.id)).toBeNull()
+        })
+
+        describe('согласие с исходом (Р-21)', () => {
+          const agree = (s: TestServer, roomId: string, key: string, eventId: string, requestId?: string) => act(s, roomId, key, eventId, 'agree', { requestId })
+
+          it('согласились все ставившие — утверждён и окончательный сразу; повтор — тот же ответ', async () => {
+            const s = await server()
+            const { room, borya, vera } = await room3(s)
+            const gosha = await member(s, room, 'Гоша')
+            const event = await closedEvent(s, room.roomId, borya, vera)
+            await ok(bet(s, room.roomId, gosha.key, event.id, { outcome: '2', amount: 100 }))
+            s.clock.now = event.closesAt
+            await refused(agree(s, room.roomId, vera.key, event.id), 409, NOT_PROPOSED)
+            await ok(act(s, room.roomId, borya.key, event.id, 'propose', { outcome: '1' }))
+            await refused(agree(s, room.roomId, borya.key, event.id), 403, OWN_AGREEMENT)
+            await refused(agree(s, room.roomId, room.key, event.id), 403, AGREE_BETTORS_ONLY)
+            await refused(agree(s, room.roomId, vera.key, event.id, 'abc'), 400, BAD_REQUEST_ID)
+            s.clock.now += HOUR
+            const requestId = ulid(s.clock.now)
+            const first = await ok<AgreeOutcomeResponse>(agree(s, room.roomId, vera.key, event.id, requestId))
+            expect(isAgreeOutcomeResponse(first)).toBe(true)
+            expect(first).toEqual({ v: PROTOCOL_VERSION, agreement: { id: expect.any(String), at: s.clock.now, by: vera.memberId } })
+            // Повтор — тот же ответ без записи; второе согласие — 409; возражение согласившегося — 409
+            s.clock.now += 1000
+            expect(await ok(agree(s, room.roomId, vera.key, event.id, requestId))).toEqual(first)
+            await refused(agree(s, room.roomId, vera.key, event.id), 409, ALREADY_AGREED)
+            await refused(act(s, room.roomId, vera.key, event.id, 'object', { reason: 'Передумала' }), 409, ALREADY_AGREED)
+            expect(await outcomeOf(s, room.roomId, gosha.key, event.id)).toMatchObject({
+              status: 'proposed',
+              agreements: [first.agreement],
+              awaiting: [gosha.memberId],
+              approved: null,
+            })
+            await ok(agree(s, room.roomId, gosha.key, event.id))
+            const agreedAt = s.clock.now
+            expect(await outcomeOf(s, room.roomId, vera.key, event.id)).toMatchObject({
+              status: 'final',
+              awaiting: [],
+              approved: { outcome: '1', at: agreedAt, how: 'agreed', by: null },
+              finalAt: agreedAt,
+              payouts: [
+                { memberId: borya.memberId, staked: 300, payout: 500, net: 200 },
+                { memberId: vera.memberId, staked: 100, payout: 0, net: -100 },
+                { memberId: gosha.memberId, staked: 100, payout: 0, net: -100 },
+              ],
+            })
+            await refused(agree(s, room.roomId, gosha.key, event.id), 409, ALREADY_AGREED)
+            expect(await eventEntries(s, room.roomId)).toEqual(['event.created', 'bet.placed', 'bet.placed', 'bet.placed', 'outcome.proposed', 'outcome.agreed', 'outcome.agreed'])
+          })
+
+          it('согласились не все — через сутки утверждён сам; после суток согласие — 409', async () => {
+            const s = await server()
+            const { room, borya, vera } = await room3(s)
+            const gosha = await member(s, room, 'Гоша')
+            const event = await closedEvent(s, room.roomId, borya, vera)
+            await ok(bet(s, room.roomId, gosha.key, event.id, { outcome: '2', amount: 100 }))
+            s.clock.now = event.closesAt
+            await ok(act(s, room.roomId, borya.key, event.id, 'propose', { outcome: '1' }))
+            const proposedAt = s.clock.now
+            await ok(agree(s, room.roomId, vera.key, event.id))
+            s.clock.now = proposedAt + DAY
+            await refused(agree(s, room.roomId, gosha.key, event.id), 409, OBJECTION_OVER)
+            expect(await outcomeOf(s, room.roomId, vera.key, event.id)).toMatchObject({
+              status: 'approved',
+              approved: { at: proposedAt + DAY, how: 'unopposed' },
+              finalAt: proposedAt + 8 * DAY,
+            })
+          })
+
+          it('после возражения согласия не принимаются; возразивший не соглашается', async () => {
+            const s = await server()
+            const { room, borya, vera } = await room3(s)
+            const gosha = await member(s, room, 'Гоша')
+            const event = await closedEvent(s, room.roomId, borya, vera)
+            await ok(bet(s, room.roomId, gosha.key, event.id, { outcome: '2', amount: 100 }))
+            s.clock.now = event.closesAt
+            await ok(act(s, room.roomId, borya.key, event.id, 'propose', { outcome: '1' }))
+            await ok(act(s, room.roomId, vera.key, event.id, 'object', { reason: 'Не так' }))
+            await refused(agree(s, room.roomId, vera.key, event.id), 409, ALREADY_OBJECTED)
+            await refused(agree(s, room.roomId, gosha.key, event.id), 409, AGREEMENT_CLOSED)
+            expect(await outcomeOf(s, room.roomId, vera.key, event.id)).toMatchObject({ status: 'disputed', agreements: [], approved: null })
+          })
+
+          it('кроме предложившего, никто не ставил — окончательный в миг предложения; отменено — 409', async () => {
+            const s = await server()
+            const { room, borya, vera } = await room3(s)
+            const { event: alone } = await newEvent(s, room.roomId, borya.key, eventForm(s))
+            await ok(bet(s, room.roomId, borya.key, alone.id, { outcome: '1', amount: 300 }))
+            const cancelled = await closedEvent(s, room.roomId, borya, vera)
+            s.clock.now = alone.closesAt
+            await ok(act(s, room.roomId, borya.key, alone.id, 'propose', { outcome: '1' }))
+            expect(await outcomeOf(s, room.roomId, vera.key, alone.id)).toMatchObject({
+              status: 'final',
+              approved: { outcome: '1', at: s.clock.now, how: 'agreed' },
+              finalAt: s.clock.now,
+              void: true,
+            })
+            await refused(agree(s, room.roomId, vera.key, alone.id), 403, AGREE_BETTORS_ONLY)
+            await ok(act(s, room.roomId, borya.key, cancelled.id, 'propose', { outcome: '1' }))
+            await ok(send(s, room.roomId, `events/${cancelled.id}/cancel`, { reason: 'Передумали' }, room.key))
+            await refused(agree(s, room.roomId, vera.key, cancelled.id), 409, EVENT_CANCELLED)
+            await refused(agree(s, room.roomId, vera.key, ulid()), 404, NO_EVENT)
+            await refused(send(s, room.roomId, `events/${alone.id}/agree`, {}), 403, NEED_KEY)
+          })
         })
       })
     })
