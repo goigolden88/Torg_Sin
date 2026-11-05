@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
+  isAcceptOfferResponse,
+  isCreateOfferResponse,
+  isRevokeOfferResponse,
   isAdmitResponse,
   isAgreeOutcomeResponse,
   isCancelEventResponse,
@@ -200,6 +203,68 @@ describe('ответы входа по ссылке', () => {
     expect(isDeviceLinkResponse({ v, token: 'T', member: 'M' })).toBe(false)
     expect(isClaimDeviceResponse({ v, memberId: 'M', key: 'K' })).toBe(true)
     expect(isClaimDeviceResponse({ v, memberId: 'M' })).toBe(false)
+  })
+})
+
+describe('пари (Р-22)', () => {
+  const v = PROTOCOL_VERSION
+  const state = {
+    v,
+    room: { id: 'R', name: 'Дача', currency: 'RUB', hostId: 'M', createdAt: 1 },
+    members: [{ id: 'M', name: 'Аня' }],
+    me: 'M',
+    events: [],
+    now: 5,
+  }
+  const offer = {
+    id: 'O',
+    at: 1,
+    authorId: 'A',
+    condition: 'Условие',
+    check: 'Как проверяем',
+    side: 'yes',
+    odds: { a: 3, b: 1 },
+    amount: 300,
+    takerAmount: 100,
+    to: null,
+    closesAt: 10,
+    expectedAt: 20,
+    guarantorId: 'M',
+    counterTo: null,
+  }
+  const view = { ...offer, status: 'accepted', accepted: { by: 'B', at: 3 }, withdrawnAt: null, closedBy: null }
+  const act = { id: 'X', at: 3, by: 'B', offer: 'O' }
+
+  it('состояние комнаты — с пари; сервер без пари (до выкатки) — тоже ответ', () => {
+    expect(isRoomStateResponse({ ...state, offers: [view] })).toBe(true)
+    expect(isRoomStateResponse({ ...state, offers: [] })).toBe(true)
+    expect(isRoomStateResponse(state)).toBe(true)
+    expect(isRoomStateResponse({ ...state, offers: [{ ...view, closedBy: { offer: 'C', at: 4 }, status: 'countered', accepted: null }] })).toBe(true)
+    for (const bad of [
+      { ...view, status: 'revoked' },
+      { ...view, side: 'maybe' },
+      { ...view, odds: null },
+      { ...view, takerAmount: '100' },
+      { ...view, accepted: { by: 'B' } },
+      { ...view, withdrawnAt: undefined },
+      { ...view, to: 5 },
+    ]) {
+      expect(isRoomStateResponse({ ...state, offers: [bad] })).toBe(false)
+    }
+    expect(isRoomStateResponse({ ...state, offers: {} })).toBe(false)
+  })
+
+  it('ответы на действия с пари', () => {
+    expect(isCreateOfferResponse({ v, offer })).toBe(true)
+    expect(isCreateOfferResponse({ v, offer: { ...offer, counterTo: 'O0', to: 'A0', side: 'no' } })).toBe(true)
+    expect(isCreateOfferResponse({ v, offer: { ...offer, guarantorId: null } })).toBe(false)
+    expect(isCreateOfferResponse({ offer })).toBe(false)
+    expect(isAcceptOfferResponse({ v, accepted: act, offer })).toBe(true)
+    expect(isAcceptOfferResponse({ v, accepted: act })).toBe(false)
+    expect(isAcceptOfferResponse({ v, accepted: { ...act, offer: undefined }, offer })).toBe(false)
+    expect(isRevokeOfferResponse({ v, revoked: act })).toBe(true)
+    expect(isRevokeOfferResponse({ v, revoked: { ...act, at: 'вчера' } })).toBe(false)
+    expect(isRevokeOfferResponse({ v, error: 'Нет такого пари' })).toBe(false)
   })
 })
 

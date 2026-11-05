@@ -25,16 +25,78 @@ export type CreateRoomRequest = {
 export type CreateRoomResponse = { v: number; roomId: string; invite: string; memberId: string; key: string }
 
 // GET /rooms/<номер> с ключом телефона: состояние комнаты; me — номер владельца ключа;
-// events — события-пул по порядку создания; now — время сервера (UTC, мс): по нему сайт
-// считает отсчёт до закрытия приёма, а не по часам телефона
+// events — события-пул по порядку создания; offers — пари по порядку создания (Р-22; все пари
+// комнаты, адресные тоже — тайных нет; сервер до этапа 3 поля не шлёт); now — время сервера
+// (UTC, мс): по нему сайт считает отсчёт до закрытия приёма, а не по часам телефона
 export type RoomStateResponse = {
   v: number
   room: { id: string; name: string; currency: string; hostId: string; createdAt: number }
   members: { id: string; name: string }[]
   me: string
   events: EventView[]
+  offers?: OfferView[]
   now: number
 }
+
+// Пари один на один (этап 3, Р-04, Р-22; правила — offer.ts). Условия пари; сумма соперника —
+// сумма автора × b ÷ a вниз до целой единицы (считается, не хранится); guarantorId — гарант
+// (выбранный или ведущий); counterTo — встречное к какому пари
+export type OfferInfo = {
+  id: string
+  at: number // предложено
+  authorId: string
+  condition: string
+  check: string // как проверяем
+  side: 'yes' | 'no' // сторона автора: «сбудется» / «не сбудется»
+  odds: { a: number; b: number } // кэф «a к b»: автор рискует a·k, соперник b·k
+  amount: number // сумма автора
+  takerAmount: number // сумма соперника
+  to: string | null // адресат; null — открытое
+  closesAt: number // приём до (не включая)
+  expectedAt: number // исход к
+  guarantorId: string
+  counterTo: string | null
+}
+
+// «открыто» / «истекло» (приём до прошёл, по времени сервера) / «отозвано» / «закрыто встречным» /
+// «принято»
+export type OfferStatus = 'open' | 'expired' | 'withdrawn' | 'countered' | 'accepted'
+
+// Действие с пари: кто (by), когда, с каким пари
+export type OfferAct = { id: string; at: number; by: string; offer: string }
+
+// Пари в состоянии комнаты: статус на now; accepted — кто принял и когда; withdrawnAt — когда
+// отозвано; closedBy — каким встречным закрыто
+export type OfferView = OfferInfo & {
+  status: OfferStatus
+  accepted: { by: string; at: number } | null
+  withdrawnAt: number | null
+  closedBy: { offer: string; at: number } | null
+}
+
+// POST /rooms/<номер>/offers — предложить пари. side не задана — «сбудется»; to не задан — открытое;
+// guarantor не задан — ведущий. requestId — номер запроса (ULID): повтор — то же пари и тот же ответ
+export type CreateOfferRequest = {
+  v?: number
+  condition: string
+  check: string
+  side?: 'yes' | 'no'
+  odds: { a: number; b: number }
+  amount: number
+  to?: string
+  closesAt: number
+  expectedAt: number
+  guarantor?: string
+  requestId?: string
+}
+export type CreateOfferResponse = { v: number; offer: OfferInfo }
+// POST …/offers/<пари>/counter — встречное: свои кэф и/или сумма (не заданы — исходного) и «приём до»;
+// остальное — исходного, сторона — обратная, адресат — автор исходного. Ответ — новое пари
+export type CounterOfferRequest = { v?: number; odds?: { a: number; b: number }; amount?: number; closesAt: number; requestId?: string }
+// POST …/offers/<пари>/accept и /revoke — принять и отозвать
+export type OfferActRequest = { v?: number; requestId?: string }
+export type AcceptOfferResponse = { v: number; accepted: OfferAct; offer: OfferInfo }
+export type RevokeOfferResponse = { v: number; revoked: OfferAct }
 
 // Событие-пул: что не меняется никогда. Исход — номер и текст; свои исходы кончаются «Другое»
 export type EventInfo = {
@@ -266,6 +328,8 @@ export function isRoomStateResponse(x: unknown): x is RoomStateResponse {
   if (!r || !room || typeof r.v !== 'number' || typeof r.me !== 'string' || !Array.isArray(r.members)) return false
   if (!strings(room, 'id', 'name', 'currency', 'hostId') || typeof room.createdAt !== 'number') return false
   if (typeof r.now !== 'number' || !Array.isArray(r.events) || !r.events.every(isEventView)) return false
+  // Пари — с этапа 3: сервер без них (до выкатки) не ломает сайт
+  if (r.offers !== undefined && !list(r.offers, isOfferView)) return false
   return r.members.every((m) => {
     const member = record(m)
     return !!member && strings(member, 'id', 'name')
@@ -417,4 +481,55 @@ export function isDecideOutcomeResponse(x: unknown): x is DecideOutcomeResponse 
 
 export function isVoteOutcomeResponse(x: unknown): x is VoteOutcomeResponse {
   return markIn(x, 'vote')
+}
+
+const OFFER_STATUSES: readonly unknown[] = ['open', 'expired', 'withdrawn', 'countered', 'accepted']
+
+function orNull(x: unknown, type: 'string' | 'number'): boolean {
+  return x === null || typeof x === type
+}
+
+function isOfferInfo(r: Record<string, unknown>): boolean {
+  const odds = record(r.odds)
+  return (
+    strings(r, 'id', 'authorId', 'condition', 'check', 'guarantorId') &&
+    numbers(r, 'at', 'amount', 'takerAmount', 'closesAt', 'expectedAt') &&
+    (r.side === 'yes' || r.side === 'no') &&
+    !!odds &&
+    numbers(odds, 'a', 'b') &&
+    orNull(r.to, 'string') &&
+    orNull(r.counterTo, 'string')
+  )
+}
+
+function isOfferView(r: Record<string, unknown>): boolean {
+  return (
+    isOfferInfo(r) &&
+    OFFER_STATUSES.includes(r.status) &&
+    nullable(r.accepted, (a) => strings(a, 'by') && numbers(a, 'at')) &&
+    orNull(r.withdrawnAt, 'number') &&
+    nullable(r.closedBy, (c) => strings(c, 'offer') && numbers(c, 'at'))
+  )
+}
+
+function isOfferAct(r: Record<string, unknown>): boolean {
+  return strings(r, 'id', 'by', 'offer') && numbers(r, 'at')
+}
+
+function recordIn(x: unknown, field: string, item: (r: Record<string, unknown>) => boolean): boolean {
+  const r = versioned(x)
+  const m = r && record(r[field])
+  return !!m && item(m)
+}
+
+export function isCreateOfferResponse(x: unknown): x is CreateOfferResponse {
+  return recordIn(x, 'offer', isOfferInfo)
+}
+
+export function isAcceptOfferResponse(x: unknown): x is AcceptOfferResponse {
+  return recordIn(x, 'accepted', isOfferAct) && recordIn(x, 'offer', isOfferInfo)
+}
+
+export function isRevokeOfferResponse(x: unknown): x is RevokeOfferResponse {
+  return recordIn(x, 'revoked', isOfferAct)
 }

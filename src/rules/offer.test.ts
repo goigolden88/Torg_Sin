@@ -48,12 +48,19 @@ import {
   offerStakes,
   offerStatus,
   roomOffers,
+  isOfferEntry,
+  logOffers,
+  offerInfo,
+  offerRecord,
+  offerView,
+  roomRoles,
   type OfferCreated,
   type OfferRecord,
   type OfferSide,
   type OfferState,
 } from './offer'
 import { LONG_CONDITION, NEED_CHECK, NEED_CONDITION, BAD_AMOUNT } from './event'
+import type { LogEntry } from './room'
 
 const DAY = 24 * 60 * 60 * 1000
 const room = { hostId: 'h', members: ['h', 'a', 'b', 'c', 'g', 'n'] }
@@ -391,5 +398,71 @@ describe('исход пари', () => {
   it('итог для «Расчёта» — только окончательное', () => {
     expect(offerResult(accepted([mark('a', 'author', T + 20)]), EXPECT)).toEqual([])
     expect(offerResult(one([created()]), EXPECT)).toEqual([])
+  })
+})
+
+describe('пари из журнала комнаты (Р-22)', () => {
+  const base = { at: T - 10 }
+  const roomLog: LogEntry[] = [
+    { ...base, id: 'r', memberId: 'h', type: 'room.created', roomId: 'R', name: 'Дача', currency: 'RUB' },
+    ...['h', 'a', 'b', 'c'].map((m): LogEntry => ({ ...base, id: 'm' + m, memberId: 'h', type: 'member.added', member: m, name: m })),
+  ]
+  function entry(over: Partial<OfferCreated> = {}): LogEntry {
+    const { type: _type, ...c } = created(over)
+    void _type
+    return { ...c, type: 'offer.created', requestId: 'q-' + c.id }
+  }
+
+  it('записи журнала — записи правил: offer.revoked — это offer.withdrawn', () => {
+    const e = entry()
+    expect(isOfferEntry(e) && offerRecord(e)).toEqual(created())
+    const revoked: LogEntry = { id: 'x', at: T + 5, memberId: 'a', type: 'offer.revoked', offer: 'o1', requestId: 'q' }
+    expect(isOfferEntry(revoked) && offerRecord(revoked)).toEqual({ id: 'x', at: T + 5, memberId: 'a', type: 'offer.withdrawn', offer: 'o1' })
+    expect(isOfferEntry(roomLog[0])).toBe(false)
+  })
+
+  it('logOffers: ведущий и участники — из журнала; отозванное, принятое и закрытое встречным', () => {
+    const log: LogEntry[] = [
+      ...roomLog,
+      entry(),
+      entry({ id: 'o2', memberId: 'b', at: T + 1, side: 'no', to: 'a', amount: 600, counterTo: 'o1' }),
+      { id: 'y', at: T + 2, memberId: 'a', type: 'offer.accepted', offer: 'o2', requestId: 'q2' },
+      entry({ id: 'o3', at: T + 3 }),
+      { id: 'z', at: T + 4, memberId: 'a', type: 'offer.revoked', offer: 'o3', requestId: 'q3' },
+      // Не участник комнаты — запись не действует
+      { id: 'w', at: T + 5, memberId: 'чужой', type: 'offer.accepted', offer: 'o1', requestId: 'q4' },
+    ]
+    const offers = logOffers(log)
+    expect(offers.map((o) => [o.id, offerStatus(o, T + 10)])).toEqual([
+      ['o1', 'countered'],
+      ['o2', 'accepted'],
+      ['o3', 'withdrawn'],
+    ])
+    expect(logOffers([])).toEqual([])
+    expect(roomRoles({ id: 'R', name: 'Дача', currency: 'RUB', hostId: 'h', createdAt: 0, members: [] })).toEqual({ hostId: 'h', members: [] })
+  })
+
+  it('вид для ответа: сумма соперника по кэфу, статус на now, кто принял', () => {
+    const [o] = logOffers([...roomLog, entry({ odds: { a: 3, b: 1 }, amount: 100 })])
+    expect(offerInfo(o)).toEqual({
+      id: 'o1',
+      at: T,
+      authorId: 'a',
+      condition: 'Вася подтянется 20 раз',
+      check: 'Видео в чате',
+      side: 'yes',
+      odds: { a: 3, b: 1 },
+      amount: 100,
+      takerAmount: 33,
+      to: null,
+      closesAt: CLOSE,
+      expectedAt: EXPECT,
+      guarantorId: 'h',
+      counterTo: null,
+    })
+    expect(offerView(o, T)).toMatchObject({ status: 'open', accepted: null, withdrawnAt: null, closedBy: null })
+    expect(offerView(o, CLOSE).status).toBe('expired')
+    const [taken] = logOffers([...roomLog, entry(), { id: 'y', at: T + 2, memberId: 'b', type: 'offer.accepted', offer: 'o1', requestId: 'q' }])
+    expect(offerView(taken, CLOSE)).toMatchObject({ status: 'accepted', accepted: { by: 'b', at: T + 2 } })
   })
 })
