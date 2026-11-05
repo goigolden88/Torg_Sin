@@ -1,9 +1,11 @@
 // Пари один на один (Р-04, Р-05, Р-06; Архитектура, «Правила» — «Пари», «Исход пари»): суммы по
-// кэфу, принять / отозвать / встречное, исход отметками сторон и гарантом. Записи пари в журнале
-// комнаты заведёт задача сервера; здесь — проверка формы и состояние пари из записей OfferRecord
-// (как будут в журнале: автор, время сервера at, порядок — порядок журнала). Итоги и статусы
-// считаются, не хранятся. Ни DOM, ни Cloudflare
+// кэфу, принять / отозвать / встречное, исход отметками сторон и гарантом. Здесь — проверка формы и
+// состояние пари из записей OfferRecord (автор, время сервера at, порядок — порядок журнала); из
+// журнала комнаты их берёт logOffers (Р-22: offer.created, offer.accepted, offer.revoked). Итоги и
+// статусы считаются, не хранятся. Ни DOM, ни Cloudflare
 import { checkAmount, FINAL_TIME, MAX_EVENT_TEXT, NEED_CHECK, NEED_CONDITION, LONG_CHECK, LONG_CONDITION } from './event'
+import type { OfferInfo, OfferView } from './protocol'
+import { foldLog, type LogEntry, type RoomState } from './room'
 
 const DAY = 24 * 60 * 60 * 1000
 // Сторона молчит 3 дня после «исход к» или первой отметки (что позже) — решает гарант
@@ -511,4 +513,80 @@ export function offerResult(o: OfferState, now: number): { memberId: string; net
     { memberId: o.authorId, net: nets.author },
     { memberId: o.accepted.by, net: nets.taker },
   ]
+}
+
+// Пари в журнале комнаты (Р-22). requestId — номер запроса телефона: повтор узнаётся по нему
+export type OfferEntry = Extract<LogEntry, { type: 'offer.created' | 'offer.accepted' | 'offer.revoked' }>
+
+export function isOfferEntry(e: LogEntry): e is OfferEntry {
+  return e.type === 'offer.created' || e.type === 'offer.accepted' || e.type === 'offer.revoked'
+}
+
+// Запись журнала → запись правил: offer.revoked журнала — это offer.withdrawn правил
+export function offerRecord(e: OfferEntry): OfferRecord {
+  const base = { id: e.id, at: e.at, memberId: e.memberId }
+  switch (e.type) {
+    case 'offer.accepted':
+      return { ...base, type: 'offer.accepted', offer: e.offer }
+    case 'offer.revoked':
+      return { ...base, type: 'offer.withdrawn', offer: e.offer }
+    case 'offer.created':
+      return {
+        ...base,
+        type: 'offer.created',
+        condition: e.condition,
+        check: e.check,
+        side: e.side,
+        odds: { a: e.odds.a, b: e.odds.b },
+        amount: e.amount,
+        to: e.to,
+        closesAt: e.closesAt,
+        expectedAt: e.expectedAt,
+        guarantor: e.guarantor,
+        counterTo: e.counterTo,
+      }
+  }
+}
+
+// Ведущий и участники комнаты — для правил пари
+export function roomRoles(state: RoomState): RoomRoles {
+  return { hostId: state.hostId, members: state.members.map((m) => m.id) }
+}
+
+// Пари комнаты из журнала по порядку создания (roomOffers); комнаты нет — пусто
+export function logOffers(log: readonly LogEntry[]): OfferState[] {
+  const state = foldLog(log)
+  return state ? roomOffers(log.filter(isOfferEntry).map(offerRecord), roomRoles(state)) : []
+}
+
+// Условия пари для ответа: сумма соперника — по кэфу (offerStakes); гарант — нынешний
+export function offerInfo(o: OfferState): OfferInfo {
+  const stakes = offerStakes(o.odds, o.amount)
+  return {
+    id: o.id,
+    at: o.at,
+    authorId: o.authorId,
+    condition: o.condition,
+    check: o.check,
+    side: o.side,
+    odds: { a: o.odds.a, b: o.odds.b },
+    amount: o.amount,
+    takerAmount: stakes.ok ? stakes.value.taker : 0,
+    to: o.to,
+    closesAt: o.closesAt,
+    expectedAt: o.expectedAt,
+    guarantorId: o.guarantorId,
+    counterTo: o.counterTo,
+  }
+}
+
+// Пари для ответа GET /rooms/<номер>: статус на now (время сервера), кто принял, отзыв, встречное
+export function offerView(o: OfferState, now: number): OfferView {
+  return {
+    ...offerInfo(o),
+    status: offerStatus(o, now),
+    accepted: o.accepted && { by: o.accepted.by, at: o.accepted.at },
+    withdrawnAt: o.withdrawnAt,
+    closedBy: o.closedBy && { offer: o.closedBy.offer, at: o.closedBy.at },
+  }
 }

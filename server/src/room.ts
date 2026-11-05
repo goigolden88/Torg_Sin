@@ -40,7 +40,45 @@ import {
   type EventInput,
   type EventState,
 } from '../../src/rules/event'
-import type { Agreement, BetInfo, Cancellation, Clarification, EventInfo, Objection, OutcomeMark } from '../../src/rules/protocol'
+import {
+  checkAccept,
+  checkCounter,
+  checkOfferInput,
+  checkOfferTimes,
+  checkWithdraw,
+  CLOSE_PASSED,
+  counterInput,
+  EXPIRED,
+  GUARANTOR_COUNTERS,
+  GUARANTOR_TAKES,
+  isOfferEntry,
+  logOffers,
+  NO_OFFER,
+  NOT_ADDRESSEE,
+  NOT_MEMBER,
+  offerGuarantor,
+  offerInfo,
+  ONLY_AUTHOR,
+  OWN_COUNTER,
+  OWN_OFFER,
+  roomRoles,
+  type OfferEntry,
+  type OfferInput,
+  type OfferState,
+  type Odds,
+  type RoomRoles,
+} from '../../src/rules/offer'
+import type {
+  Agreement,
+  BetInfo,
+  Cancellation,
+  Clarification,
+  EventInfo,
+  Objection,
+  OfferAct,
+  OfferInfo,
+  OutcomeMark,
+} from '../../src/rules/protocol'
 import { ulid } from '../../src/rules/ulid'
 import { deriveJoinKey, hashKey, randomToken, sameText } from './keys'
 
@@ -97,6 +135,9 @@ export const VOTERS_ONLY = 'Голосуют только те, кто не ст
 export const ALREADY_VOTED = 'Вы уже проголосовали'
 export const VOTING_OVER = 'Голосование закончено'
 export const REQUEST_USED = 'Этот номер запроса уже занят другим действием'
+// Пари (Р-22): прочие отказы — тексты правил offer.ts
+export const OFFER_CLOSED = 'Приём закрыт — срок «приём до» прошёл'
+export { NO_OFFER }
 
 // Ссылка для другого устройства живёт сутки
 export const DEVICE_LINK_TTL = 24 * 60 * 60 * 1000
@@ -175,8 +216,8 @@ export async function createRoom(storage: RoomStorage, input: CreateInput, now: 
 // Отказ комнаты; join — ключ заявки, которую ещё не впустили или отклонили (экран ожидания)
 export type Failure = { ok: false; status: 400 | 403 | 404 | 409; error: string; join?: 'waiting' | 'rejected' }
 
-// events — события комнаты из журнала (статус на время ответа считает http.ts)
-export type StateResult = { ok: true; state: RoomState; me: string; events: EventState[] } | Failure
+// events и offers — события и пари комнаты из журнала (статус на время ответа считает http.ts)
+export type StateResult = { ok: true; state: RoomState; me: string; events: EventState[]; offers: OfferState[] } | Failure
 
 function fail(status: Failure['status'], error: string, join?: Failure['join']): Failure {
   return join ? { ok: false, status, error, join } : { ok: false, status, error }
@@ -207,7 +248,7 @@ async function hostCaller(storage: RoomStorage, keyHash: string): Promise<Caller
 // Состояние комнаты для владельца ключа (по хешу ключа)
 export async function roomState(storage: RoomStorage, keyHash: string): Promise<StateResult> {
   const c = await caller(storage, keyHash)
-  return c.ok ? { ok: true, state: c.state, me: c.me, events: roomEvents(c.log) } : c
+  return c.ok ? { ok: true, state: c.state, me: c.me, events: roomEvents(c.log), offers: logOffers(c.log) } : c
 }
 
 // Действия комнаты, кроме создания и чтения состояния. Токены и ключи, которые выдаёт сервер,
@@ -232,6 +273,12 @@ export type RoomAction =
   | { type: 'agreeOutcome'; keyHash: string; event: string; requestId: string }
   | { type: 'decideOutcome'; keyHash: string; event: string; outcome: string; requestId: string }
   | { type: 'voteOutcome'; keyHash: string; event: string; outcome: string; requestId: string }
+  // Пари (Р-22): форма уже проверена (offer.ts, checkOfferInput); сроки, гарант и адресат — здесь.
+  // Встречное: odds и amount не заданы (null) — исходного
+  | { type: 'createOffer'; keyHash: string; input: OfferInput; requestId: string }
+  | { type: 'counterOffer'; keyHash: string; offer: string; odds: Odds | null; amount: number | null; closesAt: number; requestId: string }
+  | { type: 'acceptOffer'; keyHash: string; offer: string; requestId: string }
+  | { type: 'revokeOffer'; keyHash: string; offer: string; requestId: string }
 
 export type JoinStatus = JoinRequest['status']
 
@@ -254,6 +301,10 @@ export type ActionValues = {
   agreeOutcome: { agreement: Agreement }
   decideOutcome: { decision: OutcomeMark }
   voteOutcome: { vote: OutcomeMark }
+  createOffer: { offer: OfferInfo }
+  counterOffer: { offer: OfferInfo }
+  acceptOffer: { accepted: OfferAct; offer: OfferInfo }
+  revokeOffer: { revoked: OfferAct }
 }
 
 export type ActionType = RoomAction['type']
@@ -322,6 +373,18 @@ export async function act<K extends ActionType>(
       break
     case 'voteOutcome':
       r = await voteOutcome(storage, a, now)
+      break
+    case 'createOffer':
+      r = await createOffer(storage, a, now)
+      break
+    case 'counterOffer':
+      r = await counterOffer(storage, a, now)
+      break
+    case 'acceptOffer':
+      r = await acceptOffer(storage, a, now)
+      break
+    case 'revokeOffer':
+      r = await revokeOffer(storage, a, now)
       break
   }
   return r as ActionResult<K>
@@ -755,4 +818,166 @@ async function voteOutcome(storage: RoomStorage, a: OutcomeAction, now: number):
   const vote: OutcomeMark = { id: ulid(now), at: now, by: c.me, outcome: a.outcome }
   await append(storage, [{ id: vote.id, at: now, memberId: c.me, type: 'outcome.voted', event: event.id, outcome: a.outcome, requestId: a.requestId }])
   return ok({ vote })
+}
+
+// --- Пари (Р-22). Правила — offer.ts; сроки — по времени сервера в момент запроса (будильника нет:
+// статус «истекло» считается, не записывается). Повтор с тем же номером запроса — тот же ответ без
+// новой записи (и после сроков); тот же номер с другим содержимым или от другого — 409
+
+type OfferCaller = Caller & { offers: OfferState[]; roles: RoomRoles; again: OfferEntry | undefined }
+
+async function offerCaller(storage: RoomStorage, keyHash: string, requestId: string): Promise<OfferCaller | Failure> {
+  const c = await caller(storage, keyHash)
+  if (!c.ok) return c
+  const again = c.log.find((e): e is OfferEntry => isOfferEntry(e) && e.requestId === requestId)
+  return { ...c, offers: logOffers(c.log), roles: roomRoles(c.state), again }
+}
+
+// Отказ правил пари: «не вам» — 403, «уже не то состояние» — 409; истекло — «Приём закрыт»
+const OFFER_FORBIDDEN: readonly string[] = [OWN_OFFER, GUARANTOR_TAKES, NOT_ADDRESSEE, NOT_MEMBER, ONLY_AUTHOR, OWN_COUNTER, GUARANTOR_COUNTERS]
+
+function offerRefusal(error: string): Failure {
+  if (error === EXPIRED) return fail(409, OFFER_CLOSED)
+  return fail(OFFER_FORBIDDEN.includes(error) ? 403 : 409, error)
+}
+
+// Повтор создания или встречного: та же запись offer.created от того же участника — то же пари
+function repeatedOffer(c: OfferCaller, same: (e: Extract<OfferEntry, { type: 'offer.created' }>) => boolean): { ok: true; value: { offer: OfferInfo } } | Failure {
+  const e = c.again
+  const o = e?.type === 'offer.created' && e.memberId === c.me && same(e) ? c.offers.find((x) => x.id === e.id) : undefined
+  return o ? ok({ offer: offerInfo(o) }) : fail(409, REQUEST_USED)
+}
+
+function sameTerms(e: { odds: Odds; amount: number; closesAt: number }, x: { odds: Odds; amount: number; closesAt: number }): boolean {
+  return e.odds.a === x.odds.a && e.odds.b === x.odds.b && e.amount === x.amount && e.closesAt === x.closesAt
+}
+
+// Записать новое пари (проверенное правилами) и ответить его условиями
+async function writeOffer(
+  storage: RoomStorage,
+  c: OfferCaller,
+  input: OfferInput,
+  counterTo: string | null,
+  requestId: string,
+  now: number,
+): Promise<ActionResult<'createOffer'>> {
+  const guarantor = offerGuarantor(input, c.me, c.roles)
+  if (!guarantor.ok) return fail(400, guarantor.error)
+  const late = checkOfferTimes(input, now)
+  if (late) return fail(late === CLOSE_PASSED ? 409 : 400, late)
+  const entry: LogEntry = {
+    id: ulid(now),
+    at: now,
+    memberId: c.me,
+    type: 'offer.created',
+    condition: input.condition,
+    check: input.check,
+    side: input.side,
+    odds: { a: input.odds.a, b: input.odds.b },
+    amount: input.amount,
+    to: input.to,
+    closesAt: input.closesAt,
+    expectedAt: input.expectedAt,
+    guarantor: guarantor.value,
+    counterTo,
+    requestId,
+  }
+  await append(storage, [entry])
+  const created = logOffers([...c.log, entry]).find((o) => o.id === entry.id)
+  return created ? ok({ offer: offerInfo(created) }) : fail(409, NO_OFFER)
+}
+
+// Предложить пари: любой участник; адресное — другому участнику, открытое — всем. Гарант не выбран —
+// ведущий (ведущий — сторона — отказ). «Приём до» прошёл — 409
+async function createOffer(
+  storage: RoomStorage,
+  a: { keyHash: string; input: OfferInput; requestId: string },
+  now: number,
+): Promise<ActionResult<'createOffer'>> {
+  const c = await offerCaller(storage, a.keyHash, a.requestId)
+  if (!c.ok) return c
+  const { input } = a
+  if (c.again) {
+    return repeatedOffer(
+      c,
+      (e) =>
+        e.counterTo === null &&
+        sameTerms(e, input) &&
+        e.condition === input.condition &&
+        e.check === input.check &&
+        e.side === input.side &&
+        e.to === input.to &&
+        e.expectedAt === input.expectedAt &&
+        e.guarantor === (input.guarantor ?? c.state.hostId),
+    )
+  }
+  return writeOffer(storage, c, input, null, a.requestId, now)
+}
+
+// Встречное: новое пари автору исходного со своими кэфом, суммой и «приём до» (counterInput); делает
+// тот, кто мог бы принять исходное. Автор принял встречное — исходное закрыто встречным (roomOffers)
+async function counterOffer(
+  storage: RoomStorage,
+  a: { keyHash: string; offer: string; odds: Odds | null; amount: number | null; closesAt: number; requestId: string },
+  now: number,
+): Promise<ActionResult<'counterOffer'>> {
+  const c = await offerCaller(storage, a.keyHash, a.requestId)
+  if (!c.ok) return c
+  const original = c.offers.find((o) => o.id === a.offer)
+  const terms = original && { odds: a.odds ?? original.odds, amount: a.amount ?? original.amount, closesAt: a.closesAt }
+  if (c.again) return repeatedOffer(c, (e) => e.counterTo === a.offer && !!terms && sameTerms(e, terms))
+  if (!original || !terms) return fail(404, NO_OFFER)
+  const refused = checkCounter(original, c.me, c.roles, now)
+  if (refused) return offerRefusal(refused)
+  const checked = checkOfferInput(counterInput(original, terms))
+  if (!checked.ok) return fail(400, checked.error)
+  return writeOffer(storage, c, checked.value, original.id, a.requestId, now)
+}
+
+function actOf(e: Extract<OfferEntry, { type: 'offer.accepted' | 'offer.revoked' }>): OfferAct {
+  return { id: e.id, at: e.at, by: e.memberId, offer: e.offer }
+}
+
+// Принять: адресное — адресат, открытое — любой участник, кроме автора и гаранта; до «приём до»
+async function acceptOffer(
+  storage: RoomStorage,
+  a: { keyHash: string; offer: string; requestId: string },
+  now: number,
+): Promise<ActionResult<'acceptOffer'>> {
+  const c = await offerCaller(storage, a.keyHash, a.requestId)
+  if (!c.ok) return c
+  const o = c.offers.find((x) => x.id === a.offer)
+  if (c.again) {
+    const e = c.again
+    return e.type === 'offer.accepted' && e.offer === a.offer && e.memberId === c.me && o
+      ? ok({ accepted: actOf(e), offer: offerInfo(o) })
+      : fail(409, REQUEST_USED)
+  }
+  if (!o) return fail(404, NO_OFFER)
+  const refused = checkAccept(o, c.me, c.roles, now)
+  if (refused) return offerRefusal(refused)
+  const entry = { id: ulid(now), at: now, memberId: c.me, type: 'offer.accepted', offer: o.id, requestId: a.requestId } as const
+  await append(storage, [entry])
+  return ok({ accepted: actOf(entry), offer: offerInfo(o) })
+}
+
+// Отозвать: только автор, пока не принято и не закрыто встречным
+async function revokeOffer(
+  storage: RoomStorage,
+  a: { keyHash: string; offer: string; requestId: string },
+  now: number,
+): Promise<ActionResult<'revokeOffer'>> {
+  const c = await offerCaller(storage, a.keyHash, a.requestId)
+  if (!c.ok) return c
+  if (c.again) {
+    const e = c.again
+    return e.type === 'offer.revoked' && e.offer === a.offer && e.memberId === c.me ? ok({ revoked: actOf(e) }) : fail(409, REQUEST_USED)
+  }
+  const o = c.offers.find((x) => x.id === a.offer)
+  if (!o) return fail(404, NO_OFFER)
+  const refused = checkWithdraw(o, c.me)
+  if (refused) return offerRefusal(refused)
+  const entry = { id: ulid(now), at: now, memberId: c.me, type: 'offer.revoked', offer: o.id, requestId: a.requestId } as const
+  await append(storage, [entry])
+  return ok({ revoked: actOf(entry) })
 }

@@ -24,6 +24,31 @@ import {
   SAME_OUTCOMES,
 } from '../../src/rules/event'
 import {
+  ACCEPTED_NO_WITHDRAW,
+  ALREADY_ACCEPTED,
+  BAD_ADDRESSEE,
+  BAD_GUARANTOR,
+  BAD_ODDS,
+  BAD_SIDE,
+  CLOSE_PASSED as OFFER_CLOSE_PASSED,
+  COUNTER_ACCEPTED,
+  COUNTERED,
+  EXPECTED_EARLY as OFFER_EXPECTED_EARLY,
+  GUARANTOR_COUNTERS,
+  GUARANTOR_TAKES,
+  NEED_GUARANTOR,
+  NEED_TIMES as OFFER_NEED_TIMES,
+  NOT_ADDRESSEE,
+  ONLY_AUTHOR,
+  OWN_COUNTER,
+  OWN_OFFER,
+  TAKER_TOO_SMALL,
+  WITHDRAWN,
+} from '../../src/rules/offer'
+import {
+  isAcceptOfferResponse,
+  isCreateOfferResponse,
+  isRevokeOfferResponse,
   isAgreeOutcomeResponse,
   isDecideOutcomeResponse,
   isHealth,
@@ -32,6 +57,10 @@ import {
   isRoomStateResponse,
   isVoteOutcomeResponse,
   PROTOCOL_VERSION,
+  type AcceptOfferResponse,
+  type CreateOfferResponse,
+  type OfferView,
+  type RevokeOfferResponse,
   type AgreeOutcomeResponse,
   type CancelEventResponse,
   type ClaimDeviceResponse,
@@ -53,7 +82,7 @@ import {
 } from '../../src/rules/protocol'
 import { BAD_CURRENCY, LONG_MEMBER_NAME, LONG_ROOM_NAME, NAME_TAKEN, NEED_MEMBER_NAME, NEED_ROOM_NAME } from '../../src/rules/room'
 import { ulid } from '../../src/rules/ulid'
-import { BAD_REQUEST_ID, CREATION_OFF, NEED_KEY, WRONG_PASSWORD } from './http'
+import { BAD_REQUEST_ID, CREATION_OFF, NEED_CLOSE, NEED_KEY, WRONG_PASSWORD } from './http'
 import { hashKey } from './keys'
 import {
   AGREE_BETTORS_ONLY,
@@ -85,6 +114,8 @@ import {
   NO_EVENT,
   NO_MEMBER,
   NO_OBJECTION,
+  NO_OFFER,
+  OFFER_CLOSED,
   NO_OUTCOME,
   NO_REQUEST,
   NO_ROOM,
@@ -299,6 +330,7 @@ export function roomsSuite(storageName: string, start: (password: string | undef
           members: [{ id: created.memberId, name: 'Аня' }],
           me: created.memberId,
           events: [],
+          offers: [],
           now: s.clock.now,
         })
       })
@@ -1378,6 +1410,286 @@ export function roomsSuite(storageName: string, start: (password: string | undef
             await refused(send(s, room.roomId, `events/${alone.id}/agree`, {}), 403, NEED_KEY)
           })
         })
+      })
+    })
+
+    describe('пари (Р-22)', () => {
+      const HOUR = 60 * 60 * 1000
+      const CONDITION = 'Вася бросит курить до Нового года'
+
+      // Комната: Аня — ведущая, Боря, Вера и Гоша — участники
+      async function room4(s: TestServer) {
+        const room = await create(s)
+        const borya = await member(s, room, 'Боря')
+        const vera = await member(s, room, 'Вера')
+        const gosha = await member(s, room, 'Гоша')
+        return { room, borya, vera, gosha }
+      }
+
+      function offerForm(s: TestServer, change: Record<string, unknown> = {}): Record<string, unknown> {
+        return {
+          v: PROTOCOL_VERSION,
+          condition: CONDITION,
+          check: 'Вася сам скажет при всех',
+          odds: { a: 3, b: 1 },
+          amount: 300,
+          closesAt: s.clock.now + HOUR,
+          expectedAt: s.clock.now + 24 * HOUR,
+          ...change,
+        }
+      }
+
+      async function newOffer(s: TestServer, roomId: string, key: string, body: unknown): Promise<CreateOfferResponse> {
+        const r = await ok<CreateOfferResponse>(send(s, roomId, 'offers', body, key))
+        expect(isCreateOfferResponse(r)).toBe(true)
+        return r
+      }
+
+      function offerAct(s: TestServer, roomId: string, key: string | undefined, offerId: string, action: string, body: Record<string, unknown> = {}) {
+        return send(s, roomId, `offers/${offerId}/${action}`, { v: PROTOCOL_VERSION, ...body }, key)
+      }
+
+      async function offersOf(s: TestServer, roomId: string, key: string): Promise<OfferView[]> {
+        const state = await ok<RoomStateResponse>(get(s, roomId, key))
+        expect(isRoomStateResponse(state)).toBe(true)
+        expect(Array.isArray(state.offers)).toBe(true)
+        return state.offers ?? []
+      }
+
+      async function offerEntries(s: TestServer, roomId: string): Promise<string[]> {
+        return (await readLog(s.storage(roomId))).map((e) => e.type).filter((t) => t.startsWith('offer.'))
+      }
+
+      it('участник предлагает открытое пари — номер, сумма соперника по кэфу, гарант — ведущий; видно всем', async () => {
+        const s = await server()
+        const { room, borya, vera, gosha } = await room4(s)
+        const form = offerForm(s)
+        const { offer } = await newOffer(s, room.roomId, borya.key, form)
+        expect(offer).toEqual({
+          id: expect.stringMatching(/^[0-9A-HJKMNP-TV-Z]{26}$/),
+          at: s.clock.now,
+          authorId: borya.memberId,
+          condition: CONDITION,
+          check: 'Вася сам скажет при всех',
+          side: 'yes',
+          odds: { a: 3, b: 1 },
+          amount: 300,
+          takerAmount: 100,
+          to: null,
+          closesAt: form.closesAt,
+          expectedAt: form.expectedAt,
+          guarantorId: room.memberId,
+          counterTo: null,
+        })
+        const expected = { ...offer, status: 'open', accepted: null, withdrawnAt: null, closedBy: null }
+        for (const key of [room.key, borya.key, vera.key, gosha.key]) expect(await offersOf(s, room.roomId, key)).toEqual([expected])
+        const log = await readLog(s.storage(room.roomId))
+        expect(log.at(-1)).toMatchObject({ type: 'offer.created', id: offer.id, memberId: borya.memberId, guarantor: room.memberId, counterTo: null, requestId: expect.any(String) })
+        // Адресное, сторона «не сбудется», свой гарант; «100 очков на 3 к 1» — соперник 33
+        const second = await newOffer(s, room.roomId, borya.key, offerForm(s, { to: vera.memberId, side: 'no', guarantor: gosha.memberId, odds: { a: 3, b: 1 }, amount: 100 }))
+        expect(second.offer).toMatchObject({ to: vera.memberId, side: 'no', guarantorId: gosha.memberId, amount: 100, takerAmount: 33 })
+        // Адресное видят все, тайных пари нет
+        expect((await offersOf(s, room.roomId, gosha.key)).map((o) => o.id)).toEqual([offer.id, second.offer.id])
+        expect(await offerEntries(s, room.roomId)).toEqual(['offer.created', 'offer.created'])
+      })
+
+      it('форма с ошибкой — 400, прошедший «приём до» — 409; пари не заводится', async () => {
+        const s = await server()
+        const { room, borya, vera } = await room4(s)
+        const now = s.clock.now
+        const cases: [Record<string, unknown>, string][] = [
+          [{ odds: { a: 0, b: 1 } }, BAD_ODDS],
+          [{ odds: { a: 3, b: 101 } }, BAD_ODDS],
+          [{ odds: { a: 1.5, b: 1 } }, BAD_ODDS],
+          [{ odds: undefined }, BAD_ODDS],
+          [{ odds: { a: 100, b: 1 }, amount: 99 }, TAKER_TOO_SMALL],
+          [{ amount: 0 }, BAD_AMOUNT],
+          [{ side: 'может быть' }, BAD_SIDE],
+          [{ condition: ' ' }, NEED_CONDITION],
+          [{ check: 'я'.repeat(301) }, LONG_CHECK],
+          [{ closesAt: undefined }, OFFER_NEED_TIMES],
+          [{ expectedAt: now + HOUR - 1 }, OFFER_EXPECTED_EARLY],
+          [{ to: borya.memberId }, BAD_ADDRESSEE],
+          [{ to: ulid() }, BAD_ADDRESSEE],
+          [{ guarantor: borya.memberId }, BAD_GUARANTOR],
+          [{ to: vera.memberId, guarantor: vera.memberId }, BAD_GUARANTOR],
+          [{ guarantor: ulid() }, BAD_GUARANTOR],
+          [{ requestId: 'abc' }, BAD_REQUEST_ID],
+        ]
+        for (const [change, error] of cases) await refused(send(s, room.roomId, 'offers', offerForm(s, change), borya.key), 400, error)
+        // Ведущий — сторона пари без своего гаранта: автор или адресат
+        await refused(send(s, room.roomId, 'offers', offerForm(s), room.key), 400, NEED_GUARANTOR)
+        await refused(send(s, room.roomId, 'offers', offerForm(s, { to: room.memberId }), borya.key), 400, NEED_GUARANTOR)
+        // Сроки — по времени сервера
+        await refused(send(s, room.roomId, 'offers', offerForm(s, { closesAt: now }), borya.key), 409, OFFER_CLOSE_PASSED)
+        await refused(send(s, room.roomId, 'offers', offerForm(s, { closesAt: now - HOUR, expectedAt: now }), borya.key), 409, OFFER_CLOSE_PASSED)
+        // Без ключа, с ключом заявки, другая версия
+        const dima = await join(s, room, 'Дима')
+        await refused(send(s, room.roomId, 'offers', offerForm(s)), 403, NEED_KEY)
+        await refused(send(s, room.roomId, 'offers', offerForm(s), dima.key), 403, WAITING, 'waiting')
+        expect((await send(s, room.roomId, 'offers', offerForm(s, { v: PROTOCOL_VERSION + 1 }), borya.key)).status).toBe(400)
+        expect(await offerEntries(s, room.roomId)).toEqual([])
+        // Ведущий с гарантом — можно; «исход к» ровно в «приём до» — можно
+        await newOffer(s, room.roomId, room.key, offerForm(s, { guarantor: vera.memberId, expectedAt: now + HOUR }))
+        expect(await offerEntries(s, room.roomId)).toEqual(['offer.created'])
+      })
+
+      it('принять открытое: любой, кроме автора и гаранта; второй — 409 «Пари уже принято»', async () => {
+        const s = await server()
+        const { room, borya, vera, gosha } = await room4(s)
+        const { offer } = await newOffer(s, room.roomId, borya.key, offerForm(s))
+        await refused(offerAct(s, room.roomId, borya.key, offer.id, 'accept'), 403, OWN_OFFER)
+        await refused(offerAct(s, room.roomId, room.key, offer.id, 'accept'), 403, GUARANTOR_TAKES)
+        s.clock.now += 1000
+        const accepted = await ok<AcceptOfferResponse>(offerAct(s, room.roomId, vera.key, offer.id, 'accept'))
+        expect(isAcceptOfferResponse(accepted)).toBe(true)
+        // У обеих сторон — суммы: автор 300, соперник 100
+        expect(accepted).toEqual({ v: PROTOCOL_VERSION, accepted: { id: expect.any(String), at: s.clock.now, by: vera.memberId, offer: offer.id }, offer })
+        await refused(offerAct(s, room.roomId, gosha.key, offer.id, 'accept'), 409, ALREADY_ACCEPTED)
+        const [view] = await offersOf(s, room.roomId, gosha.key)
+        expect(view).toMatchObject({ status: 'accepted', accepted: { by: vera.memberId, at: s.clock.now }, amount: 300, takerAmount: 100 })
+        expect(await offerEntries(s, room.roomId)).toEqual(['offer.created', 'offer.accepted'])
+        // Нет пари, кривой номер, без ключа
+        await refused(offerAct(s, room.roomId, gosha.key, ulid(), 'accept'), 404, NO_OFFER)
+        await refused(offerAct(s, room.roomId, gosha.key, 'не-номер', 'accept'), 404, NO_OFFER)
+        await refused(offerAct(s, room.roomId, undefined, offer.id, 'accept'), 403, NEED_KEY)
+      })
+
+      it('адресное принимает только адресат; после «приём до» — 409 «Приём закрыт», статус «истекло»', async () => {
+        const s = await server()
+        const { room, borya, vera, gosha } = await room4(s)
+        const { offer } = await newOffer(s, room.roomId, borya.key, offerForm(s, { to: vera.memberId }))
+        await refused(offerAct(s, room.roomId, gosha.key, offer.id, 'accept'), 403, NOT_ADDRESSEE)
+        await ok(offerAct(s, room.roomId, vera.key, offer.id, 'accept'))
+        // Открытое, срок прошёл ровно в «приём до» — не включая
+        const late = await newOffer(s, room.roomId, borya.key, offerForm(s))
+        s.clock.now = late.offer.closesAt
+        await refused(offerAct(s, room.roomId, gosha.key, late.offer.id, 'accept'), 409, OFFER_CLOSED)
+        expect(OFFER_CLOSED).toContain('Приём закрыт')
+        const views = await offersOf(s, room.roomId, room.key)
+        expect(views.map((o) => o.status)).toEqual(['accepted', 'expired'])
+        expect(await offerEntries(s, room.roomId)).toEqual(['offer.created', 'offer.accepted', 'offer.created'])
+      })
+
+      it('отозвать — только автор, пока не принято; отозванное не принять', async () => {
+        const s = await server()
+        const { room, borya, vera, gosha } = await room4(s)
+        const { offer } = await newOffer(s, room.roomId, borya.key, offerForm(s))
+        await refused(offerAct(s, room.roomId, vera.key, offer.id, 'revoke'), 403, ONLY_AUTHOR)
+        s.clock.now += 1000
+        const revoked = await ok<RevokeOfferResponse>(offerAct(s, room.roomId, borya.key, offer.id, 'revoke'))
+        expect(isRevokeOfferResponse(revoked)).toBe(true)
+        expect(revoked).toEqual({ v: PROTOCOL_VERSION, revoked: { id: expect.any(String), at: s.clock.now, by: borya.memberId, offer: offer.id } })
+        await refused(offerAct(s, room.roomId, vera.key, offer.id, 'accept'), 409, WITHDRAWN)
+        await refused(offerAct(s, room.roomId, borya.key, offer.id, 'revoke'), 409, WITHDRAWN)
+        const [view] = await offersOf(s, room.roomId, vera.key)
+        expect(view).toMatchObject({ status: 'withdrawn', withdrawnAt: s.clock.now, accepted: null })
+        // Принятое не отзывают
+        const second = await newOffer(s, room.roomId, borya.key, offerForm(s))
+        await ok(offerAct(s, room.roomId, gosha.key, second.offer.id, 'accept'))
+        await refused(offerAct(s, room.roomId, borya.key, second.offer.id, 'revoke'), 409, ACCEPTED_NO_WITHDRAW)
+        await refused(offerAct(s, room.roomId, borya.key, ulid(), 'revoke'), 404, NO_OFFER)
+        expect(await offerEntries(s, room.roomId)).toEqual(['offer.created', 'offer.revoked', 'offer.created', 'offer.accepted'])
+      })
+
+      it('встречное — новое пари автору исходного; автор принял встречное — исходное закрыто встречным', async () => {
+        const s = await server()
+        const { room, borya, vera, gosha } = await room4(s)
+        const { offer } = await newOffer(s, room.roomId, borya.key, offerForm(s))
+        s.clock.now += 1000
+        const closesAt = s.clock.now + 2 * HOUR
+        const c =await ok<CreateOfferResponse>(offerAct(s, room.roomId, vera.key, offer.id, 'counter', { amount: 600, closesAt }))
+        expect(isCreateOfferResponse(c)).toBe(true)
+        // Кэф не задан — исходного; сторона — обратная; адресат — автор исходного; гарант — тот же
+        expect(c.offer).toEqual({
+          ...offer,
+          id: expect.any(String),
+          at: s.clock.now,
+          authorId: vera.memberId,
+          side: 'no',
+          amount: 600,
+          takerAmount: 200,
+          to: borya.memberId,
+          closesAt,
+          counterTo: offer.id,
+        })
+        expect((await readLog(s.storage(room.roomId))).at(-1)).toMatchObject({ type: 'offer.created', counterTo: offer.id })
+        // Встречное принимает только автор исходного
+        await refused(offerAct(s, room.roomId, gosha.key, c.offer.id, 'accept'), 403, NOT_ADDRESSEE)
+        s.clock.now += 1000
+        await ok(offerAct(s, room.roomId, borya.key, c.offer.id, 'accept'))
+        const [original, countered] = await offersOf(s, room.roomId, gosha.key)
+        expect(original).toMatchObject({ status: 'countered', closedBy: { offer: c.offer.id, at: s.clock.now }, accepted: null })
+        expect(countered).toMatchObject({ status: 'accepted', accepted: { by: borya.memberId, at: s.clock.now } })
+        await refused(offerAct(s, room.roomId, gosha.key, offer.id, 'accept'), 409, COUNTERED)
+        expect(await offerEntries(s, room.roomId)).toEqual(['offer.created', 'offer.created', 'offer.accepted'])
+      })
+
+      it('встречное: свой кэф; к своему, гаранту, принятому — отказ; форма и сроки — 400 и 409', async () => {
+        const s = await server()
+        const { room, borya, vera, gosha } = await room4(s)
+        const { offer } = await newOffer(s, room.roomId, borya.key, offerForm(s, { to: vera.memberId }))
+        const closesAt = s.clock.now + HOUR
+        await refused(offerAct(s, room.roomId, borya.key, offer.id, 'counter', { closesAt }), 403, OWN_COUNTER)
+        await refused(offerAct(s, room.roomId, room.key, offer.id, 'counter', { closesAt }), 403, GUARANTOR_COUNTERS)
+        await refused(offerAct(s, room.roomId, gosha.key, offer.id, 'counter', { closesAt }), 403, NOT_ADDRESSEE)
+        const cases: [Record<string, unknown>, string][] = [
+          [{ odds: { a: 0, b: 1 }, closesAt }, BAD_ODDS],
+          [{ amount: -5, closesAt }, BAD_AMOUNT],
+          [{ odds: { a: 100, b: 1 }, amount: 50, closesAt }, TAKER_TOO_SMALL],
+          [{}, NEED_CLOSE],
+          [{ closesAt: offer.expectedAt + 1 }, OFFER_EXPECTED_EARLY],
+          [{ closesAt, requestId: 'abc' }, BAD_REQUEST_ID],
+        ]
+        for (const [body, error] of cases) await refused(offerAct(s, room.roomId, vera.key, offer.id, 'counter', body), 400, error)
+        await refused(offerAct(s, room.roomId, vera.key, offer.id, 'counter', { closesAt: s.clock.now }), 409, OFFER_CLOSE_PASSED)
+        await refused(offerAct(s, room.roomId, vera.key, ulid(), 'counter', { closesAt }), 404, NO_OFFER)
+        // Свой кэф «2 к 1», сумма исходного 300 → соперник 150
+        const c = await ok<CreateOfferResponse>(offerAct(s, room.roomId, vera.key, offer.id, 'counter', { odds: { a: 2, b: 1 }, closesAt }))
+        expect(c.offer).toMatchObject({ odds: { a: 2, b: 1 }, amount: 300, takerAmount: 150, to: borya.memberId, side: 'no', guarantorId: room.memberId })
+        // Исходное принято — встречного нет; после срока — «Приём закрыт»
+        await ok(offerAct(s, room.roomId, vera.key, offer.id, 'accept'))
+        await refused(offerAct(s, room.roomId, vera.key, offer.id, 'counter', { closesAt }), 409, COUNTER_ACCEPTED)
+        const open = await newOffer(s, room.roomId, borya.key, offerForm(s))
+        s.clock.now = open.offer.closesAt
+        await refused(offerAct(s, room.roomId, gosha.key, open.offer.id, 'counter', { closesAt: s.clock.now + HOUR }), 409, OFFER_CLOSED)
+        expect(await offerEntries(s, room.roomId)).toEqual(['offer.created', 'offer.created', 'offer.accepted', 'offer.created'])
+      })
+
+      it('повтор с тем же requestId — тот же ответ без второй записи (и после срока); чужое содержимое — 409', async () => {
+        const s = await server()
+        const { room, borya, vera, gosha } = await room4(s)
+        const requestId = ulid(s.clock.now)
+        const form = offerForm(s, { requestId })
+        const first = await newOffer(s, room.roomId, borya.key, form)
+        expect(await newOffer(s, room.roomId, borya.key, form)).toEqual(first)
+        await refused(send(s, room.roomId, 'offers', { ...form, amount: 600 }, borya.key), 409, REQUEST_USED)
+        await refused(send(s, room.roomId, 'offers', form, vera.key), 409, REQUEST_USED)
+        const offerId = first.offer.id
+
+        const counterId = ulid(s.clock.now)
+        const counterBody = { amount: 600, closesAt: s.clock.now + HOUR, requestId: counterId }
+        const counter = await ok<CreateOfferResponse>(offerAct(s, room.roomId, vera.key, offerId, 'counter', counterBody))
+        expect(await ok(offerAct(s, room.roomId, vera.key, offerId, 'counter', counterBody))).toEqual(counter)
+        await refused(offerAct(s, room.roomId, vera.key, offerId, 'counter', { ...counterBody, amount: 900 }), 409, REQUEST_USED)
+
+        const acceptId = ulid(s.clock.now)
+        const accepted = await ok(offerAct(s, room.roomId, gosha.key, offerId, 'accept', { requestId: acceptId }))
+        s.clock.now = first.offer.closesAt + HOUR
+        expect(await ok(offerAct(s, room.roomId, gosha.key, offerId, 'accept', { requestId: acceptId }))).toEqual(accepted)
+        await refused(offerAct(s, room.roomId, vera.key, offerId, 'accept', { requestId: acceptId }), 409, REQUEST_USED)
+        // Номер чужого действия: создание — для принятия, принятие — для отзыва
+        await refused(offerAct(s, room.roomId, gosha.key, offerId, 'accept', { requestId }), 409, REQUEST_USED)
+        await refused(offerAct(s, room.roomId, borya.key, offerId, 'revoke', { requestId: acceptId }), 409, REQUEST_USED)
+
+        const second = await newOffer(s, room.roomId, borya.key, offerForm(s))
+        const revokeId = ulid(s.clock.now)
+        const revoked = await ok(offerAct(s, room.roomId, borya.key, second.offer.id, 'revoke', { requestId: revokeId }))
+        expect(await ok(offerAct(s, room.roomId, borya.key, second.offer.id, 'revoke', { requestId: revokeId }))).toEqual(revoked)
+
+        expect(await offerEntries(s, room.roomId)).toEqual(['offer.created', 'offer.created', 'offer.accepted', 'offer.created', 'offer.revoked'])
+        // Повтор создания — и после срока «приём до»
+        expect(await newOffer(s, room.roomId, borya.key, form)).toEqual(first)
       })
     })
 

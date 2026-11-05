@@ -8,6 +8,7 @@ import {
   type RoomStateResponse,
 } from '../../src/rules/protocol'
 import { checkAmount, checkClarification, checkEventInput, checkObjection, checkReason, eventView } from '../../src/rules/event'
+import { BAD_ODDS, checkOfferInput, MAX_ODDS, MIN_ODDS, NO_OFFER, offerView, type Odds } from '../../src/rules/offer'
 import { checkMemberName, checkRoomInput } from '../../src/rules/room'
 import { ulid } from '../../src/rules/ulid'
 import { deriveCreation, hashKey, randomToken, sameText, ULID_PATTERN } from './keys'
@@ -40,6 +41,7 @@ export const CREATION_OFF = 'Создание комнат выключено'
 export const WRONG_PASSWORD = 'Неверный пароль компании'
 export const BAD_REQUEST_ID = 'Неверный номер запроса'
 export const NEED_KEY = 'Нет доступа: нужен ключ телефона'
+export const NEED_CLOSE = 'Нужен срок «приём до»'
 
 export function json(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -107,7 +109,80 @@ export async function handle(request: Request, deps: RoomsDeps): Promise<Respons
     const r = await eventAction(ev[1], ev[2], ev[3], request, deps)
     return json(r.status, r.body)
   }
+  // Пари (Р-22): /rooms/<номер>/offers и /rooms/<номер>/offers/<пари>/<действие>
+  const of = /^\/rooms\/([^/]+)\/offers(?:\/([^/]+)\/(accept|revoke|counter))?$/.exec(path)
+  if (of && request.method === 'POST') {
+    const r = await offerAction(of[1], of[2], of[3], request, deps)
+    return json(r.status, r.body)
+  }
   return notFound()
+}
+
+// POST /rooms/<номер>/offers { condition, check, side?, odds: { a, b }, amount, to?, closesAt,
+// expectedAt, guarantor?, requestId? } — предложить; …/offers/<пари>/accept | revoke { requestId? };
+// …/offers/<пари>/counter { odds?, amount?, closesAt, requestId? } — встречное
+async function offerAction(
+  roomId: string,
+  offerId: string | undefined,
+  action: string | undefined,
+  request: Request,
+  deps: RoomsDeps,
+): Promise<Reply<unknown>> {
+  const authorization = request.headers.get('Authorization')
+  const raw: unknown = await request.json().catch(() => null)
+  return withKey(roomId, authorization, async (keyHash) => {
+    if (offerId !== undefined && !ULID_PATTERN.test(offerId)) return failure(404, NO_OFFER)
+    const read = readBody(raw, action === 'accept' || action === 'revoke')
+    if (!read.ok) return read.reply
+    const b = read.body
+    const requestId = requestIdOf(b, deps)
+    if (offerId === undefined) {
+      const checked = checkOfferInput({
+        condition: b.condition,
+        check: b.check,
+        side: b.side,
+        odds: b.odds,
+        amount: b.amount,
+        to: b.to,
+        closesAt: b.closesAt,
+        expectedAt: b.expectedAt,
+        guarantor: b.guarantor,
+      })
+      if (!checked.ok) return failure(400, checked.error)
+      if (!requestId) return failure(400, BAD_REQUEST_ID)
+      return reply(await deps.act(roomId, { type: 'createOffer', keyHash, input: checked.value, requestId }))
+    }
+    if (action === 'counter') {
+      const odds = b.odds === undefined ? null : oddsOf(b.odds)
+      if (odds === undefined) return failure(400, BAD_ODDS)
+      const amount = b.amount === undefined ? null : checkAmount(b.amount)
+      if (amount && !amount.ok) return failure(400, amount.error)
+      if (!Number.isSafeInteger(b.closesAt)) return failure(400, NEED_CLOSE)
+      if (!requestId) return failure(400, BAD_REQUEST_ID)
+      return reply(
+        await deps.act(roomId, {
+          type: 'counterOffer',
+          keyHash,
+          offer: offerId,
+          odds,
+          amount: amount ? amount.value : null,
+          closesAt: b.closesAt as number,
+          requestId,
+        }),
+      )
+    }
+    if (!requestId) return failure(400, BAD_REQUEST_ID)
+    const a = { keyHash, offer: offerId, requestId }
+    return action === 'accept'
+      ? reply(await deps.act(roomId, { type: 'acceptOffer', ...a }))
+      : reply(await deps.act(roomId, { type: 'revokeOffer', ...a }))
+  })
+}
+
+// Кэф из тела: целые MIN_ODDS…MAX_ODDS (как в checkOfferInput); кривой — undefined
+function oddsOf(x: unknown): Odds | undefined {
+  const odd = (v: unknown) => Number.isInteger(v) && (v as number) >= MIN_ODDS && (v as number) <= MAX_ODDS
+  return isRecord(x) && odd(x.a) && odd(x.b) ? { a: x.a as number, b: x.b as number } : undefined
 }
 
 // POST /rooms/<номер>/events — завести; …/events/<событие>/bets | clarify | cancel;
@@ -381,6 +456,7 @@ export async function getRoom(roomId: string, authorization: string | null, deps
       members: state.members.map((m) => ({ id: m.id, name: m.name })),
       me: r.me,
       events: r.events.map((e) => eventView(e, now)),
+      offers: r.offers.map((o) => offerView(o, now)),
       now,
     },
   }

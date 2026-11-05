@@ -1,6 +1,7 @@
 // Комната и её журнал (Р-11): журнал только дописывается, текущее состояние считается из него.
 // Общее для экрана и сервера: ни DOM, ни Cloudflare
 import { CURRENCIES, isCurrencyCode, type CurrencyCode } from './currency'
+import type { AuthorSide, Odds } from './offer'
 
 export const MAX_ROOM_NAME = 60
 export const MAX_MEMBER_NAME = 30
@@ -62,6 +63,27 @@ export type LogEntry =
   | (EntryBase & { type: 'outcome.decided'; event: string; outcome: string; requestId: string })
   // Голос не ставившего после возражения (ведущий ставил или он предмет спора)
   | (EntryBase & { type: 'outcome.voted'; event: string; outcome: string; requestId: string })
+  // Пари один на один (этап 3, Р-22, offer.ts). Номер пари — id записи offer.created; автор — кто
+  // предложил; guarantor — уже определённый гарант (выбранный или ведущий); counterTo — встречное
+  // к какому пари (или null); requestId — номер запроса телефона: повтор узнаётся по нему
+  | (EntryBase & {
+      type: 'offer.created'
+      condition: string
+      check: string
+      side: AuthorSide // сторона автора: «сбудется» / «не сбудется»
+      odds: Odds // кэф «a к b»
+      amount: number // сумма автора; соперника — считается (offerStakes)
+      to: string | null // адресат или null — открытое
+      closesAt: number // приём до (UTC, мс), не включая
+      expectedAt: number // исход к
+      guarantor: string
+      counterTo: string | null
+      requestId: string
+    })
+  // Пари принято; автор записи — принявший (соперник)
+  | (EntryBase & { type: 'offer.accepted'; offer: string; requestId: string })
+  // Пари отозвано автором, пока не принято
+  | (EntryBase & { type: 'offer.revoked'; offer: string; requestId: string })
 
 export type Member = {
   id: string // номер участника: не привязан к способу входа (Р-03)
@@ -105,6 +127,11 @@ export function applyEntry(state: RoomState | null, e: LogEntry): RoomState | nu
     case 'outcome.agreed':
     case 'outcome.decided':
     case 'outcome.voted':
+      return state
+    // Пари считает logOffers (offer.ts)
+    case 'offer.created':
+    case 'offer.accepted':
+    case 'offer.revoked':
       return state
   }
 }
