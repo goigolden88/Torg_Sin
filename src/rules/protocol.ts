@@ -1,6 +1,6 @@
 // Протокол сайта и сервера (Р-01): версия — в каждом ответе и сообщении. Чистые
 // функции и типы — ими пользуются и экран, и сервер; ни DOM, ни Cloudflare здесь нет
-export const PROTOCOL_VERSION = 1
+export const PROTOCOL_VERSION = 2
 
 // Ответ GET /health: сервер жив, его протокол и время (UTC, мс) — по нему закрываются сроки
 export type Health = { v: number; ok: true; time: number }
@@ -60,6 +60,8 @@ export type EventStatus = 'open' | 'closed' | 'cancelled'
 export type OutcomeMark = { id: string; at: number; by: string; outcome: string }
 // Возражение ставившего против предложенного исхода
 export type Objection = { id: string; at: number; by: string; reason: string }
+// Согласие ставившего с предложенным исходом (Р-21): не отзывается
+export type Agreement = { id: string; at: number; by: string }
 
 // «сутки на возражение» / «ждёт решения ведущего» / «голосование» / «ждёт суда» (этап 4) /
 // «утверждён» / «окончательный» (7 дней после утверждения без апелляции) — на время сервера /
@@ -67,8 +69,8 @@ export type Objection = { id: string; at: number; by: string; reason: string }
 export type OutcomeStatus = 'proposed' | 'disputed' | 'voting' | 'court' | 'approved' | 'final' | 'cancelled'
 
 // Как утверждён: сам — сутки без возражения (by — null); ведущим (by — ведущий);
-// голосованием (by — null)
-export type Approval = { outcome: string; at: number; how: 'unopposed' | 'host' | 'vote'; by: string | null }
+// голосованием (by — null); согласием всех ставивших — сразу окончательный (by — null; Р-21)
+export type Approval = { outcome: string; at: number; how: 'unopposed' | 'host' | 'vote' | 'agreed'; by: string | null }
 
 // Строка выплат по утверждённому исходу (pool.ts, settlePool)
 export type Payout = { memberId: string; staked: number; payout: number; net: number }
@@ -78,6 +80,8 @@ export type OutcomeView = {
   proposal: OutcomeMark
   objectionUntil: number // возразить можно до (не включая)
   objections: Objection[]
+  agreements: Agreement[] // согласия ставивших (кроме предложившего) в срок на возражение
+  awaiting: string[] // чьего согласия ещё ждём, пока исход «на возражении»; иначе — пусто
   decision: OutcomeMark | null
   voters: string[] // кто голосует (не ставили и не предмет спора); голосования нет — пусто
   votingUntil: number | null // голосование до (не включая)
@@ -133,6 +137,10 @@ export type ProposeOutcomeResponse = { v: number; proposal: OutcomeMark }
 // POST …/events/<событие>/object — ставивший, кроме предложившего, сутки после предложения
 export type ObjectOutcomeRequest = { v?: number; reason: string; requestId?: string }
 export type ObjectOutcomeResponse = { v: number; objection: Objection }
+// POST …/events/<событие>/agree — ставивший, кроме предложившего, сутки после предложения, пока нет
+// возражений (Р-21)
+export type AgreeOutcomeRequest = { v?: number; requestId?: string }
+export type AgreeOutcomeResponse = { v: number; agreement: Agreement }
 // POST …/events/<событие>/decide — ведущий после возражения, если не ставил и не предмет спора
 export type DecideOutcomeRequest = { v?: number; outcome: string; requestId?: string }
 export type DecideOutcomeResponse = { v: number; decision: OutcomeMark }
@@ -306,7 +314,11 @@ function isObjection(r: Record<string, unknown>): boolean {
 }
 
 const OUTCOME_STATUSES: readonly unknown[] = ['proposed', 'disputed', 'voting', 'court', 'approved', 'final', 'cancelled']
-const APPROVALS: readonly unknown[] = ['unopposed', 'host', 'vote']
+const APPROVALS: readonly unknown[] = ['unopposed', 'host', 'vote', 'agreed']
+
+function isAgreement(r: Record<string, unknown>): boolean {
+  return strings(r, 'id', 'by') && numbers(r, 'at')
+}
 
 function isApproval(r: Record<string, unknown>): boolean {
   return strings(r, 'outcome') && numbers(r, 'at') && APPROVALS.includes(r.how) && (r.by === null || typeof r.by === 'string')
@@ -325,6 +337,9 @@ function isOutcomeView(r: Record<string, unknown>): boolean {
     isOutcomeMark(proposal) &&
     numbers(r, 'objectionUntil') &&
     list(r.objections, isObjection) &&
+    list(r.agreements, isAgreement) &&
+    Array.isArray(r.awaiting) &&
+    r.awaiting.every((m) => typeof m === 'string') &&
     nullable(r.decision, isOutcomeMark) &&
     Array.isArray(r.voters) &&
     r.voters.every((v) => typeof v === 'string') &&
@@ -388,6 +403,12 @@ export function isObjectOutcomeResponse(x: unknown): x is ObjectOutcomeResponse 
   const r = versioned(x)
   const o = r && record(r.objection)
   return !!o && isObjection(o)
+}
+
+export function isAgreeOutcomeResponse(x: unknown): x is AgreeOutcomeResponse {
+  const r = versioned(x)
+  const a = r && record(r.agreement)
+  return !!a && isAgreement(a)
 }
 
 export function isDecideOutcomeResponse(x: unknown): x is DecideOutcomeResponse {

@@ -3,6 +3,7 @@
 // событий из журнала. Деньги пула (возврат при отмене) — pool.ts. Ни DOM, ни Cloudflare
 import { settlePool, type PoolBet } from './pool'
 import type {
+  Agreement,
   Approval,
   BetInfo,
   Cancellation,
@@ -181,6 +182,7 @@ export type EventState = EventInfo & {
   hostId: string
   proposal: Requested<OutcomeMark> | null
   objections: Requested<Objection>[]
+  agreements: Requested<Agreement>[]
   decision: Requested<OutcomeMark> | null
   votes: Requested<OutcomeMark>[]
   members: string[]
@@ -193,8 +195,9 @@ function markOf(e: OutcomeEntry): Requested<OutcomeMark> {
 }
 
 // События комнаты из журнала по порядку создания. Записи о неизвестном событии не действуют;
-// отмена, предложение исхода, решение ведущего — первые; возражение и голос — первые от участника;
-// возражение — только после предложения, решение и голос — только после возражения
+// отмена, предложение исхода, решение ведущего — первые; возражение, согласие и голос — первые от
+// участника; возражение — только после предложения и не от согласившегося; согласие — только после
+// предложения и до первого возражения (Р-21); решение и голос — только после возражения
 export function roomEvents(log: readonly LogEntry[]): EventState[] {
   const events = new Map<string, EventState>()
   const members: string[] = []
@@ -213,6 +216,7 @@ export function roomEvents(log: readonly LogEntry[]): EventState[] {
           hostId: '',
           proposal: null,
           objections: [],
+          agreements: [],
           decision: null,
           votes: [],
           members: [],
@@ -238,8 +242,13 @@ export function roomEvents(log: readonly LogEntry[]): EventState[] {
         break
       case 'outcome.objected':
         if (!ev.proposal || ev.objections.some((o) => o.by === e.memberId)) break
+        if (ev.agreements.some((a) => a.by === e.memberId)) break
         if (ev.objections.length === 0) ev.members = [...members]
         ev.objections.push({ id: e.id, at: e.at, by: e.memberId, reason: e.reason, requestId: e.requestId })
+        break
+      case 'outcome.agreed':
+        if (!ev.proposal || ev.objections.length > 0 || ev.agreements.some((a) => a.by === e.memberId)) break
+        ev.agreements.push({ id: e.id, at: e.at, by: e.memberId, requestId: e.requestId })
         break
       case 'outcome.decided':
         if (ev.objections.length > 0 && !ev.decision) ev.decision = markOf(e)
@@ -298,6 +307,11 @@ export function betOn(e: WithBets, memberId: string): boolean {
   return e.bets.some((b) => b.memberId === memberId)
 }
 
+// Кто ставил на событие — каждый один раз, по порядку первой ставки
+export function eventBettors(e: WithBets): string[] {
+  return [...new Set(e.bets.map((b) => b.memberId))]
+}
+
 // Возражение решает ведущий, если сам не ставил и не предмет спора; иначе — голосование (Р-17)
 export function hostDecides(e: Pick<EventRoles, 'bets' | 'hostId' | 'subjectId'>): boolean {
   return !betOn(e, e.hostId) && e.subjectId !== e.hostId
@@ -329,6 +343,10 @@ export function objectionOut(o: Objection): Objection {
   return { id: o.id, at: o.at, by: o.by, reason: o.reason }
 }
 
+export function agreementOut(a: Agreement): Agreement {
+  return { id: a.id, at: a.at, by: a.by }
+}
+
 // Победитель голосования — исход с большинством поданных голосов; ничья или голосов нет — null
 export function voteWinner(votes: readonly OutcomeMark[]): string | null {
   const count = new Map<string, number>()
@@ -338,7 +356,9 @@ export function voteWinner(votes: readonly OutcomeMark[]): string | null {
   return top > 0 && leaders.length === 1 ? leaders[0][0] : null
 }
 
-// Исход события на now (время сервера) — из журнала, без будильника: «утверждён сам» через сутки
+// Исход события на now (время сервера) — из журнала, без будильника: согласились все ставившие
+// (кроме предложившего) до возражения — утверждён и окончательный в миг последнего согласия (никто,
+// кроме предложившего, не ставил — в миг предложения; Р-21); иначе «утверждён сам» через сутки
 // без возражения, голосование кончается через 72 часа или когда проголосовали все, «окончательный» —
 // через 7 дней после утверждения. Не предложен — null. Отменённое событие — статус «отменено» на
 // любом шаге, без выплат и без finalAt: окончательным не станет (возврат — eventRefunds; Р-19)
@@ -347,12 +367,21 @@ export function eventOutcome(e: EventState, now: number): OutcomeView | null {
   if (!p) return null
   const objectionUntil = p.at + OBJECTION_TIME
   const voters = eventVoters(e)
+  // Чьё согласие нужно: ставившие, кроме предложившего (он согласен, если ставил). Согласие —
+  // ставившего и в срок на возражение; после возражения его нет в журнале (roomEvents)
+  const needed = eventBettors(e).filter((m) => m !== p.by)
+  const agreements = e.agreements.filter((a) => needed.includes(a.by) && a.at < objectionUntil).map(agreementOut)
+  const agreed = new Set(agreements.map((a) => a.by))
+  let awaiting: string[] = []
   let status: OutcomeView['status'] = 'proposed'
   let approved: Approval | null = null
   let votingUntil: number | null = null
   let votes: OutcomeMark[] = []
   if (e.objections.length === 0) {
-    if (now >= objectionUntil) approved = { outcome: p.outcome, at: objectionUntil, how: 'unopposed', by: null }
+    if (needed.every((m) => agreed.has(m))) {
+      approved = { outcome: p.outcome, at: Math.max(p.at, ...agreements.map((a) => a.at)), how: 'agreed', by: null }
+    } else if (now >= objectionUntil) approved = { outcome: p.outcome, at: objectionUntil, how: 'unopposed', by: null }
+    else awaiting = needed.filter((m) => !agreed.has(m))
   } else if (hostDecides(e)) {
     status = 'disputed'
     if (e.decision) approved = { outcome: e.decision.outcome, at: e.decision.at, how: 'host', by: e.decision.by }
@@ -371,9 +400,11 @@ export function eventOutcome(e: EventState, now: number): OutcomeView | null {
     }
   }
   let settled: ReturnType<typeof settlePool> | null = null
+  // Согласием всех — окончательный сразу: апелляцию подают ставившие, а они согласны (Р-21)
+  const finalAt = approved ? approved.at + (approved.how === 'agreed' ? 0 : FINAL_TIME) : null
   if (e.cancelled) status = 'cancelled'
-  else if (approved) {
-    status = now >= approved.at + FINAL_TIME ? 'final' : 'approved'
+  else if (approved && finalAt !== null) {
+    status = now >= finalAt ? 'final' : 'approved'
     settled = settlePool(poolBets(e), approved.outcome)
   }
   return {
@@ -381,12 +412,14 @@ export function eventOutcome(e: EventState, now: number): OutcomeView | null {
     proposal: markOut(p),
     objectionUntil,
     objections: e.objections.map(objectionOut),
+    agreements,
+    awaiting,
     decision: e.decision ? markOut(e.decision) : null,
     voters,
     votingUntil,
     votes,
     approved,
-    finalAt: approved && !e.cancelled ? approved.at + FINAL_TIME : null,
+    finalAt: e.cancelled ? null : finalAt,
     void: settled?.void ?? false,
     payouts: settled?.payouts ?? [],
   }

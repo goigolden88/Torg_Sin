@@ -56,6 +56,8 @@ export type LogEntry =
   | (EntryBase & { type: 'outcome.proposed'; event: string; outcome: string; requestId: string })
   // Возражение ставившего против предложенного исхода, с причиной
   | (EntryBase & { type: 'outcome.objected'; event: string; reason: string; requestId: string })
+  // Согласие ставившего с предложенным исходом (Р-21): не отзывается; согласились все — утверждён сразу
+  | (EntryBase & { type: 'outcome.agreed'; event: string; requestId: string })
   // Решение ведущего после возражения (ведущий не ставил и не предмет спора)
   | (EntryBase & { type: 'outcome.decided'; event: string; outcome: string; requestId: string })
   // Голос не ставившего после возражения (ведущий ставил или он предмет спора)
@@ -100,6 +102,7 @@ export function applyEntry(state: RoomState | null, e: LogEntry): RoomState | nu
     case 'event.cancelled':
     case 'outcome.proposed':
     case 'outcome.objected':
+    case 'outcome.agreed':
     case 'outcome.decided':
     case 'outcome.voted':
       return state
