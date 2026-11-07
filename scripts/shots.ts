@@ -250,6 +250,30 @@ class Device {
     })`)
   }
 
+  // Переписать комнаты в хранилище устройства в обход сайта: edit — тело функции (room) => void,
+  // которая правит запись на месте (копия «как до нового поля», испорченная запись)
+  async editRooms(edit: string): Promise<void> {
+    await this.eval(`new Promise((resolve, reject) => {
+      const edit = (room) => { ${edit} }
+      const open = indexedDB.open('torgsin')
+      open.onerror = () => reject(open.error)
+      open.onsuccess = () => {
+        const tx = open.result.transaction('rooms', 'readwrite')
+        const rooms = tx.objectStore('rooms')
+        const all = rooms.getAll()
+        all.onsuccess = () => all.result.forEach((room) => {
+          edit(room)
+          rooms.put(room)
+        })
+        tx.oncomplete = () => {
+          open.result.close()
+          resolve(true)
+        }
+        tx.onerror = () => reject(tx.error)
+      }
+    })`)
+  }
+
   private metrics(height: number): Promise<unknown> {
     const { width } = this.size
     return this.cdp.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: width < 600 }, this.session)
@@ -853,6 +877,20 @@ async function outcomes(cdp: Cdp, size: Size, startServer: ServerModule['startSe
       throw new Error('У согласившегося остались кнопки «Согласен» или «Возразить»')
     }
     await borya.shot('40-vy-soglasny')
+
+    // Старая копия на устройстве (#49): события записаны до согласий — у исхода нет agreements.
+    // Экран события не падает: копию не показывает, ждёт сервер — и открывает событие с сервера.
+    // Комната закрыта на время правки: опрос не перепишет копию раньше, чем откроется событие
+    await borya.goto(`${SITE}#/`)
+    await borya.waitText('Рыбалка')
+    await borya.editRooms(`(room.events || []).forEach((e) => { if (e.outcome) delete e.outcome.agreements })`)
+    await borya.reload()
+    await borya.waitText('Рыбалка')
+    await borya.goto(tent.href)
+    await borya.waitText('Вы согласны с исходом.')
+    await borya.waitText('Согласны 2 из 3 ставивших: Аня, Боря (вы)')
+    if (await borya.eval<boolean>(`document.body.innerText.includes('Что-то пошло не так')`)) throw new Error('Старая копия события уронила экран')
+    await borya.shot('41-staraya-kopiya-sobytiya')
   } finally {
     await server.close()
   }
@@ -1153,6 +1191,43 @@ async function points(cdp: Cdp, startServer: ServerModule['startServer']) {
   }
 }
 
+// Экран упал (#49): на устройстве — испорченная запись комнаты (участники не списком), «Мои
+// комнаты» бросают ошибку при отрисовке — вместо белой страницы «Что-то пошло не так» и
+// «Обновить»; меню на месте, «Настройки» открываются
+async function crash(cdp: Cdp, size: Size) {
+  console.log(`Экран ошибки, ${size.width} px`)
+  const device = await Device.open(cdp, size, 'сломанная копия')
+  await device.goto(SITE + '#/')
+  await device.waitText('Комнат пока нет')
+  await device.eval(`new Promise((resolve, reject) => {
+    const open = indexedDB.open('torgsin')
+    open.onerror = () => reject(open.error)
+    open.onsuccess = () => {
+      const tx = open.result.transaction('rooms', 'readwrite')
+      tx.objectStore('rooms').put({ id: 'X', server: 'http://localhost:9', memberId: 'M', key: 'k', invite: null, name: 'Сломанная', currency: 'RUB', hostId: 'M', createdAt: 1, members: null, savedAt: 1, syncedAt: null })
+      tx.oncomplete = () => {
+        open.result.close()
+        resolve(true)
+      }
+      tx.onerror = () => reject(tx.error)
+    }
+  })`)
+  await device.reload()
+  await device.waitText('Что-то пошло не так')
+  const seen = await device.eval<{ button: boolean; nav: boolean }>(`({
+    button: [...document.querySelectorAll('button')].some((b) => b.offsetParent !== null && b.innerText.trim() === 'Обновить'),
+    nav: document.querySelector('.nav') !== null,
+  })`)
+  if (!seen.button || !seen.nav) throw new Error('Экран ошибки: ' + JSON.stringify(seen))
+  const scroll = await device.eval<number>('document.documentElement.scrollWidth - document.documentElement.clientWidth')
+  if (scroll > 0) throw new Error(`Экран ошибки на ${size.width} px: прокрутка вбок ${scroll} px`)
+  await device.shot('42-oshibka-ekrana')
+  // Другой раздел — открывается: перехват не держит ошибку после смены адреса
+  await device.goto(SITE + '#/settings')
+  await device.waitText('Сейчас:')
+  if (await device.eval<boolean>(`document.body.innerText.includes('Что-то пошло не так')`)) throw new Error('После смены раздела осталась ошибка')
+}
+
 async function main(): Promise<void> {
   await rm(OUT, { recursive: true, force: true })
   await mkdir(OUT, { recursive: true })
@@ -1177,6 +1252,7 @@ async function main(): Promise<void> {
     for (const size of WIDE) await layout(cdp, size, server)
     await eventWidth(cdp, module.startServer)
     await points(cdp, module.startServer)
+    for (const size of SIZES) await crash(cdp, size)
     console.log('Готово: снимки в', OUT)
   } finally {
     if (cdp) {
