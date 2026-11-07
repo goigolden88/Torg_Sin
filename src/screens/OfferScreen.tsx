@@ -3,11 +3,11 @@
 // встречное — к какому пари, и встречные к этому. Действия — по правам из правил (offer.ts), без
 // своих проверок: «Принять» (checkAccept), «Отозвать» (checkWithdraw), «Встречное» (checkCounter);
 // кнопок, которых правила не позволяют, нет. Каждое — с окном подтверждения, синхронным замком и
-// номером запроса (Р-13). Исхода здесь нет — у принятого «принято, ждём исхода к …». Состояние —
-// с сервера раз в 5 с (useRoom); нет связи — последнее известное, действия закрыты. Рядом (от 1280 px)
-// или ниже — список пари комнаты (OfferList)
+// номером запроса (Р-13). У принятого — блок «Исход» (OfferOutcome): отметки сторон, решение гаранта,
+// новый гарант, итог. Состояние — с сервера раз в 5 с (useRoom); нет связи — последнее известное,
+// действия закрыты. Рядом (от 1280 px) или ниже — список пари комнаты (OfferList)
 import { useCallback, useRef, useState, type FormEvent, type MutableRefObject } from 'react'
-import { acceptOffer, counterOffer, revokeOffer, type Result } from '../api'
+import { acceptOffer, counterOffer, revokeOffer } from '../api'
 import { currency as currencyOf, isCurrencyCode, parseAmount, type CurrencyCode } from '../rules/currency'
 import { formatDateTime, fromLocalInput, toLocalInput } from '../rules/date'
 import {
@@ -30,6 +30,7 @@ import { savedOffers, type SavedRoom } from '../store/db'
 import { BackLink, useEscape } from './BackLink'
 import { money, nameOf } from './eventParts'
 import { OfferList } from './OfferList'
+import { OfferOutcome } from './OfferOutcome'
 import {
   OddsField,
   oddsLabel,
@@ -44,18 +45,9 @@ import {
   toLabel,
   validOdds,
   who,
+  type OfferAsk as Ask,
 } from './offerParts'
 import { serverTime, useRoom, useServerNow, type Clock } from './useRoom'
-
-// Окно подтверждения: что спрашиваем, основание, кнопка и запрос
-type Ask = {
-  question: string
-  body: string[]
-  button: string
-  busyLabel: string
-  form: string // номер запроса — по пари, действию и содержимому
-  run: (requestId: string) => Promise<Result<{ v: number; offer?: { id: string } }>> // встречное — новое пари в offer
-}
 
 const pending = new Map<string, PendingRequest>() // по пари: окно закрыли и открыли — тот же номер
 
@@ -193,7 +185,7 @@ export function OfferScreen({ room, offerId, onUpdate }: { room: SavedRoom; offe
           </li>
         </ul>
         <p>
-          <OfferStatusLine offer={offer} now={now} />
+          <OfferStatusLine room={room} offer={offer} now={now} />
         </p>
         {offer.withdrawnAt !== null && <p className="hint">Автор отозвал пари {formatDateTime(offer.withdrawnAt)}.</p>}
         {offer.closedBy && (
@@ -230,6 +222,7 @@ export function OfferScreen({ room, offerId, onUpdate }: { room: SavedRoom; offe
           </>
         ) : null}
         {counter && mayCounter && <CounterPanel room={room} offer={offer} clock={clock} busy={busy} onAsk={setAsk} onClose={() => setCounter(false)} />}
+        <OfferOutcome room={room} offer={offer} now={now} online={online} onAsk={setAsk} />
 
         {counters.length > 0 && <Counters room={room} offer={offer} counters={counters} now={now} />}
       </div>
@@ -268,7 +261,7 @@ function Counters({ room, offer, counters, now }: { room: SavedRoom; offer: Offe
               <a className="event-item" href={offerHref(room.id, c.id)}>
                 <span className="event-name">{who(room, c.authorId)} предлагает встречное</span>
                 <span className="hint">{stakesLine(room, c)}</span>
-                <OfferStatusLine offer={c} now={now} />
+                <OfferStatusLine room={room} offer={c} now={now} />
                 {open && (
                   <span className="hint">
                     {offer.authorId === room.memberId ? 'ждёт вашего ответа' : `ждёт ответа автора — ${nameOf(room, offer.authorId)}`}

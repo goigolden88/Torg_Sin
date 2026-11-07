@@ -56,6 +56,16 @@ import {
   type CreateOfferResponse,
   type OfferActRequest,
   type RevokeOfferResponse,
+  isDecideOfferResponse,
+  isDeclineOfferResponse,
+  isMarkOfferResponse,
+  isNominateResponse,
+  type DecideOfferResponse,
+  type DeclineOfferResponse,
+  type MarkOfferResponse,
+  type NominateRequest,
+  type NominateResponse,
+  type OfferWinnerRequest,
 } from './rules/protocol'
 
 export const OFFLINE = 'Нет связи с сервером'
@@ -259,4 +269,26 @@ export function acceptOffer(server: string, roomId: string, key: string, offerId
 // POST …/offers/<пари>/revoke — отозвать своё, пока не принято
 export function revokeOffer(server: string, roomId: string, key: string, offerId: string, request: Omit<OfferActRequest, 'v'>): Promise<Result<RevokeOfferResponse>> {
   return call(offerUrl(server, roomId, offerId, 'revoke'), post(request, key), isRevokeOfferResponse)
+}
+
+// Исход пари (Р-23): повтор с тем же requestId — тот же ответ без второй записи (Р-13)
+
+// POST …/offers/<пари>/mark — отметка стороны: кто прав
+export function markOffer(server: string, roomId: string, key: string, offerId: string, request: Omit<OfferWinnerRequest, 'v'>): Promise<Result<MarkOfferResponse>> {
+  return call(offerUrl(server, roomId, offerId, 'mark'), post(request, key), isMarkOfferResponse)
+}
+
+// POST …/offers/<пари>/decide — решение гаранта, когда решение перешло к нему
+export function decideOffer(server: string, roomId: string, key: string, offerId: string, request: Omit<OfferWinnerRequest, 'v'>): Promise<Result<DecideOfferResponse>> {
+  return call(offerUrl(server, roomId, offerId, 'decide'), post(request, key), isDecideOfferResponse)
+}
+
+// POST …/offers/<пари>/decline — гарант отказывается
+export function declineOffer(server: string, roomId: string, key: string, offerId: string, request: Omit<OfferActRequest, 'v'>): Promise<Result<DeclineOfferResponse>> {
+  return call(offerUrl(server, roomId, offerId, 'decline'), post(request, key), isDeclineOfferResponse)
+}
+
+// POST …/offers/<пари>/nominate — сторона называет нового гаранта
+export function nominateGuarantor(server: string, roomId: string, key: string, offerId: string, request: Omit<NominateRequest, 'v'>): Promise<Result<NominateResponse>> {
+  return call(offerUrl(server, roomId, offerId, 'nominate'), post(request, key), isNominateResponse)
 }
