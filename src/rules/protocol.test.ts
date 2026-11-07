@@ -2,6 +2,10 @@ import { describe, expect, it } from 'vitest'
 import {
   isAcceptOfferResponse,
   isCreateOfferResponse,
+  isDecideOfferResponse,
+  isDeclineOfferResponse,
+  isMarkOfferResponse,
+  isNominateResponse,
   isRevokeOfferResponse,
   isAdmitResponse,
   isAgreeOutcomeResponse,
@@ -232,15 +236,35 @@ describe('пари (Р-22)', () => {
     guarantorId: 'M',
     counterTo: null,
   }
-  const view = { ...offer, status: 'accepted', accepted: { by: 'B', at: 3 }, withdrawnAt: null, closedBy: null }
+  const outcome = {
+    phase: 'guarantor',
+    marks: { author: 'author', taker: 'taker' },
+    guarantorId: 'M',
+    turnAt: 30,
+    guarantorUntil: 40,
+    needSince: null,
+    nominations: {},
+    approved: null,
+    finalAt: null,
+  }
+  const view = { ...offer, status: 'accepted', accepted: { by: 'B', at: 3 }, withdrawnAt: null, closedBy: null, outcome }
   const act = { id: 'X', at: 3, by: 'B', offer: 'O' }
 
   it('состояние комнаты — с пари; сервер без пари (до выкатки) — тоже ответ', () => {
     expect(isRoomStateResponse({ ...state, offers: [view] })).toBe(true)
     expect(isRoomStateResponse({ ...state, offers: [] })).toBe(true)
     expect(isRoomStateResponse(state)).toBe(true)
-    expect(isRoomStateResponse({ ...state, offers: [{ ...view, closedBy: { offer: 'C', at: 4 }, status: 'countered', accepted: null }] })).toBe(true)
+    expect(isRoomStateResponse({ ...state, offers: [{ ...view, closedBy: { offer: 'C', at: 4 }, status: 'countered', accepted: null, outcome: null }] })).toBe(true)
     for (const bad of [
+      // Исход (Р-23): поле обязательно — копия до него проверку не проходит
+      { ...view, outcome: undefined },
+      { ...view, outcome: { ...outcome, phase: 'court' } },
+      { ...view, outcome: { ...outcome, marks: { author: 'yes', taker: null } } },
+      { ...view, outcome: { ...outcome, marks: null } },
+      { ...view, outcome: { ...outcome, turnAt: null } },
+      { ...view, outcome: { ...outcome, nominations: { judge: 'C' } } },
+      { ...view, outcome: { ...outcome, nominations: { author: 5 } } },
+      { ...view, outcome: { ...outcome, approved: { winner: 'author', at: 5, how: 'vote', by: null } } },
       { ...view, status: 'revoked' },
       { ...view, side: 'maybe' },
       { ...view, odds: null },
@@ -252,6 +276,23 @@ describe('пари (Р-22)', () => {
       expect(isRoomStateResponse({ ...state, offers: [bad] })).toBe(false)
     }
     expect(isRoomStateResponse({ ...state, offers: {} })).toBe(false)
+    // Утверждён согласием и окончательный; назвали нового гаранта
+    const final = { ...outcome, phase: 'final', guarantorUntil: null, approved: { winner: 'taker', at: 5, how: 'agreement', by: null }, finalAt: 5 }
+    expect(isRoomStateResponse({ ...state, offers: [{ ...view, outcome: final }] })).toBe(true)
+    const need = { ...outcome, phase: 'need-guarantor', needSince: 41, nominations: { author: 'C' } }
+    expect(isRoomStateResponse({ ...state, offers: [{ ...view, outcome: need }] })).toBe(true)
+  })
+
+  it('ответы на действия с исходом пари (Р-23)', () => {
+    expect(isMarkOfferResponse({ v, marked: { ...act, winner: 'author' } })).toBe(true)
+    expect(isMarkOfferResponse({ v, marked: { ...act, winner: 'yes' } })).toBe(false)
+    expect(isMarkOfferResponse({ v, marked: act })).toBe(false)
+    expect(isDecideOfferResponse({ v, decided: { ...act, winner: 'taker' } })).toBe(true)
+    expect(isDecideOfferResponse({ decided: { ...act, winner: 'taker' } })).toBe(false)
+    expect(isDeclineOfferResponse({ v, declined: act })).toBe(true)
+    expect(isDeclineOfferResponse({ v, error: 'Это может только гарант пари' })).toBe(false)
+    expect(isNominateResponse({ v, nominated: { ...act, guarantor: 'C' } })).toBe(true)
+    expect(isNominateResponse({ v, nominated: act })).toBe(false)
   })
 
   it('ответы на действия с пари', () => {

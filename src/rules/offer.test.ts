@@ -460,9 +460,39 @@ describe('пари из журнала комнаты (Р-22)', () => {
       guarantorId: 'h',
       counterTo: null,
     })
-    expect(offerView(o, T)).toMatchObject({ status: 'open', accepted: null, withdrawnAt: null, closedBy: null })
+    expect(offerView(o, T)).toMatchObject({ status: 'open', accepted: null, withdrawnAt: null, closedBy: null, outcome: null })
     expect(offerView(o, CLOSE).status).toBe('expired')
     const [taken] = logOffers([...roomLog, entry(), { id: 'y', at: T + 2, memberId: 'b', type: 'offer.accepted', offer: 'o1', requestId: 'q' }])
     expect(offerView(taken, CLOSE)).toMatchObject({ status: 'accepted', accepted: { by: 'b', at: T + 2 } })
+    expect(offerView(taken, CLOSE).outcome).toEqual(offerOutcome(taken, CLOSE))
+  })
+
+  it('исход из журнала (Р-23): отметки, отказ гаранта, новый гарант, решение', () => {
+    const act = (id: string, at: number, memberId: string) => ({ id, at, memberId, offer: 'o1', requestId: 'q-' + id })
+    const records: LogEntry[] = [
+      { ...act('m1', T + 20, 'a'), type: 'offer.marked', winner: 'author' },
+      { ...act('m2', T + 21, 'b'), type: 'offer.marked', winner: 'taker' },
+      { ...act('d0', T + 22, 'h'), type: 'offer.declined' },
+      { ...act('n1', T + 23, 'a'), type: 'offer.nominated', guarantor: 'c' },
+      { ...act('n2', T + 24, 'b'), type: 'offer.nominated', guarantor: 'c' },
+      { ...act('d1', T + 25, 'c'), type: 'offer.decided', winner: 'taker' },
+    ]
+    expect(records.every(isOfferEntry)).toBe(true)
+    expect(records.map((e) => isOfferEntry(e) && offerRecord(e))).toEqual([
+      { id: 'm1', at: T + 20, memberId: 'a', offer: 'o1', type: 'offer.marked', winner: 'author' },
+      { id: 'm2', at: T + 21, memberId: 'b', offer: 'o1', type: 'offer.marked', winner: 'taker' },
+      { id: 'd0', at: T + 22, memberId: 'h', offer: 'o1', type: 'offer.declined' },
+      { id: 'n1', at: T + 23, memberId: 'a', offer: 'o1', type: 'offer.nominated', guarantor: 'c' },
+      { id: 'n2', at: T + 24, memberId: 'b', offer: 'o1', type: 'offer.nominated', guarantor: 'c' },
+      { id: 'd1', at: T + 25, memberId: 'c', offer: 'o1', type: 'offer.decided', winner: 'taker' },
+    ])
+    const [o] = logOffers([...roomLog, entry(), { id: 'y', at: T + 2, memberId: 'b', type: 'offer.accepted', offer: 'o1', requestId: 'q' }, ...records])
+    expect(o.guarantorId).toBe('c')
+    expect(offerView(o, T + 30).outcome).toMatchObject({
+      phase: 'approved',
+      marks: { author: 'author', taker: 'taker' },
+      guarantorId: 'c',
+      approved: { winner: 'taker', at: T + 25, how: 'guarantor', by: 'c' },
+    })
   })
 })
