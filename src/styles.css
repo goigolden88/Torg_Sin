@@ -591,6 +591,66 @@ h3 {
   color: var(--error);
 }
 
+/* ─── Пари ────────────────────────────────────────────────────────────────── */
+
+/* Открытое пари в списке рядом с ним (экран пари) */
+.event-item[aria-current='page'] {
+  border-color: var(--gold);
+}
+
+/* Кэф «a к b»: два поля в строку, «к» между ними; поля делят ширину поровну */
+.odds-edit {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.5rem;
+}
+
+.odds-edit .field {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.odds-k {
+  flex: none;
+  min-height: var(--tap);
+  display: inline-flex;
+  align-items: center;
+  font-weight: 600;
+}
+
+/* Сколько ставит каждая сторона — по ходу ввода */
+.offer-summary {
+  padding: 0.6rem 0.75rem;
+  border-left: 3px solid var(--gold);
+  background: var(--surface-2);
+  border-radius: 0 10px 10px 0;
+  overflow-wrap: anywhere;
+}
+
+.offer-summary p {
+  margin: 0;
+}
+
+/* Условия пари: на телефоне — подпись над значением, от 600 px — в строку */
+.offer-facts {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.offer-facts li {
+  display: flex;
+  flex-direction: column;
+  overflow-wrap: anywhere;
+}
+
+.offer-facts .hint {
+  font-size: 0.9rem;
+}
+
 /* ─── Событие ─────────────────────────────────────────────────────────────── */
 
 .event-title {
@@ -1043,6 +1103,14 @@ h3 {
 
   .times {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  /* Условия пари — строкой: подпись слева колонкой одной ширины, значение справа */
+  .offer-facts li {
+    display: grid;
+    grid-template-columns: minmax(6rem, 9rem) minmax(0, 1fr);
+    gap: 1rem;
+    align-items: baseline;
   }
 
   /* Лента и позиция — строкой: кто / сколько на что / когда */

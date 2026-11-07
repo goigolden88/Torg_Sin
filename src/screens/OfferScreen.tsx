@@ -147,7 +147,13 @@ export function OfferScreen({ room, offerId, onUpdate }: { room: SavedRoom; offe
         {offer.counterTo !== null && (
           <p className="hint">
             Встречное к пари{' '}
-            {original ? <a href={offerHref(room.id, original.id)}>„{original.condition}“ от {who(room, original.authorId)}</a> : 'другого участника'}
+            {original ? (
+              <a href={offerHref(room.id, original.id)}>
+                „{original.condition}“ (автор — {who(room, original.authorId)})
+              </a>
+            ) : (
+              'другого участника'
+            )}
           </p>
         )}
         <ul className="offer-facts" aria-label="Условия пари">
@@ -161,7 +167,7 @@ export function OfferScreen({ room, offerId, onUpdate }: { room: SavedRoom; offe
             <span className="hint">{offer.accepted ? 'Соперник' : 'Кому'}</span>
             <span>
               {offer.accepted
-                ? `${who(room, offer.accepted.by)} — за „${takerSide}“, принял ${formatDateTime(offer.accepted.at)}`
+                ? `${who(room, offer.accepted.by)} — за „${takerSide}“, принято ${formatDateTime(offer.accepted.at)}`
                 : `${toLabel(room, offer)} — за „${takerSide}“`}
             </span>
           </li>
@@ -192,8 +198,8 @@ export function OfferScreen({ room, offerId, onUpdate }: { room: SavedRoom; offe
         {offer.withdrawnAt !== null && <p className="hint">Автор отозвал пари {formatDateTime(offer.withdrawnAt)}.</p>}
         {offer.closedBy && (
           <p className="hint">
-            Закрыто встречным {closedBy ? <a href={offerHref(room.id, closedBy.id)}>от {who(room, closedBy.authorId)}</a> : ''} —{' '}
-            {nameOf(room, offer.authorId)} принял его {formatDateTime(offer.closedBy.at)}.
+            Закрыто встречным{closedBy ? <> (<a href={offerHref(room.id, closedBy.id)}>встречное — {who(room, closedBy.authorId)}</a>)</> : ''}: автор
+            принял его {formatDateTime(offer.closedBy.at)}.
           </p>
         )}
         {offer.counterTo !== null && status === 'open' && offer.to !== null && (
@@ -260,7 +266,7 @@ function Counters({ room, offer, counters, now }: { room: SavedRoom; offer: Offe
           return (
             <li key={c.id}>
               <a className="event-item" href={offerHref(room.id, c.id)}>
-                <span className="event-name">От {who(room, c.authorId)}</span>
+                <span className="event-name">{who(room, c.authorId)} предлагает встречное</span>
                 <span className="hint">{stakesLine(room, c)}</span>
                 <OfferStatusLine offer={c} now={now} />
                 {open && (
@@ -352,8 +358,8 @@ function CounterPanel({
   return (
     <form className="panel form" onSubmit={submit} aria-label="Встречное">
       <p>
-        Встречное — новое пари для {author}: вы — за „{sideLabel(mySide)}“, свои кэф и сумма. Условие, «как проверяем», исход к и гарант —
-        как у исходного.
+        Встречное — новое пари, ответит автор — {author}. Вы — за „{sideLabel(mySide)}“, кэф и сумма — свои; условие, «как проверяем»,
+        исход к и гарант — как у исходного.
       </p>
       <OddsField a={a} b={b} onA={setA} onB={setB} mine="Вы рискуете" theirs={author} />
       <label className="field">
