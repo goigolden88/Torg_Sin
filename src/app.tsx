@@ -2,6 +2,7 @@
 // раскладку меняет только CSS (styles.css), разметка одна
 import { useEffect, useState } from 'react'
 import { parseDeviceLink, parseInviteLink } from './rules/link'
+import { ErrorBoundary } from './screens/ErrorBoundary'
 import { Rooms, type RoomsView } from './screens/Rooms'
 import { Settings } from './screens/Settings'
 import { getNavCollapsed, setNavCollapsed } from './settings'
@@ -87,7 +88,10 @@ export function App() {
           </a>
         ))}
       </nav>
-      <main className="main">{route.tab === 'rooms' ? <Rooms view={route.view} /> : <Settings />}</main>
+      <main className="main">
+        {/* Экран упал — меню на месте, вместо экрана «Что-то пошло не так»; другой адрес — снова экран */}
+        <ErrorBoundary resetKey={location.hash}>{route.tab === 'rooms' ? <Rooms view={route.view} /> : <Settings />}</ErrorBoundary>
+      </main>
     </div>
   )
 }

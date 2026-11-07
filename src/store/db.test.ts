@@ -125,6 +125,68 @@ describe('хранилище на устройстве', () => {
     expect(saved?.key).toBe('ключ-A') // ключ и приглашение не тронуты
   })
 
+  it('события: копия до нового поля протокола не отдаётся, свежая — отдаётся; запись не переписана', async () => {
+    const factory = new IDBFactory()
+    const first = createStore(factory)
+    const fresh: EventView = {
+      id: 'E1',
+      at: 10,
+      authorId: 'MA',
+      condition: 'Дождь в субботу',
+      check: 'Прогноз на даче',
+      outcomes: [
+        { id: '1', title: 'Да' },
+        { id: '2', title: 'Нет' },
+      ],
+      closesAt: 100,
+      expectedAt: 200,
+      subjectId: null,
+      status: 'closed',
+      clarifications: [],
+      bets: [{ id: 'B1', memberId: 'MA', outcome: '1', amount: 30000, at: 20 }],
+      cancelled: null,
+      refunds: [],
+      outcome: {
+        status: 'proposed',
+        proposal: { id: 'P1', by: 'MA', outcome: '1', at: 110 },
+        objectionUntil: 200,
+        objections: [],
+        agreements: [],
+        awaiting: [],
+        decision: null,
+        voters: [],
+        votingUntil: null,
+        votes: [],
+        approved: null,
+        finalAt: null,
+        void: false,
+        payouts: [],
+      },
+    }
+    // Исход, записанный до согласий (протокол 2): поля agreements нет
+    const oldOutcome: Record<string, unknown> = { ...fresh.outcome }
+    delete oldOutcome.agreements
+    const noAgreements = { ...fresh, id: 'E2', outcome: oldOutcome }
+    // Событие до возвратов при отмене: поля refunds нет
+    const noRefunds: Record<string, unknown> = { ...fresh, id: 'E3' }
+    delete noRefunds.refunds
+    const stale = [noAgreements, noRefunds] as unknown as EventView[]
+    await first.saveRoom(room('A', 1, { events: [fresh, ...stale] }))
+    await first.close()
+
+    const again = createStore(factory)
+    const saved = await again.getRoom('A')
+    expect(saved && savedEvents(saved)).toEqual([fresh])
+    const listed = (await again.listRooms())[0]
+    expect(savedEvents(listed).map((e) => e.id)).toEqual(['E1'])
+    // Хранимое как было: следующий ответ сервера ляжет поверх
+    expect(saved?.events?.map((e) => e.id)).toEqual(['E1', 'E2', 'E3'])
+  })
+
+  it('события: не список в записи — пусто', () => {
+    expect(savedEvents(room('A', 1, { events: 'испорчено' as unknown as EventView[] }))).toEqual([])
+  })
+
   it('заявка: записана, отклонена, а впустили — стала комнатой и убрана', async () => {
     const factory = new IDBFactory()
     const store = createStore(factory)

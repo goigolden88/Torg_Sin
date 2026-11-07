@@ -416,7 +416,9 @@ function isOutcomeView(r: Record<string, unknown>): boolean {
   )
 }
 
-function isEventView(x: unknown): boolean {
+// Событие с сервера — и копия на устройстве (src/store/db.ts): запись до нового поля протокола
+// проверку не проходит
+export function isEventView(x: unknown): x is EventView {
   const r = record(x)
   if (!r || !isEventInfo(r)) return false
   if (r.status !== 'open' && r.status !== 'closed' && r.status !== 'cancelled') return false

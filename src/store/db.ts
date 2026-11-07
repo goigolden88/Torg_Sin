@@ -1,7 +1,7 @@
 // Хранилище на устройстве — единственный модуль, который трогает IndexedDB (CLAUDE.md).
 // База «torgsin», версия схемы — DB_VERSION; каждая новая версия — шаг в upgrade, старые шаги
 // не меняются. Настройки устройства (адрес сервера, пароль компании) — не здесь, а в settings.ts
-import type { EventView, RoomStateResponse } from '../rules/protocol'
+import { isEventView, type EventView, type RoomStateResponse } from '../rules/protocol'
 
 export const DB_NAME = 'torgsin'
 export const DB_VERSION = 2
@@ -28,9 +28,16 @@ export type SavedRoom = {
   events?: EventView[]
 }
 
-// События комнаты на устройстве: старая запись без поля — пусто
+// Копия с сервера на устройстве — только то, что проходит проверку протокола: запись, сохранённая
+// до нового поля, не отдаётся — экран ждёт ответа сервера, как будто её нет. Хранимое не
+// переписывается: следующий ответ сервера ляжет поверх. Общий путь — для событий и (этап 3) пари
+export function fresh<T>(saved: unknown, is: (x: unknown) => x is T): T[] {
+  return Array.isArray(saved) ? saved.filter(is) : []
+}
+
+// События комнаты на устройстве: старая запись без поля — пусто; устаревшее событие — пропущено
 export function savedEvents(room: SavedRoom): EventView[] {
-  return room.events ?? []
+  return fresh(room.events, isEventView)
 }
 
 // Ответ сервера о комнате поверх записанного на устройстве; syncedAt — сейчас
