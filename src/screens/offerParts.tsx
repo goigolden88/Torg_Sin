@@ -1,7 +1,21 @@
 // Общее для экранов пари: вид с сервера → состояние для правил, суммы сторон по кэфу, строка
 // статуса с отсчётом по времени сервера, поле кэфа. Считают правила (offer.ts), здесь — только показ
+import type { Result } from '../api'
 import { formatCountdown, formatDateTime } from '../rules/date'
-import { MAX_ODDS, MIN_ODDS, offerStakes, offerStatus, type OfferState, type OfferStakes, type RoomRoles } from '../rules/offer'
+import {
+  GUARANTOR_SILENCE,
+  MAX_ODDS,
+  MIN_ODDS,
+  offerNets,
+  offerOutcome,
+  offerStakes,
+  offerStatus,
+  SIDE_SILENCE,
+  type OfferSide,
+  type OfferState,
+  type OfferStakes,
+  type RoomRoles,
+} from '../rules/offer'
 import type { OfferView } from '../rules/protocol'
 import type { SavedRoom } from '../store/db'
 import { money, nameOf } from './eventParts'
@@ -10,9 +24,44 @@ export function offerHref(roomId: string, offerId: string): string {
   return `#/room/${roomId}/offer/${offerId}`
 }
 
-// Пари с сервера → состояние для правил (checkAccept, checkWithdraw, checkCounter, offerStatus, sideOf).
-// Им нужны только условия, адресат, гарант, кто принял, отзыв и «закрыто встречным» — они в ответе
-// есть; ход исхода (отметки, решение гаранта) экранам этой задачи не нужен — пустой
+// Окно подтверждения действия с пари: что спрашиваем, основание, кнопка и запрос
+export type OfferAsk = {
+  question: string
+  body: string[]
+  button: string
+  busyLabel: string
+  form: string // номер запроса — по пари, действию и содержимому
+  run: (requestId: string) => Promise<Result<{ v: number; offer?: { id: string } }>> // встречное — новое пари в offer
+}
+
+// Ход исхода из ответа (outcome) → поля состояния для правил так, чтобы offerOutcome, checkMark,
+// checkDecide, checkDecline и checkNominate на часах сервера дали то же, что сервер: с какого мига решает
+// гарант (turnAt — как миг расхождения; отметки — не раньше, чем turnAt минус 3 дня), до какого он
+// решает (guarantorUntil — 3 дня с guarantorSince), отказ или пропуск срока (needSince), утверждено
+// согласием или гарантом. Сами записи журнала сайту не приходят; между опросами фаза идёт по часам
+function outcomeState(o: OfferView): Pick<OfferState, 'guarantorSince' | 'marks' | 'disagreedAt' | 'agreed' | 'decision' | 'declinedAt' | 'nominations'> {
+  const out = o.outcome
+  if (!out) return { guarantorSince: null, marks: [], disagreedAt: null, agreed: null, decision: null, declinedAt: null, nominations: {} }
+  const markAt = Math.max(o.expectedAt, out.turnAt - SIDE_SILENCE)
+  const sides: OfferSide[] = ['author', 'taker']
+  const a = out.approved
+  return {
+    guarantorSince: out.guarantorUntil === null ? null : out.guarantorUntil - GUARANTOR_SILENCE,
+    marks: sides.flatMap((by) => {
+      const winner = out.marks[by]
+      return winner ? [{ by, winner, at: markAt }] : []
+    }),
+    disagreedAt: out.turnAt,
+    agreed: a?.how === 'agreement' ? { winner: a.winner, at: a.at } : null,
+    decision: a?.how === 'guarantor' ? { winner: a.winner, at: a.at, by: a.by ?? out.guarantorId } : null,
+    declinedAt: out.phase === 'need-guarantor' ? out.needSince : null,
+    nominations: { ...out.nominations },
+  }
+}
+
+// Пари с сервера → состояние для правил (checkAccept, checkWithdraw, checkCounter, offerStatus, sideOf;
+// исход — offerOutcome, checkMark, checkDecide, checkDecline, checkNominate): условия, адресат, гарант,
+// кто принял, отзыв, «закрыто встречным» и ход исхода (outcomeState)
 export function offerState(o: OfferView): OfferState {
   return {
     id: o.id,
@@ -28,17 +77,59 @@ export function offerState(o: OfferView): OfferState {
     expectedAt: o.expectedAt,
     counterTo: o.counterTo,
     guarantorId: o.guarantorId,
-    guarantorSince: null,
     accepted: o.accepted,
     withdrawnAt: o.withdrawnAt,
     closedBy: o.closedBy,
-    marks: [],
-    disagreedAt: null,
-    agreed: null,
-    decision: null,
-    declinedAt: null,
-    nominations: {},
+    ...outcomeState(o),
   }
+}
+
+// Номер участника стороны: автор или принявший
+export function sideMember(o: OfferView, side: OfferSide): string {
+  return side === 'author' ? o.authorId : (o.accepted?.by ?? '')
+}
+
+// «прав автор» / «прав соперник»
+export function winnerLabel(winner: OfferSide): string {
+  return winner === 'author' ? 'прав автор' : 'прав соперник'
+}
+
+// Итог по исходу (offerNets): кто забирает банк и плюс / минус каждой стороны — «Аня получает банк
+// 400 ₽: Аня +100 ₽, Боря −100 ₽». Сумм нет (кэф с сервера не тот) — только кто прав
+export function netsOf(room: SavedRoom, o: OfferView, winner: OfferSide) {
+  const s = stakesOf(o)
+  if (!s) return null
+  const nets = offerNets(s, winner)
+  const sum = (n: number) => money(n, room.currency)
+  const signed = (n: number) => (n > 0 ? '+' : '') + sum(n)
+  return {
+    bank: sum(s.bank),
+    winner: nameOf(room, sideMember(o, winner)),
+    lines: (['author', 'taker'] as const).map((side) => ({ side, name: nameOf(room, sideMember(o, side)), net: nets[side], text: signed(nets[side]) })),
+  }
+}
+
+// Строка исхода у принятого (offerOutcome на часах сервера): до «исход к» без отметок — «ждём исхода
+// к …»; дальше — фаза; окончательно — плюс выигравшего
+function acceptedLine(room: SavedRoom, offer: OfferView, now: number) {
+  const out = offerOutcome(offerState(offer), now)
+  if (!out || (out.phase === 'marking' && now < offer.expectedAt && !out.marks.author && !out.marks.taker)) {
+    return <span className="status open">принято — ждём исхода к {formatDateTime(offer.expectedAt)}</span>
+  }
+  if (out.phase === 'marking') return <span className="status open">принято — ждём отметок сторон</span>
+  if (out.phase === 'guarantor') return <span className="status open">решает гарант — {who(room, out.guarantorId)}</span>
+  if (out.phase === 'need-guarantor') return <span className="status cancelled">нужен новый гарант</span>
+  const winner = out.approved?.winner ?? 'author'
+  const nets = netsOf(room, offer, winner)
+  const plus = nets ? `${nets.lines.find((l) => l.side === winner)?.text} ${nets.winner}` : winnerLabel(winner)
+  if (out.phase === 'approved') {
+    return (
+      <span className="status open">
+        утверждено гарантом: {plus}, окончательно {out.finalAt === null ? '' : formatDateTime(out.finalAt)}
+      </span>
+    )
+  }
+  return <span className="status final">окончательно: {plus}</span>
 }
 
 // Ведущий и участники комнаты — для правил пари
@@ -82,10 +173,11 @@ export function toLabel(room: SavedRoom, o: OfferView): string {
   return o.to === null ? 'открытое — любой' : who(room, o.to)
 }
 
-// Статус на время сервера now (offerStatus): приём закрывается в срок и между опросами
-export function OfferStatusLine({ offer, now }: { offer: OfferView; now: number }) {
+// Статус на время сервера now (offerStatus): приём закрывается в срок и между опросами; у принятого —
+// фаза исхода одной строкой
+export function OfferStatusLine({ room, offer, now }: { room: SavedRoom; offer: OfferView; now: number }) {
   const status = offerStatus(offerState(offer), now)
-  if (status === 'accepted') return <span className="status open">принято — ждём исхода к {formatDateTime(offer.expectedAt)}</span>
+  if (status === 'accepted') return acceptedLine(room, offer, now)
   if (status === 'withdrawn') return <span className="status cancelled">отозвано</span>
   if (status === 'countered') return <span className="status closed">закрыто встречным</span>
   if (status === 'expired') return <span className="status closed">истекло — приём закрыт {formatDateTime(offer.closesAt)}</span>

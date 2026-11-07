@@ -958,6 +958,21 @@ h3 {
   gap: 0.75rem;
 }
 
+/* Исход пари: подсказка и кнопки отметки / решения гаранта одним блоком */
+.outcome-act {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.outcome-act > p {
+  margin: 0;
+}
+
+.offer-result .mine {
+  font-weight: 600;
+}
+
 .outcome-form .chip span {
   background: var(--surface);
 }
@@ -1021,12 +1036,14 @@ h3 {
 
 /* «Итог» в «Выплатах» и в «Вашей позиции» — одним видом */
 .payouts .win,
+.offer-result .win,
 .position-total .win {
   color: var(--ok);
   font-weight: 600;
 }
 
 .payouts .loss,
+.offer-result .loss,
 .position-total .loss {
   color: var(--error);
   font-weight: 600;
