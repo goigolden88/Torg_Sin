@@ -41,29 +41,41 @@ import {
   type EventState,
 } from '../../src/rules/event'
 import {
+  BAD_GUARANTOR,
+  BAD_MARK,
   checkAccept,
   checkCounter,
+  checkDecide,
+  checkDecline,
+  checkMark,
+  checkNominate,
   checkOfferInput,
   checkOfferTimes,
   checkWithdraw,
   CLOSE_PASSED,
   counterInput,
+  currentMarks,
   EXPIRED,
   GUARANTOR_COUNTERS,
+  GUARANTOR_MARKS,
   GUARANTOR_TAKES,
   isOfferEntry,
   logOffers,
   NO_OFFER,
   NOT_ADDRESSEE,
   NOT_MEMBER,
+  NOT_SIDE,
   offerGuarantor,
   offerInfo,
   ONLY_AUTHOR,
+  ONLY_GUARANTOR,
   OWN_COUNTER,
   OWN_OFFER,
   roomRoles,
+  sideOf,
   type OfferEntry,
   type OfferInput,
+  type OfferSide,
   type OfferState,
   type Odds,
   type RoomRoles,
@@ -77,6 +89,7 @@ import type {
   Objection,
   OfferAct,
   OfferInfo,
+  OfferWinnerAct,
   OutcomeMark,
 } from '../../src/rules/protocol'
 import { ulid } from '../../src/rules/ulid'
@@ -279,6 +292,11 @@ export type RoomAction =
   | { type: 'counterOffer'; keyHash: string; offer: string; odds: Odds | null; amount: number | null; closesAt: number; requestId: string }
   | { type: 'acceptOffer'; keyHash: string; offer: string; requestId: string }
   | { type: 'revokeOffer'; keyHash: string; offer: string; requestId: string }
+  // Исход пари (Р-23): фазы — по времени сервера в момент запроса (будильника нет)
+  | { type: 'markOffer'; keyHash: string; offer: string; winner: OfferSide; requestId: string }
+  | { type: 'decideOffer'; keyHash: string; offer: string; winner: OfferSide; requestId: string }
+  | { type: 'declineOffer'; keyHash: string; offer: string; requestId: string }
+  | { type: 'nominateGuarantor'; keyHash: string; offer: string; guarantor: string; requestId: string }
 
 export type JoinStatus = JoinRequest['status']
 
@@ -305,6 +323,10 @@ export type ActionValues = {
   counterOffer: { offer: OfferInfo }
   acceptOffer: { accepted: OfferAct; offer: OfferInfo }
   revokeOffer: { revoked: OfferAct }
+  markOffer: { marked: OfferWinnerAct }
+  decideOffer: { decided: OfferWinnerAct }
+  declineOffer: { declined: OfferAct }
+  nominateGuarantor: { nominated: OfferAct & { guarantor: string } }
 }
 
 export type ActionType = RoomAction['type']
@@ -385,6 +407,18 @@ export async function act<K extends ActionType>(
       break
     case 'revokeOffer':
       r = await revokeOffer(storage, a, now)
+      break
+    case 'markOffer':
+      r = await markOffer(storage, a, now)
+      break
+    case 'decideOffer':
+      r = await decideOffer(storage, a, now)
+      break
+    case 'declineOffer':
+      r = await declineOffer(storage, a, now)
+      break
+    case 'nominateGuarantor':
+      r = await nominateGuarantor(storage, a, now)
       break
   }
   return r as ActionResult<K>
@@ -833,11 +867,25 @@ async function offerCaller(storage: RoomStorage, keyHash: string, requestId: str
   return { ...c, offers: logOffers(c.log), roles: roomRoles(c.state), again }
 }
 
-// Отказ правил пари: «не вам» — 403, «уже не то состояние» — 409; истекло — «Приём закрыт»
-const OFFER_FORBIDDEN: readonly string[] = [OWN_OFFER, GUARANTOR_TAKES, NOT_ADDRESSEE, NOT_MEMBER, ONLY_AUTHOR, OWN_COUNTER, GUARANTOR_COUNTERS]
+// Отказ правил пари: «не вам» — 403, «уже не то состояние» — 409, кривое тело — 400; истекло —
+// «Приём закрыт»
+const OFFER_FORBIDDEN: readonly string[] = [
+  OWN_OFFER,
+  GUARANTOR_TAKES,
+  NOT_ADDRESSEE,
+  NOT_MEMBER,
+  ONLY_AUTHOR,
+  OWN_COUNTER,
+  GUARANTOR_COUNTERS,
+  GUARANTOR_MARKS,
+  NOT_SIDE,
+  ONLY_GUARANTOR,
+]
+const OFFER_BAD_BODY: readonly string[] = [BAD_MARK, BAD_GUARANTOR]
 
 function offerRefusal(error: string): Failure {
   if (error === EXPIRED) return fail(409, OFFER_CLOSED)
+  if (OFFER_BAD_BODY.includes(error)) return fail(400, error)
   return fail(OFFER_FORBIDDEN.includes(error) ? 403 : 409, error)
 }
 
@@ -934,7 +982,7 @@ async function counterOffer(
   return writeOffer(storage, c, checked.value, original.id, a.requestId, now)
 }
 
-function actOf(e: Extract<OfferEntry, { type: 'offer.accepted' | 'offer.revoked' }>): OfferAct {
+function actOf(e: Exclude<OfferEntry, { type: 'offer.created' }>): OfferAct {
   return { id: e.id, at: e.at, by: e.memberId, offer: e.offer }
 }
 
@@ -980,4 +1028,134 @@ async function revokeOffer(
   const entry = { id: ulid(now), at: now, memberId: c.me, type: 'offer.revoked', offer: o.id, requestId: a.requestId } as const
   await append(storage, [entry])
   return ok({ revoked: actOf(entry) })
+}
+
+// --- Исход пари (Р-23, Р-06). Правила — checkMark / checkDecide / checkDecline / checkNominate и
+// offerOutcome (offer.ts); фазы — по времени сервера в момент запроса. Повтор с тем же номером
+// запроса — тот же ответ без новой записи (и после сроков); чужое действие или содержимое — 409
+
+type OfferOutcomeAction = { keyHash: string; offer: string; requestId: string }
+type MarkedEntry = Extract<OfferEntry, { type: 'offer.marked' }>
+type DecidedEntry = Extract<OfferEntry, { type: 'offer.decided' }>
+type NominatedEntry = Extract<OfferEntry, { type: 'offer.nominated' }>
+
+function winnerAct(e: MarkedEntry | DecidedEntry): OfferWinnerAct {
+  return { ...actOf(e), winner: e.winner }
+}
+
+function nominatedAct(e: NominatedEntry): OfferAct & { guarantor: string } {
+  return { ...actOf(e), guarantor: e.guarantor }
+}
+
+// Пари для действия с исходом; повтор уже узнан — сюда не доходит
+function offerById(c: OfferCaller, id: string): { ok: true; offer: OfferState } | Failure {
+  const offer = c.offers.find((x) => x.id === id)
+  return offer ? { ok: true, offer } : fail(404, NO_OFFER)
+}
+
+// Отметка стороны «прав автор» / «прав соперник»: после принятия, пока исход не утверждён; поменять —
+// до решения гаранта. Та же отметка, что действует, — прежняя запись без новой. Обе совпали — исход
+// утверждён согласием и окончательный сразу (offerOutcome)
+async function markOffer(
+  storage: RoomStorage,
+  a: OfferOutcomeAction & { winner: OfferSide },
+  now: number,
+): Promise<ActionResult<'markOffer'>> {
+  const c = await offerCaller(storage, a.keyHash, a.requestId)
+  if (!c.ok) return c
+  if (c.again) {
+    const e = c.again
+    return e.type === 'offer.marked' && e.offer === a.offer && e.memberId === c.me && e.winner === a.winner
+      ? ok({ marked: winnerAct(e) })
+      : fail(409, REQUEST_USED)
+  }
+  const found = offerById(c, a.offer)
+  if (!found.ok) return found
+  const o = found.offer
+  const refused = checkMark(o, c.me, a.winner)
+  if (refused) return offerRefusal(refused)
+  const side = sideOf(o, c.me) as OfferSide
+  if (currentMarks(o)[side] === a.winner) {
+    // Действующая отметка — последняя запись этой стороны с тем же выбором
+    for (let i = c.log.length - 1; i >= 0; i--) {
+      const e = c.log[i]
+      if (e.type === 'offer.marked' && e.offer === o.id && e.memberId === c.me && e.winner === a.winner) return ok({ marked: winnerAct(e) })
+    }
+  }
+  const entry = { id: ulid(now), at: now, memberId: c.me, type: 'offer.marked', offer: o.id, winner: a.winner, requestId: a.requestId } as const
+  await append(storage, [entry])
+  return ok({ marked: winnerAct(entry) })
+}
+
+// Решение гаранта: нынешний гарант, когда решение перешло к нему (стороны разошлись или одна молчит
+// 3 дня), в его 3 дня; окончательный через 7 дней
+async function decideOffer(
+  storage: RoomStorage,
+  a: OfferOutcomeAction & { winner: OfferSide },
+  now: number,
+): Promise<ActionResult<'decideOffer'>> {
+  const c = await offerCaller(storage, a.keyHash, a.requestId)
+  if (!c.ok) return c
+  if (c.again) {
+    const e = c.again
+    return e.type === 'offer.decided' && e.offer === a.offer && e.memberId === c.me && e.winner === a.winner
+      ? ok({ decided: winnerAct(e) })
+      : fail(409, REQUEST_USED)
+  }
+  const found = offerById(c, a.offer)
+  if (!found.ok) return found
+  const refused = checkDecide(found.offer, c.me, a.winner, now)
+  if (refused) return offerRefusal(refused)
+  const entry = { id: ulid(now), at: now, memberId: c.me, type: 'offer.decided', offer: found.offer.id, winner: a.winner, requestId: a.requestId } as const
+  await append(storage, [entry])
+  return ok({ decided: winnerAct(entry) })
+}
+
+// Отказ гаранта: нынешний гарант принятого пари, пока исход не утверждён; дальше стороны называют другого
+async function declineOffer(storage: RoomStorage, a: OfferOutcomeAction, now: number): Promise<ActionResult<'declineOffer'>> {
+  const c = await offerCaller(storage, a.keyHash, a.requestId)
+  if (!c.ok) return c
+  if (c.again) {
+    const e = c.again
+    return e.type === 'offer.declined' && e.offer === a.offer && e.memberId === c.me ? ok({ declined: actOf(e) }) : fail(409, REQUEST_USED)
+  }
+  const found = offerById(c, a.offer)
+  if (!found.ok) return found
+  const refused = checkDecline(found.offer, c.me, now)
+  if (refused) return offerRefusal(refused)
+  const entry = { id: ulid(now), at: now, memberId: c.me, type: 'offer.declined', offer: found.offer.id, requestId: a.requestId } as const
+  await append(storage, [entry])
+  return ok({ declined: actOf(entry) })
+}
+
+// Новый гарант: сторона называет участника не из сторон, когда нужен другой гарант; обе назвали
+// одного — он гарант, его 3 дня — с назначения (roomOffers)
+async function nominateGuarantor(
+  storage: RoomStorage,
+  a: OfferOutcomeAction & { guarantor: string },
+  now: number,
+): Promise<ActionResult<'nominateGuarantor'>> {
+  const c = await offerCaller(storage, a.keyHash, a.requestId)
+  if (!c.ok) return c
+  if (c.again) {
+    const e = c.again
+    return e.type === 'offer.nominated' && e.offer === a.offer && e.memberId === c.me && e.guarantor === a.guarantor
+      ? ok({ nominated: nominatedAct(e) })
+      : fail(409, REQUEST_USED)
+  }
+  const found = offerById(c, a.offer)
+  if (!found.ok) return found
+  const refused = checkNominate(found.offer, c.me, a.guarantor, c.roles, now)
+  if (refused) return offerRefusal(refused)
+  const entry = {
+    id: ulid(now),
+    at: now,
+    memberId: c.me,
+    type: 'offer.nominated',
+    offer: found.offer.id,
+    guarantor: a.guarantor,
+    requestId: a.requestId,
+  } as const
+  await append(storage, [entry])
+  return ok({ nominated: nominatedAct(entry) })
 }

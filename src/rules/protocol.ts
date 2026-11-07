@@ -65,13 +65,38 @@ export type OfferStatus = 'open' | 'expired' | 'withdrawn' | 'countered' | 'acce
 // Действие с пари: кто (by), когда, с каким пари
 export type OfferAct = { id: string; at: number; by: string; offer: string }
 
+// Сторона пари: автор или соперник (принявший). Отметка и решение гаранта — кто прав
+export type OfferSide = 'author' | 'taker'
+
+// Ход исхода пари (Р-23) на now: «стороны отмечают» / «решает гарант» / «нужен другой гарант» /
+// «утверждён» / «окончательный»
+export type OfferPhase = 'marking' | 'guarantor' | 'need-guarantor' | 'approved' | 'final'
+
+// Исход принятого пари (offerOutcome в offer.ts): marks — последняя отметка каждой стороны (null — не
+// отмечала); guarantorId — нынешний гарант; turnAt — с какого мига решает гарант; guarantorUntil — до
+// какого мига он решает (утверждено — null); needSince — с какого мига нужен другой гарант;
+// nominations — кого называют стороны; approved — что, когда, как и кем утверждено; finalAt — с какого
+// мига окончательный (согласием — сразу, гарантом — через 7 дней)
+export type OfferOutcomeView = {
+  phase: OfferPhase
+  marks: Record<OfferSide, OfferSide | null>
+  guarantorId: string
+  turnAt: number
+  guarantorUntil: number | null
+  needSince: number | null
+  nominations: Partial<Record<OfferSide, string>>
+  approved: { winner: OfferSide; at: number; how: 'agreement' | 'guarantor'; by: string | null } | null
+  finalAt: number | null
+}
+
 // Пари в состоянии комнаты: статус на now; accepted — кто принял и когда; withdrawnAt — когда
-// отозвано; closedBy — каким встречным закрыто
+// отозвано; closedBy — каким встречным закрыто; outcome — исход (Р-23; не принято — null)
 export type OfferView = OfferInfo & {
   status: OfferStatus
   accepted: { by: string; at: number } | null
   withdrawnAt: number | null
   closedBy: { offer: string; at: number } | null
+  outcome: OfferOutcomeView | null
 }
 
 // POST /rooms/<номер>/offers — предложить пари. side не задана — «сбудется»; to не задан — открытое;
@@ -97,6 +122,16 @@ export type CounterOfferRequest = { v?: number; odds?: { a: number; b: number };
 export type OfferActRequest = { v?: number; requestId?: string }
 export type AcceptOfferResponse = { v: number; accepted: OfferAct; offer: OfferInfo }
 export type RevokeOfferResponse = { v: number; revoked: OfferAct }
+// Исход пари (Р-23). POST …/offers/<пари>/mark { winner } — сторона принятого пари: кто прав;
+// повтор той же отметки — прежняя запись. …/decide { winner } — гарант, когда решение перешло к нему.
+// …/decline {} — гарант отказывается. …/nominate { guarantor } — сторона называет нового гаранта
+export type OfferWinnerRequest = { v?: number; winner: OfferSide; requestId?: string }
+export type NominateRequest = { v?: number; guarantor: string; requestId?: string }
+export type OfferWinnerAct = OfferAct & { winner: OfferSide }
+export type MarkOfferResponse = { v: number; marked: OfferWinnerAct }
+export type DecideOfferResponse = { v: number; decided: OfferWinnerAct }
+export type DeclineOfferResponse = { v: number; declined: OfferAct }
+export type NominateResponse = { v: number; nominated: OfferAct & { guarantor: string } }
 
 // Событие-пул: что не меняется никогда. Исход — номер и текст; свои исходы кончаются «Другое»
 export type EventInfo = {
@@ -504,18 +539,53 @@ function isOfferInfo(r: Record<string, unknown>): boolean {
   )
 }
 
+const OFFER_PHASES: readonly unknown[] = ['marking', 'guarantor', 'need-guarantor', 'approved', 'final']
+const OFFER_SIDES: readonly unknown[] = ['author', 'taker']
+
+function isSide(x: unknown): boolean {
+  return OFFER_SIDES.includes(x)
+}
+
+function isOfferOutcome(r: Record<string, unknown>): boolean {
+  const marks = record(r.marks)
+  const nominations = record(r.nominations)
+  return (
+    OFFER_PHASES.includes(r.phase) &&
+    !!marks &&
+    (marks.author === null || isSide(marks.author)) &&
+    (marks.taker === null || isSide(marks.taker)) &&
+    strings(r, 'guarantorId') &&
+    numbers(r, 'turnAt') &&
+    orNull(r.guarantorUntil, 'number') &&
+    orNull(r.needSince, 'number') &&
+    !!nominations &&
+    Object.entries(nominations).every(([k, v]) => isSide(k) && typeof v === 'string') &&
+    nullable(
+      r.approved,
+      (a) => isSide(a.winner) && numbers(a, 'at') && (a.how === 'agreement' || a.how === 'guarantor') && orNull(a.by, 'string'),
+    ) &&
+    orNull(r.finalAt, 'number')
+  )
+}
+
+// Пари с сервера; outcome (Р-23) — обязателен: у непринятого — null
 function isOfferView(r: Record<string, unknown>): boolean {
   return (
     isOfferInfo(r) &&
     OFFER_STATUSES.includes(r.status) &&
     nullable(r.accepted, (a) => strings(a, 'by') && numbers(a, 'at')) &&
     orNull(r.withdrawnAt, 'number') &&
-    nullable(r.closedBy, (c) => strings(c, 'offer') && numbers(c, 'at'))
+    nullable(r.closedBy, (c) => strings(c, 'offer') && numbers(c, 'at')) &&
+    nullable(r.outcome, isOfferOutcome)
   )
 }
 
 function isOfferAct(r: Record<string, unknown>): boolean {
   return strings(r, 'id', 'by', 'offer') && numbers(r, 'at')
+}
+
+function isWinnerAct(r: Record<string, unknown>): boolean {
+  return isOfferAct(r) && isSide(r.winner)
 }
 
 function recordIn(x: unknown, field: string, item: (r: Record<string, unknown>) => boolean): boolean {
@@ -534,4 +604,20 @@ export function isAcceptOfferResponse(x: unknown): x is AcceptOfferResponse {
 
 export function isRevokeOfferResponse(x: unknown): x is RevokeOfferResponse {
   return recordIn(x, 'revoked', isOfferAct)
+}
+
+export function isMarkOfferResponse(x: unknown): x is MarkOfferResponse {
+  return recordIn(x, 'marked', isWinnerAct)
+}
+
+export function isDecideOfferResponse(x: unknown): x is DecideOfferResponse {
+  return recordIn(x, 'decided', isWinnerAct)
+}
+
+export function isDeclineOfferResponse(x: unknown): x is DeclineOfferResponse {
+  return recordIn(x, 'declined', isOfferAct)
+}
+
+export function isNominateResponse(x: unknown): x is NominateResponse {
+  return recordIn(x, 'nominated', (r) => isOfferAct(r) && strings(r, 'guarantor'))
 }

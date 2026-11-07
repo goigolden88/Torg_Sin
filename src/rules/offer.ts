@@ -1,7 +1,8 @@
 // Пари один на один (Р-04, Р-05, Р-06; Архитектура, «Правила» — «Пари», «Исход пари»): суммы по
 // кэфу, принять / отозвать / встречное, исход отметками сторон и гарантом. Здесь — проверка формы и
 // состояние пари из записей OfferRecord (автор, время сервера at, порядок — порядок журнала); из
-// журнала комнаты их берёт logOffers (Р-22: offer.created, offer.accepted, offer.revoked). Итоги и
+// журнала комнаты их берёт logOffers (Р-22: offer.created, offer.accepted, offer.revoked; Р-23: offer.marked,
+// offer.decided, offer.declined, offer.nominated). Итоги и
 // статусы считаются, не хранятся. Ни DOM, ни Cloudflare
 import { checkAmount, FINAL_TIME, MAX_EVENT_TEXT, NEED_CHECK, NEED_CONDITION, LONG_CHECK, LONG_CONDITION } from './event'
 import type { OfferInfo, OfferView } from './protocol'
@@ -515,11 +516,20 @@ export function offerResult(o: OfferState, now: number): { memberId: string; net
   ]
 }
 
-// Пари в журнале комнаты (Р-22). requestId — номер запроса телефона: повтор узнаётся по нему
-export type OfferEntry = Extract<LogEntry, { type: 'offer.created' | 'offer.accepted' | 'offer.revoked' }>
+// Пари в журнале комнаты (Р-22; исход — Р-23). requestId — номер запроса телефона: повтор узнаётся по нему
+const OFFER_ENTRIES = [
+  'offer.created',
+  'offer.accepted',
+  'offer.revoked',
+  'offer.marked',
+  'offer.decided',
+  'offer.declined',
+  'offer.nominated',
+] as const
+export type OfferEntry = Extract<LogEntry, { type: (typeof OFFER_ENTRIES)[number] }>
 
 export function isOfferEntry(e: LogEntry): e is OfferEntry {
-  return e.type === 'offer.created' || e.type === 'offer.accepted' || e.type === 'offer.revoked'
+  return (OFFER_ENTRIES as readonly string[]).includes(e.type)
 }
 
 // Запись журнала → запись правил: offer.revoked журнала — это offer.withdrawn правил
@@ -530,6 +540,14 @@ export function offerRecord(e: OfferEntry): OfferRecord {
       return { ...base, type: 'offer.accepted', offer: e.offer }
     case 'offer.revoked':
       return { ...base, type: 'offer.withdrawn', offer: e.offer }
+    case 'offer.marked':
+      return { ...base, type: 'offer.marked', offer: e.offer, winner: e.winner }
+    case 'offer.decided':
+      return { ...base, type: 'offer.decided', offer: e.offer, winner: e.winner }
+    case 'offer.declined':
+      return { ...base, type: 'offer.declined', offer: e.offer }
+    case 'offer.nominated':
+      return { ...base, type: 'offer.nominated', offer: e.offer, guarantor: e.guarantor }
     case 'offer.created':
       return {
         ...base,
@@ -580,7 +598,8 @@ export function offerInfo(o: OfferState): OfferInfo {
   }
 }
 
-// Пари для ответа GET /rooms/<номер>: статус на now (время сервера), кто принял, отзыв, встречное
+// Пари для ответа GET /rooms/<номер>: статус на now (время сервера), кто принял, отзыв, встречное;
+// исход (Р-23) — offerOutcome на now, у непринятого — null
 export function offerView(o: OfferState, now: number): OfferView {
   return {
     ...offerInfo(o),
@@ -588,5 +607,6 @@ export function offerView(o: OfferState, now: number): OfferView {
     accepted: o.accepted && { by: o.accepted.by, at: o.accepted.at },
     withdrawnAt: o.withdrawnAt,
     closedBy: o.closedBy && { offer: o.closedBy.offer, at: o.closedBy.at },
+    outcome: offerOutcome(o, now),
   }
 }
