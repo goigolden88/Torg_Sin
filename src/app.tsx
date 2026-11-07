@@ -21,6 +21,7 @@ const BAD_DEVICE = 'Ссылка для другого устройства не
 // Хеш-роутинг: GitHub Pages отдаёт один index.html на любой адрес.
 // #/ — список, #/new — создать комнату, #/room/<номер> — открытая комната, #/settings;
 // #/room/<номер>/event/new — новое событие, #/room/<номер>/event/<номер события> — событие;
+// #/room/<номер>/offer/new — предложить пари, #/room/<номер>/offer/<номер пари> — пари;
 // #/join/<номер>/<токен>[?server=…] — ссылка-приглашение, #/device/<номер>/<токен>[?server=…] —
 // ссылка для другого устройства (src/rules/link.ts)
 function routeFromHash(): Route {
@@ -42,6 +43,12 @@ function routeFromHash(): Route {
   if (event) {
     const id = decodeURIComponent(event[1])
     return { tab: 'rooms', view: event[2] === 'new' ? { kind: 'new-event', id } : { kind: 'event', id, event: decodeURIComponent(event[2]) } }
+  }
+  // #/room/<номер>/offer/new — предложить пари, #/room/<номер>/offer/<номер пари> — пари
+  const offer = /^#\/room\/([^/?]+)\/offer\/([^/?]+)$/.exec(hash)
+  if (offer) {
+    const id = decodeURIComponent(offer[1])
+    return { tab: 'rooms', view: offer[2] === 'new' ? { kind: 'new-offer', id } : { kind: 'offer', id, offer: decodeURIComponent(offer[2]) } }
   }
   return { tab: 'rooms', view: { kind: 'list' } }
 }

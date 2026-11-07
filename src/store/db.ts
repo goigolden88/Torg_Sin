@@ -1,7 +1,7 @@
 // Хранилище на устройстве — единственный модуль, который трогает IndexedDB (CLAUDE.md).
 // База «torgsin», версия схемы — DB_VERSION; каждая новая версия — шаг в upgrade, старые шаги
 // не меняются. Настройки устройства (адрес сервера, пароль компании) — не здесь, а в settings.ts
-import { isEventView, type EventView, type RoomStateResponse } from '../rules/protocol'
+import { isEventView, isOfferView, type EventView, type OfferView, type RoomStateResponse } from '../rules/protocol'
 
 export const DB_NAME = 'torgsin'
 export const DB_VERSION = 2
@@ -26,6 +26,9 @@ export type SavedRoom = {
   // События-пул — последнее известное с сервера (Р-18). Поле только добавлено, версия базы та же:
   // у записей до него поля нет — «событий нет» до первого ответа сервера
   events?: EventView[]
+  // Пари — последнее известное с сервера (этап 3), так же: поле только добавлено, версия базы та же;
+  // у записей до него поля нет — «пари нет» до первого ответа сервера
+  offers?: OfferView[]
 }
 
 // Копия с сервера на устройстве — только то, что проходит проверку протокола: запись, сохранённая
@@ -40,10 +43,17 @@ export function savedEvents(room: SavedRoom): EventView[] {
   return fresh(room.events, isEventView)
 }
 
-// Ответ сервера о комнате поверх записанного на устройстве; syncedAt — сейчас
+// Пари комнаты на устройстве — тем же путём: старая запись без поля — пусто; устаревшее пари — пропущено
+export function savedOffers(room: SavedRoom): OfferView[] {
+  return fresh(room.offers, isOfferView)
+}
+
+// Ответ сервера о комнате поверх записанного на устройстве (с событиями и пари); syncedAt — сейчас.
+// Сервер без пари (до этапа 3) — пари нет
 export function withState(room: SavedRoom, state: RoomStateResponse, now: number): SavedRoom {
   const { room: s, members, events } = state
-  return { ...room, name: s.name, currency: s.currency, hostId: s.hostId, createdAt: s.createdAt, members, events, syncedAt: now }
+  const offers = state.offers ?? []
+  return { ...room, name: s.name, currency: s.currency, hostId: s.hostId, createdAt: s.createdAt, members, events, offers, syncedAt: now }
 }
 
 // Заявка на вход по ссылке, которую ещё не впустили: ключ заявки откроет комнату, когда ведущий

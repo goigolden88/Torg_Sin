@@ -47,6 +47,15 @@ import {
   type PreviewResponse,
   type RejectResponse,
   type RoomStateResponse,
+  isAcceptOfferResponse,
+  isCreateOfferResponse,
+  isRevokeOfferResponse,
+  type AcceptOfferResponse,
+  type CounterOfferRequest,
+  type CreateOfferRequest,
+  type CreateOfferResponse,
+  type OfferActRequest,
+  type RevokeOfferResponse,
 } from './rules/protocol'
 
 export const OFFLINE = 'Нет связи с сервером'
@@ -218,4 +227,36 @@ export function decideOutcome(server: string, roomId: string, key: string, event
 // POST …/events/<событие>/vote — голос не ставившего
 export function voteOutcome(server: string, roomId: string, key: string, eventId: string, request: OutcomeCall): Promise<Result<VoteOutcomeResponse>> {
   return call(eventUrl(server, roomId, eventId, 'vote'), post(request, key), isVoteOutcomeResponse)
+}
+
+// Пари (Р-22): повтор с тем же requestId — тот же ответ без второй записи (Р-13).
+// …/offers/<пари>/<действие>
+function offerUrl(server: string, roomId: string, offerId: string, action: string): string {
+  return roomUrl(server, roomId, 'offers/' + encodeURIComponent(offerId) + '/' + action)
+}
+
+// POST /rooms/<номер>/offers — предложить пари
+export function createOffer(server: string, roomId: string, key: string, request: Omit<CreateOfferRequest, 'v'>): Promise<Result<CreateOfferResponse>> {
+  return call(roomUrl(server, roomId, 'offers'), post(request, key), isCreateOfferResponse)
+}
+
+// POST …/offers/<пари>/counter — встречное: ответ — новое пари
+export function counterOffer(
+  server: string,
+  roomId: string,
+  key: string,
+  offerId: string,
+  request: Omit<CounterOfferRequest, 'v'>,
+): Promise<Result<CreateOfferResponse>> {
+  return call(offerUrl(server, roomId, offerId, 'counter'), post(request, key), isCreateOfferResponse)
+}
+
+// POST …/offers/<пари>/accept — принять
+export function acceptOffer(server: string, roomId: string, key: string, offerId: string, request: Omit<OfferActRequest, 'v'>): Promise<Result<AcceptOfferResponse>> {
+  return call(offerUrl(server, roomId, offerId, 'accept'), post(request, key), isAcceptOfferResponse)
+}
+
+// POST …/offers/<пари>/revoke — отозвать своё, пока не принято
+export function revokeOffer(server: string, roomId: string, key: string, offerId: string, request: Omit<OfferActRequest, 'v'>): Promise<Result<RevokeOfferResponse>> {
+  return call(offerUrl(server, roomId, offerId, 'revoke'), post(request, key), isRevokeOfferResponse)
 }

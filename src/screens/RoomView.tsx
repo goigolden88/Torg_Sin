@@ -3,7 +3,7 @@
 // сервер не спрашиваем, POST /invite сменил бы ссылку — это отдельная кнопка «Сменить ссылку»
 // с подтверждением. «Ссылка для другого устройства» — себе; ведущему — и за другого участника.
 // Состояние — с сервера раз в 5 с, пока комната открыта (useRoom); нет связи — последнее известное.
-// Под участниками — «События» (EventList)
+// Под участниками — «События» (EventList), под ними — «Пари» (OfferList)
 import { useCallback, useState } from 'react'
 import { admitRequest, fetchRequests, issueDeviceLink, rejectRequest, renewInvite } from '../api'
 import { currencyLabel } from '../rules/currency'
@@ -14,6 +14,7 @@ import type { SavedRoom } from '../store/db'
 import { BackLink, useEscape } from './BackLink'
 import { EventList } from './EventList'
 import { LinkBox, siteUrl } from './LinkBox'
+import { OfferList } from './OfferList'
 import { usePoll } from './usePoll'
 import { useRoom } from './useRoom'
 
@@ -67,6 +68,7 @@ export function RoomView({ room, onUpdate }: { room: SavedRoom; onUpdate: (room:
         ))}
       </ul>
       <EventList room={room} clock={clock} />
+      <OfferList room={room} clock={clock} />
     </div>
   )
 }

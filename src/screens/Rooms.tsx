@@ -11,6 +11,8 @@ import { CreateRoom } from './CreateRoom'
 import { EventScreen } from './EventScreen'
 import { JoinRoom } from './JoinRoom'
 import { NewEvent } from './NewEvent'
+import { NewOffer } from './NewOffer'
+import { OfferScreen } from './OfferScreen'
 import { RoomView } from './RoomView'
 
 export type RoomsView =
@@ -19,6 +21,8 @@ export type RoomsView =
   | { kind: 'room'; id: string }
   | { kind: 'new-event'; id: string } // новое событие в комнате id
   | { kind: 'event'; id: string; event: string } // событие комнаты id
+  | { kind: 'new-offer'; id: string } // предложить пари в комнате id
+  | { kind: 'offer'; id: string; offer: string } // пари комнаты id
   | { kind: 'join'; link: InviteLink } // по ссылке-приглашению
   | { kind: 'device'; link: DeviceLink } // по ссылке для другого устройства
   | { kind: 'bad-link'; text: string } // ссылка не разобралась
@@ -46,11 +50,13 @@ export function Rooms({ view }: { view: RoomsView }) {
     })
   }, [])
 
-  const openId = view.kind === 'room' || view.kind === 'event' || view.kind === 'new-event' ? view.id : null
+  const inRoom = view.kind === 'room' || view.kind === 'event' || view.kind === 'new-event' || view.kind === 'offer' || view.kind === 'new-offer'
+  const openId = inRoom ? view.id : null
   const open = rooms?.find((r) => r.id === openId)
-  // Событие и новое событие — во всю ширину содержимого и на компьютере: список комнат прячется,
-  // «Назад» ведёт в комнату (экрану события нужно ≥ 640 px, рядом со списком на 1024–1279 его нет)
-  const wide = view.kind === 'event' || view.kind === 'new-event'
+  // Событие, пари и их формы — во всю ширину содержимого и на компьютере: список комнат прячется,
+  // «Назад» ведёт в комнату (экрану события нужно ≥ 640 px, рядом со списком на 1024–1279 его нет;
+  // пари — как событие, Р-20: открытое пари и список пари комнаты рядом)
+  const wide = view.kind === 'event' || view.kind === 'new-event' || view.kind === 'offer' || view.kind === 'new-offer'
 
   return (
     <div className={'screen rooms' + (view.kind === 'list' ? '' : ' open') + (wide ? ' wide' : '')}>
@@ -96,7 +102,7 @@ export function Rooms({ view }: { view: RoomsView }) {
               <BackLink />
               <p className="error">{view.text}</p>
             </div>
-          ) : view.kind === 'room' || view.kind === 'event' || view.kind === 'new-event' ? (
+          ) : inRoom ? (
             !open ? (
               <div className="card">
                 <BackLink />
@@ -106,6 +112,10 @@ export function Rooms({ view }: { view: RoomsView }) {
               <EventScreen key={open.id + '/' + view.event} room={open} eventId={view.event} onUpdate={upsert} />
             ) : view.kind === 'new-event' ? (
               <NewEvent key={open.id} room={open} onUpdate={upsert} />
+            ) : view.kind === 'offer' ? (
+              <OfferScreen key={open.id + '/' + view.offer} room={open} offerId={view.offer} onUpdate={upsert} />
+            ) : view.kind === 'new-offer' ? (
+              <NewOffer key={open.id} room={open} onUpdate={upsert} />
             ) : (
               <RoomView key={open.id} room={open} onUpdate={upsert} />
             )

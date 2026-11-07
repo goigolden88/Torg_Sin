@@ -568,9 +568,12 @@ function isOfferOutcome(r: Record<string, unknown>): boolean {
   )
 }
 
-// Пари с сервера; outcome (Р-23) — обязателен: у непринятого — null
-function isOfferView(r: Record<string, unknown>): boolean {
+// Пари с сервера — и копия на устройстве (src/store/db.ts); outcome (Р-23) — обязателен: у
+// непринятого — null. Запись до нового поля протокола проверку не проходит
+export function isOfferView(x: unknown): x is OfferView {
+  const r = record(x)
   return (
+    !!r &&
     isOfferInfo(r) &&
     OFFER_STATUSES.includes(r.status) &&
     nullable(r.accepted, (a) => strings(a, 'by') && numbers(a, 'at')) &&
