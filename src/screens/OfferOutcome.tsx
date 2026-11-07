@@ -49,7 +49,7 @@ export function OfferOutcome({
     const n = netsOf(room, offer, winner)
     return n ? `${winnerLabel(winner)} — ${n.winner} получает банк ${n.bank}: ${n.lines.map((l) => `${l.name} ${l.text}`).join(', ')}` : winnerLabel(winner)
   }
-  const sentence = (s: string) => s[0].toUpperCase() + s.slice(1) + '.'
+  const cap = (s: string) => s[0].toUpperCase() + s.slice(1)
 
   function askMark(winner: OfferSide) {
     if (!mySide) return
@@ -57,10 +57,10 @@ export function OfferOutcome({
     const theirs = out?.marks[other] ?? null
     const next =
       theirs === winner
-        ? `${sentence(ROLE[other])} уже отметил так же — исход станет окончательным сразу и не обжалуется.`
+        ? `${cap(ROLE[other])} уже отметил так же — исход станет окончательным сразу и не обжалуется.`
         : theirs === null
           ? `Если ${ROLE[other]} отметит так же, исход окончательный сразу и не обжалуется.`
-          : `${sentence(ROLE[other])} отметил иначе — решает гарант ${nameOf(room, offer.guarantorId)}; пока он не решил, отметку можно поменять.`
+          : `${cap(ROLE[other])} отметил иначе — решает гарант ${nameOf(room, offer.guarantorId)}; пока он не решил, отметку можно поменять.`
     onAsk({
       question: `Отметить: ${winnerLabel(winner)}?`,
       body: [`Вы отмечаете: ${result(winner)}.`, next],
