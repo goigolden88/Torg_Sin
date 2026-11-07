@@ -35,7 +35,7 @@ export function PasteLink({ roomIds }: { roomIds: string[] }) {
             setText(e.target.value)
             setError('')
           }}
-          placeholder="Ссылка-приглашение или для другого устройства"
+          placeholder="Ссылка из сообщения"
           inputMode="url"
           autoCapitalize="off"
           autoCorrect="off"
