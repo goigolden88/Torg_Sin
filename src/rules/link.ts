@@ -32,6 +32,24 @@ export function parseDeviceLink(text: string): DeviceLink | null {
   return parseLink('device', text)
 }
 
+// Вставленная ссылка («Мои комнаты» → «Вставить ссылку»): приглашение или ссылка для другого
+// устройства — и адрес её экрана в сайте (hash, с ?server=, если сервер не по умолчанию).
+// Текст может быть сообщением целиком («Заходи в комнату… https://…#/join/…»): берётся первое
+// слово, которое разобралось как ссылка; кавычки и точка вокруг ссылки не мешают. Не ссылка
+// ТоргСина — null
+export type PastedLink = { kind: 'join'; link: InviteLink; hash: string } | { kind: 'device'; link: DeviceLink; hash: string }
+
+export function parsePastedLink(text: string): PastedLink | null {
+  for (const raw of text.split(/\s+/)) {
+    const word = raw.replace(/^[«"'„“(<]+/, '').replace(/[»"'“”.,;:!?)>]+$/, '')
+    const invite = parseInviteLink(word)
+    if (invite) return { kind: 'join', link: invite, hash: inviteLink('', invite) }
+    const device = parseDeviceLink(word)
+    if (device) return { kind: 'device', link: device, hash: deviceLink('', device) }
+  }
+  return null
+}
+
 function roomLink(site: string, kind: string, roomId: string, token: string, server: string): string {
   const base = site.split('#')[0]
   const normalized = normalizeServer(server) ?? DEFAULT_SERVER

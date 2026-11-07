@@ -1,6 +1,7 @@
 // «Мои комнаты»: список своих комнат и открытое — создание или комната.
 // Раскладка «список + открытое» (.split): на компьютере — рядом; на телефоне открытое —
-// отдельным экраном с «Назад» (класс .open у .rooms), разметка одна
+// отдельным экраном с «Назад» (класс .open у .rooms), разметка одна. Под списком — «Вставить
+// ссылку» (PasteLink): у приложения с экрана «Домой» адресной строки нет
 import { useCallback, useEffect, useState } from 'react'
 import { currencyLabel } from '../rules/currency'
 import type { DeviceLink, InviteLink } from '../rules/link'
@@ -13,6 +14,7 @@ import { JoinRoom } from './JoinRoom'
 import { NewEvent } from './NewEvent'
 import { NewOffer } from './NewOffer'
 import { OfferScreen } from './OfferScreen'
+import { PasteLink } from './PasteLink'
 import { RoomView } from './RoomView'
 
 export type RoomsView =
@@ -72,7 +74,10 @@ export function Rooms({ view }: { view: RoomsView }) {
           ) : rooms.length === 0 ? (
             <div className="card">
               <p className="empty">Комнат пока нет.</p>
-              <p className="hint">Войти в комнату — по ссылке от ведущего. Создать свою — кнопкой выше: нужен пароль компании.</p>
+              <p className="hint">
+                Войти в комнату — по ссылке от ведущего: откройте её или вставьте в „Вставить ссылку“ ниже. Комната уже есть в другом
+                браузере — вставьте её „Ссылку для другого устройства“. Создать свою — кнопкой выше: нужен пароль компании.
+              </p>
             </div>
           ) : (
             <ul className="room-list">
@@ -89,6 +94,7 @@ export function Rooms({ view }: { view: RoomsView }) {
               ))}
             </ul>
           )}
+          <PasteLink roomIds={rooms?.map((r) => r.id) ?? []} />
         </section>
         <section className="detail">
           {view.kind === 'new' ? (

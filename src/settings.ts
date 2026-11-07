@@ -1,10 +1,29 @@
-// Настройки устройства (не данные комнат): адрес сервера, пароль компании, свёрнутое меню —
-// в localStorage, не в IndexedDB
+// Настройки устройства (не данные комнат): адрес сервера, пароль компании, свёрнутое меню,
+// закрытая заметка «экран „Домой“» — в localStorage, не в IndexedDB
 import { DEFAULT_SERVER, normalizeServer } from './rules/address'
 
 const SERVER_KEY = 'torgsin.server'
 const PASSWORD_KEY = 'torgsin.password'
 const NAV_KEY = 'torgsin.navCollapsed'
+const HOME_NOTE_KEY = 'torgsin.homeNoteClosed'
+
+// Заметку «iPhone хранит комнату отдельно от экрана „Домой“» закрыли на этом устройстве — во
+// всех комнатах сразу
+export function getHomeNoteClosed(): boolean {
+  try {
+    return localStorage.getItem(HOME_NOTE_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+export function setHomeNoteClosed(): void {
+  try {
+    localStorage.setItem(HOME_NOTE_KEY, '1')
+  } catch {
+    // localStorage недоступен (частный режим) — заметка закроется до перезагрузки страницы
+  }
+}
 
 // Меню слева на компьютере свёрнуто до значков; по умолчанию — развёрнуто
 export function getNavCollapsed(): boolean {

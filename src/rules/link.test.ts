@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { DEFAULT_SERVER } from './address'
-import { deviceLink, inviteLink, parseDeviceLink, parseInviteLink } from './link'
+import { deviceLink, inviteLink, parseDeviceLink, parseInviteLink, parsePastedLink } from './link'
 
 const SITE = 'https://goigolden88.github.io/Torg_Sin/'
 const ROOM = '01JBXK7Z9M3Q4R5S6T7V8W9XYZ'
@@ -66,5 +66,54 @@ describe('parseDeviceLink', () => {
     expect(parseDeviceLink(`${SITE}#/device/${ROOM}`)).toBeNull()
     expect(parseDeviceLink(`${SITE}#/device/${ROOM}/токен`)).toBeNull()
     expect(parseDeviceLink(`${SITE}#/device/${ROOM}/${TOKEN}?server=ftp%3A%2F%2Fx.ru`)).toBeNull()
+  })
+})
+
+describe('parsePastedLink', () => {
+  const OWN = 'https://torg.example.com/api'
+
+  it('приглашение — экран входа, сервер по умолчанию — без параметра', () => {
+    expect(parsePastedLink(`${SITE}#/join/${ROOM}/${TOKEN}`)).toEqual({
+      kind: 'join',
+      link: { roomId: ROOM, invite: TOKEN, server: DEFAULT_SERVER },
+      hash: `#/join/${ROOM}/${TOKEN}`,
+    })
+  })
+  it('ссылка для другого устройства — её экран', () => {
+    expect(parsePastedLink(`${SITE}#/device/${ROOM}/${TOKEN}`)).toEqual({
+      kind: 'device',
+      link: { roomId: ROOM, token: TOKEN, server: DEFAULT_SERVER },
+      hash: `#/device/${ROOM}/${TOKEN}`,
+    })
+  })
+  it('свой сервер из ссылки сохраняется — и в разборе, и в адресе экрана', () => {
+    const invite = parsePastedLink(inviteLink(SITE, { roomId: ROOM, invite: TOKEN, server: OWN }))
+    expect(invite?.link).toEqual({ roomId: ROOM, invite: TOKEN, server: OWN })
+    expect(invite?.hash).toBe(`#/join/${ROOM}/${TOKEN}?server=${encodeURIComponent(OWN)}`)
+    const device = parsePastedLink(deviceLink(SITE, { roomId: ROOM, token: TOKEN, server: OWN }))
+    expect(device?.link).toEqual({ roomId: ROOM, token: TOKEN, server: OWN })
+    expect(device?.hash).toBe(`#/device/${ROOM}/${TOKEN}?server=${encodeURIComponent(OWN)}`)
+  })
+  it('пробелы и перевод строки вокруг — не мешают', () => {
+    expect(parsePastedLink(`  \n${SITE}#/join/${ROOM}/${TOKEN}\n `)?.kind).toBe('join')
+  })
+  it('сообщение целиком: ссылка среди слов, в кавычках или с точкой', () => {
+    expect(parsePastedLink(`Заходи в комнату «Дача 2026» в ТоргСине ${SITE}#/join/${ROOM}/${TOKEN}`)?.kind).toBe('join')
+    expect(parsePastedLink(`Вот: «${SITE}#/device/${ROOM}/${TOKEN}».`)?.hash).toBe(`#/device/${ROOM}/${TOKEN}`)
+  })
+  it('не ссылка ТоргСина — null', () => {
+    for (const text of [
+      '',
+      '   ',
+      'привет',
+      SITE,
+      `${SITE}#/room/${ROOM}`,
+      `${SITE}#/join/${ROOM}`,
+      `${SITE}#/device/${ROOM}/токен`,
+      `${SITE}#/join/${ROOM}/${TOKEN}?server=http%3A%2F%2Ftorg.example.com`,
+      'https://example.com/#/settings',
+    ]) {
+      expect(parsePastedLink(text)).toBeNull()
+    }
   })
 })

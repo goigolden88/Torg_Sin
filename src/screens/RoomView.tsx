@@ -3,7 +3,8 @@
 // сервер не спрашиваем, POST /invite сменил бы ссылку — это отдельная кнопка «Сменить ссылку»
 // с подтверждением. «Ссылка для другого устройства» — себе; ведущему — и за другого участника.
 // Состояние — с сервера раз в 5 с, пока комната открыта (useRoom); нет связи — последнее известное.
-// Под участниками — «События» (EventList), под ними — «Пари» (OfferList)
+// Под участниками — «События» (EventList), под ними — «Пари» (OfferList). На iPhone в браузере —
+// заметка про экран «Домой» (HomeScreenNote)
 import { useCallback, useState } from 'react'
 import { admitRequest, fetchRequests, issueDeviceLink, rejectRequest, renewInvite } from '../api'
 import { currencyLabel } from '../rules/currency'
@@ -13,6 +14,7 @@ import type { JoinRequestsResponse } from '../rules/protocol'
 import type { SavedRoom } from '../store/db'
 import { BackLink, useEscape } from './BackLink'
 import { EventList } from './EventList'
+import { HomeScreenNote } from './HomeScreenNote'
 import { LinkBox, siteUrl } from './LinkBox'
 import { OfferList } from './OfferList'
 import { usePoll } from './usePoll'
@@ -41,6 +43,7 @@ export function RoomView({ room, onUpdate }: { room: SavedRoom; onUpdate: (room:
       </p>
       {sync.state === 'busy' && <p className="hint">Обновляю с сервера…</p>}
       {sync.state === 'fail' && <p className="error">{sync.text}</p>}
+      <HomeScreenNote room={room} />
 
       {isHost && <Requests room={room} onAdmitted={refresh} />}
 
