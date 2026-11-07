@@ -1,7 +1,32 @@
 import { IDBFactory } from 'fake-indexeddb'
 import { describe, expect, it } from 'vitest'
-import type { EventView, RoomStateResponse } from '../rules/protocol'
-import { createStore, DB_NAME, DB_VERSION, openDb, savedEvents, withState, type SavedJoin, type SavedRoom } from './db'
+import type { EventView, OfferView, RoomStateResponse } from '../rules/protocol'
+import { createStore, DB_NAME, DB_VERSION, openDb, savedEvents, savedOffers, withState, type SavedJoin, type SavedRoom } from './db'
+
+// Пари «3 к 1, сумма автора 300 ₽» — открытое, как его отдаёт сервер
+function offer(id: string): OfferView {
+  return {
+    id,
+    at: 10,
+    authorId: 'MA',
+    condition: 'Боря подтянется 20 раз',
+    check: 'Снимаем на видео',
+    side: 'yes',
+    odds: { a: 3, b: 1 },
+    amount: 30000,
+    takerAmount: 10000,
+    to: null,
+    closesAt: 100,
+    expectedAt: 200,
+    guarantorId: 'MV',
+    counterTo: null,
+    status: 'open',
+    accepted: null,
+    withdrawnAt: null,
+    closedBy: null,
+    outcome: null,
+  }
+}
 
 function room(id: string, savedAt: number, extra: Partial<SavedRoom> = {}): SavedRoom {
   return {
@@ -185,6 +210,48 @@ describe('хранилище на устройстве', () => {
 
   it('события: не список в записи — пусто', () => {
     expect(savedEvents(room('A', 1, { events: 'испорчено' as unknown as EventView[] }))).toEqual([])
+  })
+
+  it('пари: старая запись без поля — пусто; ответ сервера — записан вместе с событиями', async () => {
+    const factory = new IDBFactory()
+    const first = createStore(factory)
+    await first.saveRoom(room('A', 1)) // как до пари: поля offers нет
+    const old = (await first.getRoom('A')) as SavedRoom
+    expect(savedOffers(old)).toEqual([])
+
+    const state: RoomStateResponse = {
+      v: 2,
+      room: { id: 'A', name: 'Дача', currency: 'RUB', hostId: 'MA', createdAt: 1 },
+      members: [{ id: 'MA', name: 'Аня' }],
+      me: 'MA',
+      events: [],
+      offers: [offer('O1')],
+      now: 50,
+    }
+    await first.saveRoom(withState(old, state, 60))
+    await first.close()
+    const saved = await createStore(factory).getRoom('A')
+    expect(saved && savedOffers(saved)).toEqual([offer('O1')])
+
+    // Сервер до этапа 3 пари не шлёт — пари нет, прежняя копия не остаётся
+    const noOffers: RoomStateResponse = { ...state }
+    delete noOffers.offers
+    expect(savedOffers(withState(saved as SavedRoom, noOffers, 70))).toEqual([])
+  })
+
+  it('пари: копия до нового поля протокола не отдаётся, свежая — отдаётся; запись не переписана', async () => {
+    const factory = new IDBFactory()
+    const first = createStore(factory)
+    // Пари, записанное до исхода (Р-23): поля outcome нет
+    const noOutcome: Record<string, unknown> = { ...offer('O2') }
+    delete noOutcome.outcome
+    await first.saveRoom(room('A', 1, { offers: [offer('O1'), noOutcome as unknown as OfferView] }))
+    await first.close()
+
+    const saved = await createStore(factory).getRoom('A')
+    expect(saved && savedOffers(saved).map((o) => o.id)).toEqual(['O1'])
+    expect(saved?.offers?.map((o) => o.id)).toEqual(['O1', 'O2'])
+    expect(savedOffers(room('A', 1, { offers: 'испорчено' as unknown as OfferView[] }))).toEqual([])
   })
 
   it('заявка: записана, отклонена, а впустили — стала комнатой и убрана', async () => {
