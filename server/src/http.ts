@@ -8,7 +8,7 @@ import {
   type RoomStateResponse,
 } from '../../src/rules/protocol'
 import { checkAmount, checkClarification, checkEventInput, checkObjection, checkReason, eventView } from '../../src/rules/event'
-import { BAD_ODDS, checkOfferInput, MAX_ODDS, MIN_ODDS, NO_OFFER, offerView, type Odds } from '../../src/rules/offer'
+import { BAD_GUARANTOR, BAD_MARK, BAD_ODDS, checkOfferInput, MAX_ODDS, MIN_ODDS, NO_OFFER, offerView, type Odds } from '../../src/rules/offer'
 import { checkMemberName, checkRoomInput } from '../../src/rules/room'
 import { ulid } from '../../src/rules/ulid'
 import { deriveCreation, hashKey, randomToken, sameText, ULID_PATTERN } from './keys'
@@ -109,8 +109,8 @@ export async function handle(request: Request, deps: RoomsDeps): Promise<Respons
     const r = await eventAction(ev[1], ev[2], ev[3], request, deps)
     return json(r.status, r.body)
   }
-  // Пари (Р-22): /rooms/<номер>/offers и /rooms/<номер>/offers/<пари>/<действие>
-  const of = /^\/rooms\/([^/]+)\/offers(?:\/([^/]+)\/(accept|revoke|counter))?$/.exec(path)
+  // Пари (Р-22; исход — Р-23): /rooms/<номер>/offers и /rooms/<номер>/offers/<пари>/<действие>
+  const of = /^\/rooms\/([^/]+)\/offers(?:\/([^/]+)\/(accept|revoke|counter|mark|decide|decline|nominate))?$/.exec(path)
   if (of && request.method === 'POST') {
     const r = await offerAction(of[1], of[2], of[3], request, deps)
     return json(r.status, r.body)
@@ -120,7 +120,9 @@ export async function handle(request: Request, deps: RoomsDeps): Promise<Respons
 
 // POST /rooms/<номер>/offers { condition, check, side?, odds: { a, b }, amount, to?, closesAt,
 // expectedAt, guarantor?, requestId? } — предложить; …/offers/<пари>/accept | revoke { requestId? };
-// …/offers/<пари>/counter { odds?, amount?, closesAt, requestId? } — встречное
+// …/offers/<пари>/counter { odds?, amount?, closesAt, requestId? } — встречное; исход (Р-23):
+// …/mark | decide { winner: "author" | "taker", requestId? }, …/decline { requestId? },
+// …/nominate { guarantor, requestId? }
 async function offerAction(
   roomId: string,
   offerId: string | undefined,
@@ -132,7 +134,7 @@ async function offerAction(
   const raw: unknown = await request.json().catch(() => null)
   return withKey(roomId, authorization, async (keyHash) => {
     if (offerId !== undefined && !ULID_PATTERN.test(offerId)) return failure(404, NO_OFFER)
-    const read = readBody(raw, action === 'accept' || action === 'revoke')
+    const read = readBody(raw, action === 'accept' || action === 'revoke' || action === 'decline')
     if (!read.ok) return read.reply
     const b = read.body
     const requestId = requestIdOf(b, deps)
@@ -171,8 +173,23 @@ async function offerAction(
         }),
       )
     }
+    if (action === 'mark' || action === 'decide') {
+      const winner = b.winner
+      if (winner !== 'author' && winner !== 'taker') return failure(400, BAD_MARK)
+      if (!requestId) return failure(400, BAD_REQUEST_ID)
+      const a = { keyHash, offer: offerId, winner, requestId } as const
+      return action === 'mark'
+        ? reply(await deps.act(roomId, { type: 'markOffer', ...a }))
+        : reply(await deps.act(roomId, { type: 'decideOffer', ...a }))
+    }
+    if (action === 'nominate') {
+      if (typeof b.guarantor !== 'string' || !b.guarantor) return failure(400, BAD_GUARANTOR)
+      if (!requestId) return failure(400, BAD_REQUEST_ID)
+      return reply(await deps.act(roomId, { type: 'nominateGuarantor', keyHash, offer: offerId, guarantor: b.guarantor, requestId }))
+    }
     if (!requestId) return failure(400, BAD_REQUEST_ID)
     const a = { keyHash, offer: offerId, requestId }
+    if (action === 'decline') return reply(await deps.act(roomId, { type: 'declineOffer', ...a }))
     return action === 'accept'
       ? reply(await deps.act(roomId, { type: 'acceptOffer', ...a }))
       : reply(await deps.act(roomId, { type: 'revokeOffer', ...a }))

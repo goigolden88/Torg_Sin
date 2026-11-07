@@ -1,7 +1,7 @@
 // Комната и её журнал (Р-11): журнал только дописывается, текущее состояние считается из него.
 // Общее для экрана и сервера: ни DOM, ни Cloudflare
 import { CURRENCIES, isCurrencyCode, type CurrencyCode } from './currency'
-import type { AuthorSide, Odds } from './offer'
+import type { AuthorSide, Odds, OfferSide } from './offer'
 
 export const MAX_ROOM_NAME = 60
 export const MAX_MEMBER_NAME = 30
@@ -84,6 +84,14 @@ export type LogEntry =
   | (EntryBase & { type: 'offer.accepted'; offer: string; requestId: string })
   // Пари отозвано автором, пока не принято
   | (EntryBase & { type: 'offer.revoked'; offer: string; requestId: string })
+  // Исход пари (Р-23, offer.ts). Отметка стороны (автор записи — сторона): кто прав
+  | (EntryBase & { type: 'offer.marked'; offer: string; winner: OfferSide; requestId: string })
+  // Решение гаранта (автор записи — гарант): кто прав
+  | (EntryBase & { type: 'offer.decided'; offer: string; winner: OfferSide; requestId: string })
+  // Гарант отказался решать — нужен другой
+  | (EntryBase & { type: 'offer.declined'; offer: string; requestId: string })
+  // Сторона называет нового гаранта; обе назвали одного — он гарант
+  | (EntryBase & { type: 'offer.nominated'; offer: string; guarantor: string; requestId: string })
 
 export type Member = {
   id: string // номер участника: не привязан к способу входа (Р-03)
@@ -132,6 +140,10 @@ export function applyEntry(state: RoomState | null, e: LogEntry): RoomState | nu
     case 'offer.created':
     case 'offer.accepted':
     case 'offer.revoked':
+    case 'offer.marked':
+    case 'offer.decided':
+    case 'offer.declined':
+    case 'offer.nominated':
       return state
   }
 }

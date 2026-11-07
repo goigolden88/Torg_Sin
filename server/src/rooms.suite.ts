@@ -25,30 +25,51 @@ import {
 } from '../../src/rules/event'
 import {
   ACCEPTED_NO_WITHDRAW,
+  AGREED,
   ALREADY_ACCEPTED,
   BAD_ADDRESSEE,
   BAD_GUARANTOR,
+  BAD_MARK,
   BAD_ODDS,
   BAD_SIDE,
   CLOSE_PASSED as OFFER_CLOSE_PASSED,
   COUNTER_ACCEPTED,
   COUNTERED,
+  DECIDED,
   EXPECTED_EARLY as OFFER_EXPECTED_EARLY,
+  FINAL_TIME,
   GUARANTOR_COUNTERS,
+  GUARANTOR_LAPSED,
+  GUARANTOR_MARKS,
+  GUARANTOR_PRESENT,
+  GUARANTOR_SILENCE,
   GUARANTOR_TAKES,
+  MARK_EARLY,
   NEED_GUARANTOR,
   NEED_TIMES as OFFER_NEED_TIMES,
   NOT_ADDRESSEE,
+  NOT_SIDE,
+  NOT_TURN,
   ONLY_AUTHOR,
+  ONLY_GUARANTOR,
   OWN_COUNTER,
   OWN_OFFER,
+  SIDE_SILENCE,
   TAKER_TOO_SMALL,
   WITHDRAWN,
 } from '../../src/rules/offer'
 import {
   isAcceptOfferResponse,
   isCreateOfferResponse,
+  isDecideOfferResponse,
+  isDeclineOfferResponse,
+  isMarkOfferResponse,
+  isNominateResponse,
   isRevokeOfferResponse,
+  type DecideOfferResponse,
+  type DeclineOfferResponse,
+  type MarkOfferResponse,
+  type NominateResponse,
   isAgreeOutcomeResponse,
   isDecideOutcomeResponse,
   isHealth,
@@ -1481,7 +1502,7 @@ export function roomsSuite(storageName: string, start: (password: string | undef
           guarantorId: room.memberId,
           counterTo: null,
         })
-        const expected = { ...offer, status: 'open', accepted: null, withdrawnAt: null, closedBy: null }
+        const expected = { ...offer, status: 'open', accepted: null, withdrawnAt: null, closedBy: null, outcome: null }
         for (const key of [room.key, borya.key, vera.key, gosha.key]) expect(await offersOf(s, room.roomId, key)).toEqual([expected])
         const log = await readLog(s.storage(room.roomId))
         expect(log.at(-1)).toMatchObject({ type: 'offer.created', id: offer.id, memberId: borya.memberId, guarantor: room.memberId, counterTo: null, requestId: expect.any(String) })
@@ -1690,6 +1711,291 @@ export function roomsSuite(storageName: string, start: (password: string | undef
         expect(await offerEntries(s, room.roomId)).toEqual(['offer.created', 'offer.created', 'offer.accepted', 'offer.created', 'offer.revoked'])
         // Повтор создания — и после срока «приём до»
         expect(await newOffer(s, room.roomId, borya.key, form)).toEqual(first)
+      })
+
+      describe('исход пари (Р-23)', () => {
+        const DAY = 24 * HOUR
+
+        // Боря предложил (гарант — ведущая Аня), Вера приняла; Гоша — не сторона
+        async function acceptedOffer(s: TestServer) {
+          const people = await room4(s)
+          const { room, borya, vera } = people
+          const { offer } = await newOffer(s, room.roomId, borya.key, offerForm(s))
+          s.clock.now += 1000
+          await ok(offerAct(s, room.roomId, vera.key, offer.id, 'accept'))
+          s.clock.now += 1000
+          return { ...people, offer }
+        }
+
+        async function outcomeOf(s: TestServer, roomId: string, key: string, offerId: string) {
+          const view = (await offersOf(s, roomId, key)).find((o) => o.id === offerId)
+          return view?.outcome
+        }
+
+        function mark(s: TestServer, roomId: string, key: string | undefined, offerId: string, winner: unknown, requestId?: string) {
+          return offerAct(s, roomId, key, offerId, 'mark', { winner, requestId })
+        }
+
+        function decide(s: TestServer, roomId: string, key: string, offerId: string, winner: unknown, requestId?: string) {
+          return offerAct(s, roomId, key, offerId, 'decide', { winner, requestId })
+        }
+
+        it('отметки сторон: поменять можно, повтор той же — без записи; совпали — утверждён согласием и окончательный сразу', async () => {
+          const s = await server()
+          const { room, borya, vera, gosha, offer } = await acceptedOffer(s)
+          const before = await outcomeOf(s, room.roomId, gosha.key, offer.id)
+          expect(before).toEqual({
+            phase: 'marking',
+            marks: { author: null, taker: null },
+            guarantorId: room.memberId,
+            turnAt: offer.expectedAt + SIDE_SILENCE,
+            guarantorUntil: offer.expectedAt + SIDE_SILENCE + GUARANTOR_SILENCE,
+            needSince: null,
+            nominations: {},
+            approved: null,
+            finalAt: null,
+          })
+          // Боря: «прав автор»
+          const first = await ok<MarkOfferResponse>(mark(s, room.roomId, borya.key, offer.id, 'author'))
+          expect(isMarkOfferResponse(first)).toBe(true)
+          expect(first).toEqual({ v: PROTOCOL_VERSION, marked: { id: expect.any(String), at: s.clock.now, by: borya.memberId, offer: offer.id, winner: 'author' } })
+          expect((await readLog(s.storage(room.roomId))).at(-1)).toMatchObject({ type: 'offer.marked', memberId: borya.memberId, offer: offer.id, winner: 'author', requestId: expect.any(String) })
+          // Та же отметка с новым номером запроса — прежняя запись, новой нет
+          s.clock.now += 1000
+          expect(await ok(mark(s, room.roomId, borya.key, offer.id, 'author'))).toEqual(first)
+          expect(await offerEntries(s, room.roomId)).toEqual(['offer.created', 'offer.accepted', 'offer.marked'])
+          expect(await outcomeOf(s, room.roomId, vera.key, offer.id)).toMatchObject({ phase: 'marking', marks: { author: 'author', taker: null } })
+          // Передумал: «прав соперник»
+          await ok(mark(s, room.roomId, borya.key, offer.id, 'taker'))
+          s.clock.now += 1000
+          // Вера согласна — утверждён согласием, окончательный сразу
+          const agreed = await ok<MarkOfferResponse>(mark(s, room.roomId, vera.key, offer.id, 'taker'))
+          expect(agreed.marked).toMatchObject({ by: vera.memberId, winner: 'taker' })
+          const at = s.clock.now
+          for (const key of [room.key, borya.key, vera.key, gosha.key]) {
+            expect(await outcomeOf(s, room.roomId, key, offer.id)).toEqual({
+              ...before,
+              phase: 'final',
+              marks: { author: 'taker', taker: 'taker' },
+              guarantorUntil: null,
+              approved: { winner: 'taker', at, how: 'agreement', by: null },
+              finalAt: at,
+            })
+          }
+          // После утверждения — отказ и сторонам, и гаранту
+          await refused(mark(s, room.roomId, borya.key, offer.id, 'author'), 409, AGREED)
+          await refused(decide(s, room.roomId, room.key, offer.id, 'author'), 409, AGREED)
+          await refused(offerAct(s, room.roomId, room.key, offer.id, 'decline'), 409, AGREED)
+          expect(await offerEntries(s, room.roomId)).toEqual(['offer.created', 'offer.accepted', 'offer.marked', 'offer.marked', 'offer.marked'])
+        })
+
+        it('отметка: до принятия — 409, гарант и не сторона — 403, кривое тело — 400, нет пари — 404', async () => {
+          const s = await server()
+          const { room, borya, gosha, offer } = await acceptedOffer(s)
+          const open = await newOffer(s, room.roomId, borya.key, offerForm(s))
+          expect(await outcomeOf(s, room.roomId, gosha.key, open.offer.id)).toBeNull()
+          await refused(mark(s, room.roomId, borya.key, open.offer.id, 'author'), 409, MARK_EARLY)
+          await refused(mark(s, room.roomId, room.key, offer.id, 'author'), 403, GUARANTOR_MARKS)
+          await refused(mark(s, room.roomId, gosha.key, offer.id, 'author'), 403, NOT_SIDE)
+          for (const winner of [undefined, 'yes', '', 1]) await refused(mark(s, room.roomId, borya.key, offer.id, winner), 400, BAD_MARK)
+          await refused(mark(s, room.roomId, borya.key, offer.id, 'author', 'abc'), 400, BAD_REQUEST_ID)
+          await refused(mark(s, room.roomId, borya.key, ulid(), 'author'), 404, NO_OFFER)
+          await refused(mark(s, room.roomId, borya.key, 'не-номер', 'author'), 404, NO_OFFER)
+          await refused(mark(s, room.roomId, undefined, offer.id, 'author'), 403, NEED_KEY)
+          await ok(mark(s, room.roomId, borya.key, offer.id, 'author'))
+          expect((await offerAct(s, room.roomId, borya.key, offer.id, 'mark', { winner: 'author', v: PROTOCOL_VERSION + 1 })).status).toBe(400)
+          expect(await offerEntries(s, room.roomId)).toEqual(['offer.created', 'offer.accepted', 'offer.created', 'offer.marked'])
+        })
+
+        it('разошлись — решает гарант сразу; сторона ещё может поменять отметку; решение — окончательное через 7 дней', async () => {
+          const s = await server()
+          const { room, borya, vera, gosha, offer } = await acceptedOffer(s)
+          await ok(mark(s, room.roomId, borya.key, offer.id, 'author'))
+          // Пока не разошлись — рано
+          await refused(decide(s, room.roomId, room.key, offer.id, 'author'), 409, NOT_TURN)
+          s.clock.now += 1000
+          await ok(mark(s, room.roomId, vera.key, offer.id, 'taker'))
+          const turnAt = s.clock.now
+          expect(await outcomeOf(s, room.roomId, gosha.key, offer.id)).toMatchObject({
+            phase: 'guarantor',
+            marks: { author: 'author', taker: 'taker' },
+            turnAt,
+            guarantorUntil: turnAt + GUARANTOR_SILENCE,
+            approved: null,
+          })
+          // Не гарант — 403
+          await refused(decide(s, room.roomId, gosha.key, offer.id, 'author'), 403, ONLY_GUARANTOR)
+          await refused(decide(s, room.roomId, borya.key, offer.id, 'author'), 403, ONLY_GUARANTOR)
+          await refused(decide(s, room.roomId, room.key, offer.id, 'maybe'), 400, BAD_MARK)
+          // Та же отметка Веры ещё раз — без записи; разошлись по-прежнему
+          await ok(mark(s, room.roomId, vera.key, offer.id, 'taker'))
+          s.clock.now += HOUR
+          const decided = await ok<DecideOfferResponse>(decide(s, room.roomId, room.key, offer.id, 'author'))
+          expect(isDecideOfferResponse(decided)).toBe(true)
+          expect(decided).toEqual({ v: PROTOCOL_VERSION, decided: { id: expect.any(String), at: s.clock.now, by: room.memberId, offer: offer.id, winner: 'author' } })
+          const at = s.clock.now
+          expect(await outcomeOf(s, room.roomId, borya.key, offer.id)).toMatchObject({
+            phase: 'approved',
+            guarantorUntil: null,
+            approved: { winner: 'author', at, how: 'guarantor', by: room.memberId },
+            finalAt: at + FINAL_TIME,
+          })
+          await refused(decide(s, room.roomId, room.key, offer.id, 'taker'), 409, DECIDED)
+          await refused(mark(s, room.roomId, vera.key, offer.id, 'author'), 409, DECIDED)
+          // Через 7 дней — окончательный (по времени запроса, будильника нет)
+          s.clock.now = at + FINAL_TIME - 1
+          expect((await outcomeOf(s, room.roomId, vera.key, offer.id))?.phase).toBe('approved')
+          s.clock.now = at + FINAL_TIME
+          expect((await outcomeOf(s, room.roomId, vera.key, offer.id))?.phase).toBe('final')
+          expect(await offerEntries(s, room.roomId)).toEqual(['offer.created', 'offer.accepted', 'offer.marked', 'offer.marked', 'offer.decided'])
+        })
+
+        it('разошлись, а до решения гаранта сторона поменяла отметку и сошлись — утверждён согласием', async () => {
+          const s = await server()
+          const { room, borya, vera, offer } = await acceptedOffer(s)
+          await ok(mark(s, room.roomId, borya.key, offer.id, 'author'))
+          await ok(mark(s, room.roomId, vera.key, offer.id, 'taker'))
+          expect((await outcomeOf(s, room.roomId, room.key, offer.id))?.phase).toBe('guarantor')
+          s.clock.now += HOUR
+          await ok(mark(s, room.roomId, borya.key, offer.id, 'taker'))
+          expect(await outcomeOf(s, room.roomId, room.key, offer.id)).toMatchObject({
+            phase: 'final',
+            approved: { winner: 'taker', at: s.clock.now, how: 'agreement', by: null },
+            finalAt: s.clock.now,
+          })
+          await refused(decide(s, room.roomId, room.key, offer.id, 'author'), 409, AGREED)
+        })
+
+        it('сторона молчит 3 дня после «исход к» — решает гарант; гарант молчит 3 дня — нужен другой', async () => {
+          const s = await server()
+          const { room, borya, gosha, offer } = await acceptedOffer(s)
+          await ok(mark(s, room.roomId, borya.key, offer.id, 'author'))
+          const turnAt = offer.expectedAt + SIDE_SILENCE
+          s.clock.now = turnAt - 1
+          await refused(decide(s, room.roomId, room.key, offer.id, 'author'), 409, NOT_TURN)
+          expect((await outcomeOf(s, room.roomId, gosha.key, offer.id))?.phase).toBe('marking')
+          s.clock.now = turnAt
+          expect(await outcomeOf(s, room.roomId, gosha.key, offer.id)).toMatchObject({ phase: 'guarantor', turnAt, guarantorUntil: turnAt + GUARANTOR_SILENCE })
+          // Гарант не решил за 3 дня
+          s.clock.now = turnAt + GUARANTOR_SILENCE
+          expect(await outcomeOf(s, room.roomId, gosha.key, offer.id)).toMatchObject({ phase: 'need-guarantor', needSince: turnAt + GUARANTOR_SILENCE, guarantorId: room.memberId })
+          await refused(decide(s, room.roomId, room.key, offer.id, 'author'), 409, GUARANTOR_LAPSED)
+          await refused(offerAct(s, room.roomId, room.key, offer.id, 'decline'), 409, GUARANTOR_LAPSED)
+          expect(await offerEntries(s, room.roomId)).toEqual(['offer.created', 'offer.accepted', 'offer.marked'])
+        })
+
+        it('гарант отказался — стороны называют нового; назвали одного — он гарант, его 3 дня — с назначения', async () => {
+          const s = await server()
+          const { room, borya, vera, gosha, offer } = await acceptedOffer(s)
+          // До принятия — 409; не гарант — 403; гарант на месте — называть рано
+          const open = await newOffer(s, room.roomId, borya.key, offerForm(s))
+          await refused(offerAct(s, room.roomId, room.key, open.offer.id, 'decline'), 409, MARK_EARLY)
+          await refused(offerAct(s, room.roomId, gosha.key, offer.id, 'decline'), 403, ONLY_GUARANTOR)
+          const nominate = (key: string, guarantor: unknown, requestId?: string) => offerAct(s, room.roomId, key, offer.id, 'nominate', { guarantor, requestId })
+          await refused(nominate(borya.key, gosha.memberId), 409, GUARANTOR_PRESENT)
+          // Аня отказалась
+          s.clock.now += 1000
+          const declined = await ok<DeclineOfferResponse>(offerAct(s, room.roomId, room.key, offer.id, 'decline'))
+          expect(isDeclineOfferResponse(declined)).toBe(true)
+          expect(declined).toEqual({ v: PROTOCOL_VERSION, declined: { id: expect.any(String), at: s.clock.now, by: room.memberId, offer: offer.id } })
+          const declinedAt = s.clock.now
+          expect(await outcomeOf(s, room.roomId, gosha.key, offer.id)).toMatchObject({ phase: 'need-guarantor', needSince: declinedAt, guarantorId: room.memberId })
+          await refused(decide(s, room.roomId, room.key, offer.id, 'author'), 409, GUARANTOR_LAPSED)
+          await refused(offerAct(s, room.roomId, room.key, offer.id, 'decline'), 409, GUARANTOR_LAPSED)
+          // Называют только стороны и только участника не из сторон
+          await refused(nominate(gosha.key, gosha.memberId), 403, NOT_SIDE)
+          await refused(nominate(room.key, gosha.memberId), 403, NOT_SIDE)
+          for (const bad of [borya.memberId, vera.memberId, ulid(), '', undefined, 5]) await refused(nominate(borya.key, bad), 400, BAD_GUARANTOR)
+          // Боря — Гошу, Вера — Аню: не сошлись
+          const named = await ok<NominateResponse>(nominate(borya.key, gosha.memberId))
+          expect(isNominateResponse(named)).toBe(true)
+          expect(named).toEqual({ v: PROTOCOL_VERSION, nominated: { id: expect.any(String), at: s.clock.now, by: borya.memberId, offer: offer.id, guarantor: gosha.memberId } })
+          await ok(nominate(vera.key, room.memberId))
+          expect(await outcomeOf(s, room.roomId, gosha.key, offer.id)).toMatchObject({
+            phase: 'need-guarantor',
+            nominations: { author: gosha.memberId, taker: room.memberId },
+          })
+          // Нужен другой гарант, пока стороны не сошлись, — и через сутки после того, как решение перешло
+          // бы к гаранту (стороны молчат 3 дня после «исход к»)
+          s.clock.now = offer.expectedAt + SIDE_SILENCE + DAY
+          expect((await outcomeOf(s, room.roomId, gosha.key, offer.id))?.phase).toBe('need-guarantor')
+          // Вера соглашается на Гошу — он гарант; решение у него сразу, его 3 дня — с назначения
+          await ok(nominate(vera.key, gosha.memberId))
+          const since = s.clock.now
+          const [view] = (await offersOf(s, room.roomId, borya.key)).filter((o) => o.id === offer.id)
+          expect(view.guarantorId).toBe(gosha.memberId)
+          expect(view.outcome).toMatchObject({
+            phase: 'guarantor',
+            guarantorId: gosha.memberId,
+            nominations: {},
+            needSince: null,
+            turnAt: offer.expectedAt + SIDE_SILENCE,
+            guarantorUntil: since + GUARANTOR_SILENCE,
+          })
+          // Нашли гаранта — больше не называют; прежний гарант не решает
+          await refused(nominate(borya.key, room.memberId), 409, GUARANTOR_PRESENT)
+          await refused(decide(s, room.roomId, room.key, offer.id, 'author'), 403, ONLY_GUARANTOR)
+          s.clock.now = since + GUARANTOR_SILENCE - 1
+          expect((await outcomeOf(s, room.roomId, borya.key, offer.id))?.phase).toBe('guarantor')
+          await ok(decide(s, room.roomId, gosha.key, offer.id, 'taker'))
+          expect(await outcomeOf(s, room.roomId, borya.key, offer.id)).toMatchObject({ phase: 'approved', approved: { winner: 'taker', how: 'guarantor', by: gosha.memberId } })
+          expect(await offerEntries(s, room.roomId)).toEqual([
+            'offer.created',
+            'offer.accepted',
+            'offer.created',
+            'offer.declined',
+            'offer.nominated',
+            'offer.nominated',
+            'offer.nominated',
+            'offer.decided',
+          ])
+        })
+
+        it('повтор с тем же requestId — тот же ответ без второй записи (и после утверждения); чужое — 409', async () => {
+          const s = await server()
+          const { room, borya, vera, gosha, offer } = await acceptedOffer(s)
+          const markId = ulid(s.clock.now)
+          const marked = await ok(mark(s, room.roomId, borya.key, offer.id, 'author', markId))
+          await refused(mark(s, room.roomId, borya.key, offer.id, 'taker', markId), 409, REQUEST_USED)
+          await refused(mark(s, room.roomId, vera.key, offer.id, 'author', markId), 409, REQUEST_USED)
+          await refused(decide(s, room.roomId, room.key, offer.id, 'author', markId), 409, REQUEST_USED)
+          await ok(mark(s, room.roomId, vera.key, offer.id, 'taker'))
+          // Решение гаранта и его повтор
+          const decideId = ulid(s.clock.now)
+          const decided = await ok(decide(s, room.roomId, room.key, offer.id, 'author', decideId))
+          s.clock.now += FINAL_TIME
+          expect(await ok(decide(s, room.roomId, room.key, offer.id, 'author', decideId))).toEqual(decided)
+          await refused(decide(s, room.roomId, room.key, offer.id, 'taker', decideId), 409, REQUEST_USED)
+          // Повтор отметки — и после утверждения
+          expect(await ok(mark(s, room.roomId, borya.key, offer.id, 'author', markId))).toEqual(marked)
+
+          // Отказ гаранта и называние нового — на втором пари
+          const second = await newOffer(s, room.roomId, borya.key, offerForm(s))
+          await ok(offerAct(s, room.roomId, vera.key, second.offer.id, 'accept'))
+          const declineId = ulid(s.clock.now)
+          const declined = await ok(offerAct(s, room.roomId, room.key, second.offer.id, 'decline', { requestId: declineId }))
+          expect(await ok(offerAct(s, room.roomId, room.key, second.offer.id, 'decline', { requestId: declineId }))).toEqual(declined)
+          await refused(offerAct(s, room.roomId, room.key, offer.id, 'decline', { requestId: declineId }), 409, REQUEST_USED)
+          const nominateId = ulid(s.clock.now)
+          const body = { guarantor: gosha.memberId, requestId: nominateId }
+          const named = await ok(offerAct(s, room.roomId, borya.key, second.offer.id, 'nominate', body))
+          expect(await ok(offerAct(s, room.roomId, borya.key, second.offer.id, 'nominate', body))).toEqual(named)
+          await refused(offerAct(s, room.roomId, borya.key, second.offer.id, 'nominate', { ...body, guarantor: room.memberId }), 409, REQUEST_USED)
+          await refused(offerAct(s, room.roomId, vera.key, second.offer.id, 'nominate', body), 409, REQUEST_USED)
+          // Номер действия с исходом не годится для принятия
+          await refused(offerAct(s, room.roomId, gosha.key, second.offer.id, 'accept', { requestId: nominateId }), 409, REQUEST_USED)
+          expect(await offerEntries(s, room.roomId)).toEqual([
+            'offer.created',
+            'offer.accepted',
+            'offer.marked',
+            'offer.marked',
+            'offer.decided',
+            'offer.created',
+            'offer.accepted',
+            'offer.declined',
+            'offer.nominated',
+          ])
+        })
       })
     })
 
