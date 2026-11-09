@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
+  isAppealResponse,
+  isJoinAppealResponse,
+  isJudgeResponse,
+  isReplaceJurorResponse,
   isAcceptOfferResponse,
   isCreateOfferResponse,
   isDecideOfferResponse,
@@ -306,6 +310,26 @@ describe('пари (Р-22)', () => {
     expect(isRevokeOfferResponse({ v, revoked: act })).toBe(true)
     expect(isRevokeOfferResponse({ v, revoked: { ...act, at: 'вчера' } })).toBe(false)
     expect(isRevokeOfferResponse({ v, error: 'Нет такого пари' })).toBe(false)
+  })
+})
+
+describe('апелляция и суд (Р-25)', () => {
+  const v = PROTOCOL_VERSION
+  const act = { id: 'X1', at: 5, by: 'B', target: 'E1' }
+
+  it('ответы на подачу, присоединение, голос и замену', () => {
+    expect(isAppealResponse({ v, appeal: { ...act, reason: 'Не так', seed: 'ab', candidates: ['C', 'D'] } })).toBe(true)
+    expect(isAppealResponse({ v, appeal: { ...act, reason: 'Не так', seed: 'ab', candidates: [1] } })).toBe(false)
+    expect(isAppealResponse({ v, appeal: { ...act, reason: 'Не так' } })).toBe(false)
+    expect(isJoinAppealResponse({ v, joined: act })).toBe(true)
+    expect(isJoinAppealResponse({ v, joined: { ...act, target: undefined } })).toBe(false)
+    expect(isJudgeResponse({ v, voted: { ...act, verdict: 'keep' } })).toBe(true)
+    expect(isJudgeResponse({ v, voted: { ...act, verdict: 'change', outcome: '2' } })).toBe(true)
+    expect(isJudgeResponse({ v, voted: { ...act, verdict: 'change', winner: 'taker' } })).toBe(true)
+    expect(isJudgeResponse({ v, voted: { ...act, verdict: 'change' } })).toBe(false)
+    expect(isReplaceJurorResponse({ v, replaced: { ...act, member: 'C', reason: 'Уехал' } })).toBe(true)
+    expect(isReplaceJurorResponse({ v, replaced: act })).toBe(false)
+    expect(isReplaceJurorResponse({ v, error: 'Досрочно заменить члена суда может только ведущий' })).toBe(false)
   })
 })
 
