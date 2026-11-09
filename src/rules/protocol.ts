@@ -69,14 +69,47 @@ export type OfferAct = { id: string; at: number; by: string; offer: string }
 export type OfferSide = 'author' | 'taker'
 
 // Ход исхода пари (Р-23) на now: «стороны отмечают» / «решает гарант» / «нужен другой гарант» /
-// «утверждён» / «окончательный»
-export type OfferPhase = 'marking' | 'guarantor' | 'need-guarantor' | 'approved' | 'final'
+// «утверждён» / «окончательный» / «отменено судом» (Р-24: без выплат)
+export type OfferPhase = 'marking' | 'guarantor' | 'need-guarantor' | 'approved' | 'final' | 'cancelled'
+
+// Апелляция и суд (этап 4, Р-05, Р-24; правила — appeal.ts, court.ts). Голос суда: «оставить» (если
+// исход утверждён) / «отменить — вернуть ставки» / «изменить на …» — у пула исход события, у пари —
+// сторона, которая права. Голоса видны всем сразу (Р-11)
+export type CourtVerdict =
+  | { verdict: 'keep' }
+  | { verdict: 'cancel' }
+  | { verdict: 'change'; outcome: string }
+  | { verdict: 'change'; winner: OfferSide }
+export type CourtVote = { id: string; at: number; by: string } & CourtVerdict
+// Место суда: кто сейчас (null — место пустое: запасные кончились), с какого мига и до какого (не
+// включая) голосует; replaced — кого заменили, когда, кто (ведущий; по сроку — null) и почему
+export type CourtSeat = {
+  member: string | null
+  since: number
+  until: number
+  replaced: { member: string; at: number; by: string | null; reason: string | null } | null
+  vote: CourtVote | null
+}
+// Суд: зерно жребия, когда собран, кандидаты по порядку жребия (первые три — суд, дальше — запасные),
+// места, решение и когда (majority: false — большинства нет: у апелляции исход остаётся, у «ждёт
+// суда» — отмена)
+export type CourtView = {
+  seed: string
+  drawnAt: number
+  candidates: string[]
+  seats: CourtSeat[]
+  decision: ({ at: number; majority: boolean } & CourtVerdict) | null
+}
+// Апелляция: кто подал, когда, причина, кто присоединился
+export type AppealView = { id: string; at: number; by: string; reason: string; joined: { id: string; at: number; by: string }[] }
 
 // Исход принятого пари (offerOutcome в offer.ts): marks — последняя отметка каждой стороны (null — не
 // отмечала); guarantorId — нынешний гарант; turnAt — с какого мига решает гарант; guarantorUntil — до
 // какого мига он решает (утверждено — null); needSince — с какого мига нужен другой гарант;
-// nominations — кого называют стороны; approved — что, когда, как и кем утверждено; finalAt — с какого
-// мига окончательный (согласием — сразу, гарантом — через 7 дней)
+// nominations — кого называют стороны; approved — что, когда, как и кем утверждено (судом — by null);
+// finalAt — с какого мига окончательный (согласием — сразу, гарантом — через 7 дней; апелляция подана —
+// с решения суда, до него — null); appeal и court — апелляция и суд (Р-24; суд без апелляции — appeal
+// null; суда нет — полей нет, как у сервера до этапа 4)
 export type OfferOutcomeView = {
   phase: OfferPhase
   marks: Record<OfferSide, OfferSide | null>
@@ -85,8 +118,10 @@ export type OfferOutcomeView = {
   guarantorUntil: number | null
   needSince: number | null
   nominations: Partial<Record<OfferSide, string>>
-  approved: { winner: OfferSide; at: number; how: 'agreement' | 'guarantor'; by: string | null } | null
+  approved: { winner: OfferSide; at: number; how: 'agreement' | 'guarantor' | 'court'; by: string | null } | null
   finalAt: number | null
+  appeal?: AppealView | null
+  court?: CourtView | null
 }
 
 // Пари в состоянии комнаты: статус на now; accepted — кто принял и когда; withdrawnAt — когда
@@ -166,8 +201,9 @@ export type Agreement = { id: string; at: number; by: string }
 export type OutcomeStatus = 'proposed' | 'disputed' | 'voting' | 'court' | 'approved' | 'final' | 'cancelled'
 
 // Как утверждён: сам — сутки без возражения (by — null); ведущим (by — ведущий);
-// голосованием (by — null); согласием всех ставивших — сразу окончательный (by — null; Р-21)
-export type Approval = { outcome: string; at: number; how: 'unopposed' | 'host' | 'vote' | 'agreed'; by: string | null }
+// голосованием (by — null); согласием всех ставивших — сразу окончательный (by — null; Р-21);
+// судом — сразу окончательный (by — null; Р-24)
+export type Approval = { outcome: string; at: number; how: 'unopposed' | 'host' | 'vote' | 'agreed' | 'court'; by: string | null }
 
 // Строка выплат по утверждённому исходу (pool.ts, settlePool)
 export type Payout = { memberId: string; staked: number; payout: number; net: number }
@@ -184,9 +220,11 @@ export type OutcomeView = {
   votingUntil: number | null // голосование до (не включая)
   votes: OutcomeMark[]
   approved: Approval | null // что утверждено; событие отменено после утверждения — остаётся для истории
-  finalAt: number | null // станет окончательным (не утверждён или событие отменено — null)
+  finalAt: number | null // станет окончательным (не утверждён, событие отменено или ждёт суда по апелляции — null)
   void: boolean // «без игры»: каждому — его сумма
   payouts: Payout[] // по утверждённому исходу; не утверждён или событие отменено — пусто
+  appeal?: AppealView | null // апелляция (Р-24); суд без апелляции — null; суда нет — поля нет
+  court?: CourtView | null // суд — по апелляции или по «ждёт суда»; суда нет — поля нет
 }
 
 // Событие в состоянии комнаты: ставки по порядку журнала, уточнения, статус; отменено —
@@ -413,7 +451,44 @@ function isObjection(r: Record<string, unknown>): boolean {
 }
 
 const OUTCOME_STATUSES: readonly unknown[] = ['proposed', 'disputed', 'voting', 'court', 'approved', 'final', 'cancelled']
-const APPROVALS: readonly unknown[] = ['unopposed', 'host', 'vote', 'agreed']
+const APPROVALS: readonly unknown[] = ['unopposed', 'host', 'vote', 'agreed', 'court']
+
+function isVerdict(r: Record<string, unknown>): boolean {
+  if (r.verdict === 'keep' || r.verdict === 'cancel') return true
+  return r.verdict === 'change' && (typeof r.outcome === 'string' || r.winner === 'author' || r.winner === 'taker')
+}
+
+function isCourtSeat(r: Record<string, unknown>): boolean {
+  return (
+    (r.member === null || typeof r.member === 'string') &&
+    numbers(r, 'since', 'until') &&
+    nullable(
+      r.replaced,
+      (p) => strings(p, 'member') && numbers(p, 'at') && (p.by === null || typeof p.by === 'string') && (p.reason === null || typeof p.reason === 'string'),
+    ) &&
+    nullable(r.vote, (v) => strings(v, 'id', 'by') && numbers(v, 'at') && isVerdict(v))
+  )
+}
+
+function isCourtView(r: Record<string, unknown>): boolean {
+  return (
+    strings(r, 'seed') &&
+    numbers(r, 'drawnAt') &&
+    Array.isArray(r.candidates) &&
+    r.candidates.every((m) => typeof m === 'string') &&
+    list(r.seats, isCourtSeat) &&
+    nullable(r.decision, (d) => numbers(d, 'at') && typeof d.majority === 'boolean' && isVerdict(d))
+  )
+}
+
+function isAppealView(r: Record<string, unknown>): boolean {
+  return strings(r, 'id', 'by', 'reason') && numbers(r, 'at') && list(r.joined, (j) => strings(j, 'id', 'by') && numbers(j, 'at'))
+}
+
+// Апелляция и суд в исходе (Р-24): нет поля (сервер до этапа 4), null или как положено
+function appealAndCourt(r: Record<string, unknown>): boolean {
+  return (r.appeal === undefined || nullable(r.appeal, isAppealView)) && (r.court === undefined || nullable(r.court, isCourtView))
+}
 
 function isAgreement(r: Record<string, unknown>): boolean {
   return strings(r, 'id', 'by') && numbers(r, 'at')
@@ -447,7 +522,8 @@ function isOutcomeView(r: Record<string, unknown>): boolean {
     nullable(r.approved, isApproval) &&
     (r.finalAt === null || typeof r.finalAt === 'number') &&
     typeof r.void === 'boolean' &&
-    list(r.payouts, (p) => strings(p, 'memberId') && numbers(p, 'staked', 'payout', 'net'))
+    list(r.payouts, (p) => strings(p, 'memberId') && numbers(p, 'staked', 'payout', 'net')) &&
+    appealAndCourt(r)
   )
 }
 
@@ -539,7 +615,8 @@ function isOfferInfo(r: Record<string, unknown>): boolean {
   )
 }
 
-const OFFER_PHASES: readonly unknown[] = ['marking', 'guarantor', 'need-guarantor', 'approved', 'final']
+const OFFER_PHASES: readonly unknown[] = ['marking', 'guarantor', 'need-guarantor', 'approved', 'final', 'cancelled']
+const OFFER_APPROVALS: readonly unknown[] = ['agreement', 'guarantor', 'court']
 const OFFER_SIDES: readonly unknown[] = ['author', 'taker']
 
 function isSide(x: unknown): boolean {
@@ -562,9 +639,10 @@ function isOfferOutcome(r: Record<string, unknown>): boolean {
     Object.entries(nominations).every(([k, v]) => isSide(k) && typeof v === 'string') &&
     nullable(
       r.approved,
-      (a) => isSide(a.winner) && numbers(a, 'at') && (a.how === 'agreement' || a.how === 'guarantor') && orNull(a.by, 'string'),
+      (a) => isSide(a.winner) && numbers(a, 'at') && OFFER_APPROVALS.includes(a.how) && orNull(a.by, 'string'),
     ) &&
-    orNull(r.finalAt, 'number')
+    orNull(r.finalAt, 'number') &&
+    appealAndCourt(r)
   )
 }
 

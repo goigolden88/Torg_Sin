@@ -5,7 +5,8 @@
 // offer.decided, offer.declined, offer.nominated). Итоги и
 // статусы считаются, не хранятся. Ни DOM, ни Cloudflare
 import { checkAmount, FINAL_TIME, MAX_EVENT_TEXT, NEED_CHECK, NEED_CONDITION, LONG_CHECK, LONG_CONDITION } from './event'
-import type { OfferInfo, OfferView } from './protocol'
+import { appealView, courtVerdict, courtView, type CourtCase } from './court'
+import type { AppealView, CourtView, OfferInfo, OfferView } from './protocol'
 import { foldLog, type LogEntry, type RoomState } from './room'
 
 const DAY = 24 * 60 * 60 * 1000
@@ -330,7 +331,8 @@ export function guarantorTurn(o: OfferState): number {
   return o.disagreedAt === null ? silence : Math.min(o.disagreedAt, silence)
 }
 
-export type OfferPhase = 'marking' | 'guarantor' | 'need-guarantor' | 'approved' | 'final'
+// cancelled — суд отменил пари (Р-24), phaseOf его не даёт: только offerOutcome с делом суда
+export type OfferPhase = 'marking' | 'guarantor' | 'need-guarantor' | 'approved' | 'final' | 'cancelled'
 
 // Ход исхода на now: решение у гаранта — 3 дня с мига, как перешло к нему (назначен сторонами позже —
 // с назначения); не решил или отказался — нужен другой гарант
@@ -477,19 +479,40 @@ export type OfferOutcome = {
   guarantorUntil: number | null // до какого мига решает нынешний гарант; утверждено — null
   needSince: number | null // с какого мига нужен другой гарант
   nominations: Partial<Record<OfferSide, string>>
-  approved: { winner: OfferSide; at: number; how: 'agreement' | 'guarantor'; by: string | null } | null
-  finalAt: number | null // согласием — сразу; гарантом — через 7 дней (апелляция — этап 4)
+  approved: { winner: OfferSide; at: number; how: 'agreement' | 'guarantor' | 'court'; by: string | null } | null
+  finalAt: number | null // согласием — сразу; гарантом — через 7 дней; апелляция — с решения суда (Р-24)
+  // Суда нет — полей нет: ответ как до этапа 4 (всегда — с подъёмом версии протокола, задача сервера)
+  appeal?: AppealView | null
+  court?: CourtView | null
 }
 
-// Исход пари на now (время сервера), без будильника. Не принято — null
-export function offerOutcome(o: OfferState, now: number): OfferOutcome | null {
+// Исход пари на now (время сервера), без будильника. Не принято — null. court — дело суда по пари
+// (roomAppeals в appeal.ts; Р-24): апелляция подана до окончательности — окончательное с решения суда;
+// «оставить» (или большинства нет) — прежний исход; «изменить» — утверждён судом; «отменить» — без выплат
+export function offerOutcome(o: OfferState, now: number, court: CourtCase | null = null): OfferOutcome | null {
   if (!o.accepted) return null
-  const { phase, turnAt, until, needSince } = phaseOf(o, now)
-  const approved = o.agreed
+  const base = phaseOf(o, now)
+  const { turnAt, until, needSince } = base
+  let phase: OfferPhase = base.phase
+  let approved: OfferOutcome['approved'] = o.agreed
     ? { winner: o.agreed.winner, at: o.agreed.at, how: 'agreement' as const, by: null }
     : o.decision
       ? { winner: o.decision.winner, at: o.decision.at, how: 'guarantor' as const, by: o.decision.by }
       : null
+  let finalAt = approved ? (approved.how === 'agreement' ? approved.at : approved.at + FINAL_TIME) : null
+  if (court?.appeal && approved) {
+    const decision = courtVerdict(court, now)
+    phase = 'approved'
+    finalAt = null
+    if (decision?.verdict === 'cancel') phase = 'cancelled'
+    else if (decision) {
+      if (decision.verdict === 'change' && 'winner' in decision) {
+        approved = { winner: decision.winner, at: decision.at, how: 'court', by: null }
+      }
+      phase = 'final'
+      finalAt = decision.at
+    }
+  }
   return {
     phase,
     marks: currentMarks(o),
@@ -499,13 +522,14 @@ export function offerOutcome(o: OfferState, now: number): OfferOutcome | null {
     needSince,
     nominations: { ...o.nominations },
     approved,
-    finalAt: approved ? (approved.how === 'agreement' ? approved.at : approved.at + FINAL_TIME) : null,
+    finalAt,
+    ...(court && { appeal: appealView(court), court: courtView(court, now) }),
   }
 }
 
 // Итог пари для «Расчёта»: только окончательное — плюс или минус каждой стороны; иначе пусто
-export function offerResult(o: OfferState, now: number): { memberId: string; net: number }[] {
-  const out = offerOutcome(o, now)
+export function offerResult(o: OfferState, now: number, court: CourtCase | null = null): { memberId: string; net: number }[] {
+  const out = offerOutcome(o, now, court)
   if (!o.accepted || !out?.approved || out.phase !== 'final') return []
   const stakes = offerStakes(o.odds, o.amount)
   if (!stakes.ok) return []
@@ -599,14 +623,14 @@ export function offerInfo(o: OfferState): OfferInfo {
 }
 
 // Пари для ответа GET /rooms/<номер>: статус на now (время сервера), кто принял, отзыв, встречное;
-// исход (Р-23) — offerOutcome на now, у непринятого — null
-export function offerView(o: OfferState, now: number): OfferView {
+// исход (Р-23) — offerOutcome на now, у непринятого — null; court — дело суда по пари (Р-24)
+export function offerView(o: OfferState, now: number, court: CourtCase | null = null): OfferView {
   return {
     ...offerInfo(o),
     status: offerStatus(o, now),
     accepted: o.accepted && { by: o.accepted.by, at: o.accepted.at },
     withdrawnAt: o.withdrawnAt,
     closedBy: o.closedBy && { offer: o.closedBy.offer, at: o.closedBy.at },
-    outcome: offerOutcome(o, now),
+    outcome: offerOutcome(o, now, court),
   }
 }

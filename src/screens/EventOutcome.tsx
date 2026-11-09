@@ -212,11 +212,12 @@ function NotProposed({ room, event, now }: { room: SavedRoom; event: EventView; 
   )
 }
 
-const HOW: Record<'unopposed' | 'host' | 'vote' | 'agreed', string> = {
+const HOW: Record<'unopposed' | 'host' | 'vote' | 'agreed' | 'court', string> = {
   unopposed: 'без возражений',
   host: 'ведущим',
   vote: 'голосованием',
   agreed: 'все ставившие согласны',
+  court: 'судом', // Р-24: суд — следующая задача сайта; тип требует подписи
 }
 
 // Исход предложен: строка статуса сверху, ниже — история (предложение, возражения, решение, голоса)
