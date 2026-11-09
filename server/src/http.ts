@@ -125,7 +125,7 @@ export async function handle(request: Request, deps: RoomsDeps): Promise<Respons
 // expectedAt, guarantor?, requestId? } — предложить; …/offers/<пари>/accept | revoke { requestId? };
 // …/offers/<пари>/counter { odds?, amount?, closesAt, requestId? } — встречное; исход (Р-23):
 // …/mark | decide { winner: "author" | "taker", requestId? }, …/decline { requestId? },
-// …/nominate { guarantor, requestId? }
+// …/nominate { guarantor, requestId? }; апелляция и суд (Р-25) — courtAction
 async function offerAction(
   roomId: string,
   offerId: string | undefined,
@@ -210,7 +210,7 @@ function oddsOf(x: unknown): Odds | undefined {
 }
 
 // POST /rooms/<номер>/events — завести; …/events/<событие>/bets | clarify | cancel;
-// исход — …/propose | object | agree | decide | vote
+// исход — …/propose | object | agree | decide | vote; апелляция и суд (Р-25) — courtAction
 async function eventAction(
   roomId: string,
   eventId: string | undefined,
