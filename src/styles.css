@@ -977,6 +977,92 @@ h3 {
   background: var(--surface);
 }
 
+/* Апелляция и суд в блоке исхода (Р-24): свои подблоки под чертой; места суда — карточками в одну
+   колонку на телефоне, от 600 px — строкой с переносом; зерно жребия — мелко, переносится по знакам */
+.court {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.court > p {
+  margin: 0;
+}
+
+.court-box {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--line);
+}
+
+.court-box h4 {
+  margin: 0;
+}
+
+.court-box > p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.seats {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.seats > li {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  overflow-wrap: anywhere;
+}
+
+.seats > li.voted {
+  border-color: var(--ok);
+}
+
+.seat-who {
+  font-weight: 600;
+}
+
+.seed {
+  font-size: 0.85rem;
+}
+
+.seed-value {
+  font-family: ui-monospace, monospace;
+  word-break: break-all;
+}
+
+.court-badge {
+  display: inline-block;
+  margin-left: 0.5rem;
+  vertical-align: middle;
+}
+
+@media (min-width: 600px) {
+  .seats > li {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: baseline;
+    column-gap: 0.75rem;
+  }
+
+  .seats > li > .row,
+  .seats > li > form {
+    flex-basis: 100%;
+  }
+}
+
 .payouts-box {
   display: flex;
   flex-direction: column;

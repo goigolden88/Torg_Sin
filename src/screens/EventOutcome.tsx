@@ -7,13 +7,16 @@
 // одно действие, Р-13). Esc закрывает окно и форму здесь, не уводя с экрана
 import { useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
 import { agreeOutcome, decideOutcome, objectOutcome, proposeOutcome, voteOutcome, type Result } from '../api'
+import type { AppealTarget } from '../rules/appeal'
 import { formatDateTime } from '../rules/date'
-import { AUTHOR_SILENCE, betOn, checkObjection, eventStatus, hostDecides, mayPropose, MAX_EVENT_TEXT } from '../rules/event'
+import { AUTHOR_SILENCE, betOn, checkObjection, eventOutcome, eventStatus, hostDecides, mayPropose, MAX_EVENT_TEXT } from '../rules/event'
 import { formatOdds, poolOdds } from '../rules/pool'
-import type { EventView, OutcomeView, Payout } from '../rules/protocol'
+import type { CourtVerdict, EventView, OutcomeView, Payout } from '../rules/protocol'
 import { formKey, requestFor, type PendingRequest } from '../rules/request'
 import { ulid } from '../rules/ulid'
 import type { SavedRoom } from '../store/db'
+import { CourtBlock } from './CourtBlock'
+import { courtCaseOf, eventState } from './courtParts'
 import { money, nameOf } from './eventParts'
 import type { Sync } from './useRoom'
 
@@ -43,12 +46,12 @@ const CHOICE = {
 }
 type Choice = keyof typeof CHOICE
 
-// Что подтверждаем: вопрос, пояснение, кнопка; send — запрос с номером; slot — событие и действие
+// Что подтверждаем: вопрос, пояснение (строками), кнопка; send — запрос с номером; slot — событие и действие
 type Ask = {
   slot: string
   form: string
   question: string
-  note: string
+  note: string[]
   button: string
   busyLabel: string
   send: (requestId: string) => Promise<Result<unknown>>
@@ -115,7 +118,7 @@ export function EventOutcome({
       slot: event.id + '/' + action,
       form: formKey(room.id, event.id, action, outcome),
       question: c.question(title(outcome)),
-      note: c.note,
+      note: [c.note],
       button: c.button,
       busyLabel: c.busyLabel,
       send: (requestId) => c.send(room.server, room.id, room.key, event.id, { outcome, requestId }),
@@ -128,7 +131,7 @@ export function EventOutcome({
       slot: event.id + '/object',
       form: formKey(room.id, event.id, 'object', reason),
       question: `Возразить против „${title(o.proposal.outcome)}“?`,
-      note: `Причина: ${reason}. Возражение не отозвать; исход решит ${hostDecides(roles) ? 'ведущий' : 'голосование не ставивших'}.`,
+      note: [`Причина: ${reason}. Возражение не отозвать; исход решит ${hostDecides(roles) ? 'ведущий' : 'голосование не ставивших'}.`],
       button: 'Возразить',
       busyLabel: 'Отправляю…',
       send: (requestId) => objectOutcome(room.server, room.id, room.key, event.id, { reason, requestId }),
@@ -141,17 +144,44 @@ export function EventOutcome({
       slot: event.id + '/agree',
       form: formKey(room.id, event.id, 'agree', o.proposal.id),
       question: `Согласиться с исходом „${title(o.proposal.outcome)}“?`,
-      note: 'Согласие не отозвать. Когда согласятся все ставившие, исход утвердится сразу и станет окончательным.',
+      note: [
+        'Соглашаясь, вы отказываетесь возразить и подать апелляцию.',
+        'Согласие не отозвать. Когда согласятся все ставившие, исход утвердится сразу и станет окончательным.',
+      ],
       button: 'Согласен',
       busyLabel: 'Отправляю…',
       send: (requestId) => agreeOutcome(room.server, room.id, room.key, event.id, { requestId }),
     })
   }
 
+  // Апелляция и суд (Р-24): спор для правил — событие из ответа (eventState), дело суда — courtCaseOf.
+  // «Оставить» — исход, утверждённый до суда (eventOutcome без суда — как у правил апелляции)
+  const dispute: AppealTarget = { kind: 'event', event: eventState(event, room.hostId) }
+  const court = o ? courtCaseOf(event.id, o, room.hostId) : null
+  const before = eventOutcome(dispute.event, now)?.approved?.outcome ?? null
+  const label = (v: CourtVerdict) =>
+    v.verdict === 'keep' ? `оставить „${before === null ? '' : title(before)}“` : v.verdict === 'cancel' ? 'отменить — вернуть ставки' : `изменить на „${'outcome' in v ? title(v.outcome) : ''}“`
+
   return (
     <section className="outcome" aria-label="Исход" onKeyDown={onKey}>
       <h3>Исход</h3>
       {o ? <OutcomeState room={room} event={event} o={o} now={now} title={title} /> : <NotProposed room={room} event={event} now={now} />}
+      {o && (
+        <CourtBlock
+          room={room}
+          kind="event"
+          target={event.id}
+          dispute={dispute}
+          c={court}
+          now={now}
+          online={online}
+          changes={event.outcomes.map((x) => ({ verdict: 'change', outcome: x.id }))}
+          label={label}
+          onAsk={(a) =>
+            setAsk({ slot: event.id + '/court', form: a.form, question: a.question, note: a.body, button: a.button, busyLabel: a.busyLabel, send: a.run })
+          }
+        />
+      )}
       {!online && (mayProposeNow || mayObject || mayDecide || mayVote) && <p className="hint">Действовать можно, когда есть связь с сервером.</p>}
 
       {mayProposeNow && (
@@ -217,7 +247,7 @@ const HOW: Record<'unopposed' | 'host' | 'vote' | 'agreed' | 'court', string> = 
   host: 'ведущим',
   vote: 'голосованием',
   agreed: 'все ставившие согласны',
-  court: 'судом', // Р-24: суд — следующая задача сайта; тип требует подписи
+  court: 'судом', // Р-24: суд изменил исход по апелляции или решил «ждёт суда»
 }
 
 // Исход предложен: строка статуса сверху, ниже — история (предложение, возражения, решение, голоса)
@@ -242,10 +272,12 @@ function OutcomeState({
 
   let head
   if (o.status === 'cancelled') {
+    // Отменил суд (Р-24): событие не отменено, а решение суда — «отменить» или большинства нет у «ждёт суда»
+    const byCourt = !event.cancelled && !!o.court?.decision
     head = (
       <>
-        <p className="outcome-head cancelled">Событие отменено — исход не действует, выплат нет</p>
-        {approved && <p className="hint">Был утверждён „{title(approved.outcome)}“ до отмены.</p>}
+        <p className="outcome-head cancelled">{byCourt ? 'Событие отменено судом — ставки возвращены' : 'Событие отменено — исход не действует, выплат нет'}</p>
+        {approved && <p className="hint">Был утверждён „{title(approved.outcome)}“ до {byCourt ? 'суда' : 'отмены'}.</p>}
       </>
     )
   } else if (approved) {
@@ -256,7 +288,15 @@ function OutcomeState({
         </p>
         <p className="hint">
           {formatDateTime(approved.at)}.{' '}
-          {o.status === 'final' ? <strong className="final">Окончательно.</strong> : o.finalAt ? `Станет окончательным ${formatDateTime(o.finalAt)}.` : ''}
+          {o.status === 'final' ? (
+            <strong className="final">Окончательно.</strong>
+          ) : o.finalAt ? (
+            `Окончательно ${formatDateTime(o.finalAt)}, если до неё нет апелляции.`
+          ) : o.appeal ? (
+            'Подана апелляция — окончательно, когда решит суд.'
+          ) : (
+            ''
+          )}
         </p>
       </>
     )
@@ -281,8 +321,10 @@ function OutcomeState({
   } else {
     head = (
       <>
-        <p className="outcome-head court">Ждёт суда (этап 4)</p>
-        <p className="hint">{courtReason(o)}</p>
+        <p className="outcome-head court">Ждёт суда</p>
+        <p className="hint">
+          {courtReason(o)} {o.court ? 'Суд собран — ниже.' : 'Судить некому: все участники заинтересованы; ведущий может отменить событие с причиной.'}
+        </p>
       </>
     )
   }
@@ -550,7 +592,9 @@ function ConfirmAction({
     <div className="modal-backdrop" onClick={() => !busy.current && onClose()}>
       <div className="modal" role="dialog" aria-modal="true" aria-label={ask.question} onClick={(e) => e.stopPropagation()}>
         <p className="modal-question">{ask.question}</p>
-        <p>{ask.note}</p>
+        {ask.note.map((line, i) => (
+          <p key={i}>{line}</p>
+        ))}
         {error && (
           <p className="error" role="alert">
             {error}

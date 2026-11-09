@@ -7,11 +7,12 @@ import { useState, type FormEvent } from 'react'
 import { declineOffer, decideOffer, markOffer, nominateGuarantor } from '../api'
 import { formatDateTime } from '../rules/date'
 import { checkDecide, checkDecline, checkMark, checkNominate, offerOutcome, sideOf, type OfferOutcome as Outcome, type OfferSide } from '../rules/offer'
-import type { OfferView } from '../rules/protocol'
+import type { CourtVerdict, OfferView } from '../rules/protocol'
 import { formKey } from '../rules/request'
 import type { SavedRoom } from '../store/db'
+import { CourtBlock } from './CourtBlock'
 import { nameOf } from './eventParts'
-import { netsOf, offerState, roomRolesOf, sideMember, who, winnerLabel, type OfferAsk } from './offerParts'
+import { netsOf, offerCourt, offerState, roomRolesOf, sideMember, who, winnerLabel, type OfferAsk } from './offerParts'
 
 const SIDES: OfferSide[] = ['author', 'taker']
 const ROLE: Record<OfferSide, string> = { author: 'автор', taker: 'соперник' }
@@ -30,7 +31,10 @@ export function OfferOutcome({
   onAsk: (ask: OfferAsk) => void
 }) {
   const state = offerState(offer)
-  const out = offerOutcome(state, now)
+  // С судом (Р-24) — как у сервера: апелляция, решение суда, отмена; без суда — решение до суда
+  const court = offerCourt(room, offer)
+  const out = offerOutcome(state, now, court)
+  const before = offerOutcome(state, now)?.approved?.winner ?? null
   if (!out || !offer.accepted) return null
   const started = now >= offer.expectedAt || out.marks.author !== null || out.marks.taker !== null || out.phase !== 'marking'
   if (!started) return null
@@ -50,6 +54,12 @@ export function OfferOutcome({
     return n ? `${winnerLabel(winner)} — ${n.winner} получает банк ${n.bank}: ${n.lines.map((l) => `${l.name} ${l.text}`).join(', ')}` : winnerLabel(winner)
   }
   const cap = (s: string) => s[0].toUpperCase() + s.slice(1)
+  const label = (v: CourtVerdict) =>
+    v.verdict === 'keep'
+      ? `оставить: ${before ? winnerLabel(before) : ''}`
+      : v.verdict === 'cancel'
+        ? 'отменить — вернуть ставки'
+        : `изменить на „${'winner' in v ? winnerLabel(v.winner) : ''}“`
 
   function askMark(winner: OfferSide) {
     if (!mySide) return
@@ -125,8 +135,20 @@ export function OfferOutcome({
           )
         })}
       </ul>
-      {out.approved && <Result room={room} offer={offer} winner={out.approved.winner} />}
+      {out.approved && out.phase !== 'cancelled' && <Result room={room} offer={offer} winner={out.approved.winner} />}
       {out.phase === 'need-guarantor' && <Nominations room={room} offer={offer} out={out} />}
+      <CourtBlock
+        room={room}
+        kind="offer"
+        target={offer.id}
+        dispute={{ kind: 'offer', offer: state }}
+        c={court}
+        now={now}
+        online={online}
+        changes={SIDES.map((w) => ({ verdict: 'change', winner: w }))}
+        label={label}
+        onAsk={onAsk}
+      />
       {!online && (mayMark || mayDecide || mayDecline || mayNominate) && <p className="hint">Действовать можно, когда есть связь с сервером.</p>}
 
       {mayMark && mySide && (
@@ -223,7 +245,25 @@ function Head({ room, out, guarantor }: { room: SavedRoom; out: Outcome; guarant
     )
   }
   const a = out.approved
+  if (out.phase === 'cancelled') {
+    return (
+      <>
+        <p className="outcome-head cancelled">Пари отменено судом — ставки возвращены</p>
+        {a && <p className="hint">Было утверждено гарантом: {winnerLabel(a.winner)}. Выплат нет.</p>}
+      </>
+    )
+  }
   if (!a) return null
+  if (a.how === 'court') {
+    return (
+      <>
+        <p className="outcome-head approved">Утверждено судом: {winnerLabel(a.winner)}, окончательно</p>
+        <p className="hint">
+          {formatDateTime(a.at)}. <strong className="final">Окончательно.</strong>
+        </p>
+      </>
+    )
+  }
   if (a.how === 'agreement') {
     return (
       <>
@@ -238,11 +278,18 @@ function Head({ room, out, guarantor }: { room: SavedRoom; out: Outcome; guarant
   return (
     <>
       <p className="outcome-head approved">
-        Утверждено гарантом {by}, окончательно{out.phase !== 'final' && out.finalAt !== null ? ' ' + formatDateTime(out.finalAt) : ''}
+        Утверждено гарантом {by}
+        {out.phase === 'final' ? ', окончательно' : out.finalAt !== null ? ', окончательно ' + formatDateTime(out.finalAt) : ' — обжалуется в суде'}
       </p>
       <p className="hint">
         Решение — {formatDateTime(a.at)}.{' '}
-        {out.phase === 'final' ? <strong className="final">Окончательно.</strong> : 'Окончательным станет через 7 дней после решения.'}
+        {out.phase === 'final' ? (
+          <strong className="final">Окончательно.</strong>
+        ) : out.finalAt !== null ? (
+          `Окончательно ${formatDateTime(out.finalAt)}, если до неё нет апелляции.`
+        ) : (
+          'Подана апелляция — окончательно, когда решит суд.'
+        )}
       </p>
     </>
   )

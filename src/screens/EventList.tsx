@@ -1,10 +1,12 @@
 // «События» в комнате: сначала открытые (ближний срок сверху, с отсчётом до закрытия приёма),
 // ниже закрытые и отменённые (новые сверху); пусто — «Событий пока нет». События — последнее
-// известное с сервера (у комнаты на устройстве), отсчёт — по времени сервера
+// известное с сервера (у комнаты на устройстве), отсчёт — по времени сервера. Участник — член суда
+// по событию и ещё не голосовал — значок «вы в суде» (Р-24)
 import { eventStatus } from '../rules/event'
 import { poolOdds } from '../rules/pool'
 import type { EventView } from '../rules/protocol'
 import { savedEvents, type SavedRoom } from '../store/db'
+import { awaitsMyVote } from './courtParts'
 import { eventHref, money, StatusLine } from './eventParts'
 import { useServerNow, type Clock } from './useRoom'
 
@@ -47,7 +49,10 @@ function Group({ title, room, events, now }: { title: string; room: SavedRoom; e
           return (
             <li key={e.id}>
               <a className="event-item" href={eventHref(room.id, e.id)}>
-                <span className="event-name">{e.condition}</span>
+                <span className="event-name">
+                  {e.condition}
+                  {awaitsMyVote(e.outcome, room.memberId, now) && <span className="badge court-badge">вы в суде</span>}
+                </span>
                 <StatusLine event={e} now={now} />
                 <span className="hint">{bank > 0 ? `банк ${money(bank, room.currency)}, ставок: ${e.bets.length}` : 'ставок нет'}</span>
               </a>

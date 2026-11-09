@@ -66,6 +66,18 @@ import {
   type NominateRequest,
   type NominateResponse,
   type OfferWinnerRequest,
+  isAppealResponse,
+  isJoinAppealResponse,
+  isJudgeResponse,
+  isReplaceJurorResponse,
+  type AppealRequest,
+  type AppealResponse,
+  type JoinAppealRequest,
+  type JoinAppealResponse,
+  type JudgeRequest,
+  type JudgeResponse,
+  type ReplaceJurorRequest,
+  type ReplaceJurorResponse,
 } from './rules/protocol'
 
 export const OFFLINE = 'Нет связи с сервером'
@@ -291,4 +303,60 @@ export function declineOffer(server: string, roomId: string, key: string, offerI
 // POST …/offers/<пари>/nominate — сторона называет нового гаранта
 export function nominateGuarantor(server: string, roomId: string, key: string, offerId: string, request: Omit<NominateRequest, 'v'>): Promise<Result<NominateResponse>> {
   return call(offerUrl(server, roomId, offerId, 'nominate'), post(request, key), isNominateResponse)
+}
+
+// Апелляция и суд (Р-25) — у события и у пари одними адресами: …/events/<событие>/ или
+// …/offers/<пари>/ + appeal | appeal/join | judge | replace. Повтор с тем же requestId — тот же ответ
+export type CourtKind = 'event' | 'offer'
+
+function courtUrl(server: string, roomId: string, kind: CourtKind, target: string, action: string): string {
+  return kind === 'event' ? eventUrl(server, roomId, target, action) : offerUrl(server, roomId, target, action)
+}
+
+// POST …/appeal — подать апелляцию с причиной; суд собирается в этот миг
+export function fileAppeal(
+  server: string,
+  roomId: string,
+  key: string,
+  kind: CourtKind,
+  target: string,
+  request: Omit<AppealRequest, 'v'>,
+): Promise<Result<AppealResponse>> {
+  return call(courtUrl(server, roomId, kind, target, 'appeal'), post(request, key), isAppealResponse)
+}
+
+// POST …/appeal/join — присоединиться к поданной апелляции
+export function joinAppeal(
+  server: string,
+  roomId: string,
+  key: string,
+  kind: CourtKind,
+  target: string,
+  request: Omit<JoinAppealRequest, 'v'>,
+): Promise<Result<JoinAppealResponse>> {
+  return call(courtUrl(server, roomId, kind, target, 'appeal/join'), post(request, key), isJoinAppealResponse)
+}
+
+// POST …/judge — голос члена суда: оставить, изменить на …, отменить
+export function judgeCourt(
+  server: string,
+  roomId: string,
+  key: string,
+  kind: CourtKind,
+  target: string,
+  request: Omit<JudgeRequest, 'v'>,
+): Promise<Result<JudgeResponse>> {
+  return call(courtUrl(server, roomId, kind, target, 'judge'), post(request, key), isJudgeResponse)
+}
+
+// POST …/replace — ведущий досрочно заменяет не проголосовавшего члена суда
+export function replaceJuror(
+  server: string,
+  roomId: string,
+  key: string,
+  kind: CourtKind,
+  target: string,
+  request: Omit<ReplaceJurorRequest, 'v'>,
+): Promise<Result<ReplaceJurorResponse>> {
+  return call(courtUrl(server, roomId, kind, target, 'replace'), post(request, key), isReplaceJurorResponse)
 }

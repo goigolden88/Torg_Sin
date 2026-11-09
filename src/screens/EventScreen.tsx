@@ -341,9 +341,14 @@ function Position({ room, event }: { room: SavedRoom; event: EventView }) {
   let body
   if (mine.length === 0) {
     body = <p className="hint">{approved ? 'Вы не ставили.' : 'Вы ещё не ставили.'}</p>
-  } else if (event.cancelled) {
+  } else if (event.cancelled || o?.status === 'cancelled') {
+    // Отменено автором, ведущим или судом (Р-24) — возврат из refunds
     const refund = event.refunds.find((r) => r.memberId === me)?.amount ?? 0
-    body = <p>Событие отменено — вам вернётся {money(refund, room.currency)}.</p>
+    body = (
+      <p>
+        Событие отменено{event.cancelled ? '' : ' судом'} — вам вернётся {money(refund, room.currency)}.
+      </p>
+    )
   } else if (approved && o && result) {
     const sum = (n: number) => money(n, room.currency)
     const final = o.status === 'final'

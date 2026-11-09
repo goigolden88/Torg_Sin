@@ -1,13 +1,17 @@
-// «Мои комнаты»: список своих комнат и открытое — создание или комната.
+// «Мои комнаты»: список своих комнат и открытое — создание или комната. У комнаты, где участник —
+// член суда и ещё не голосовал, — значок «вы в суде» (по последнему ответу комнаты; копии старше
+// 5 минут при открытии спрашиваются у сервера один раз).
 // Раскладка «список + открытое» (.split): на компьютере — рядом; на телефоне открытое —
 // отдельным экраном с «Назад» (класс .open у .rooms), разметка одна. Под списком — «Вставить
 // ссылку» (PasteLink): у приложения с экрана «Домой» адресной строки нет
 import { useCallback, useEffect, useState } from 'react'
+import { fetchRoom } from '../api'
 import { currencyLabel } from '../rules/currency'
 import type { DeviceLink, InviteLink } from '../rules/link'
-import { store, type SavedRoom } from '../store/db'
+import { savedEvents, savedOffers, store, withState, type SavedRoom } from '../store/db'
 import { BackLink } from './BackLink'
 import { ClaimDevice } from './ClaimDevice'
+import { roomAwaitsMyVote } from './courtParts'
 import { CreateRoom } from './CreateRoom'
 import { EventScreen } from './EventScreen'
 import { JoinRoom } from './JoinRoom'
@@ -35,15 +39,6 @@ export function Rooms({ view }: { view: RoomsView }) {
   const [rooms, setRooms] = useState<SavedRoom[] | null>(null)
   const [storeError, setStoreError] = useState('')
 
-  useEffect(() => {
-    store()
-      .listRooms()
-      .then(setRooms, () => {
-        setRooms([])
-        setStoreError(STORE_FAILED)
-      })
-  }, [])
-
   // Новая комната — сверху, обновлённая — на своём месте
   const upsert = useCallback((room: SavedRoom) => {
     setRooms((prev) => {
@@ -51,6 +46,21 @@ export function Rooms({ view }: { view: RoomsView }) {
       return list.some((r) => r.id === room.id) ? list.map((r) => (r.id === room.id ? room : r)) : [room, ...list]
     })
   }, [])
+
+  useEffect(() => {
+    store()
+      .listRooms()
+      .then(
+        (list) => {
+          setRooms(list)
+          refreshStale(list, upsert)
+        },
+        () => {
+          setRooms([])
+          setStoreError(STORE_FAILED)
+        },
+      )
+  }, [upsert])
 
   const inRoom = view.kind === 'room' || view.kind === 'event' || view.kind === 'new-event' || view.kind === 'offer' || view.kind === 'new-offer'
   const openId = inRoom ? view.id : null
@@ -84,7 +94,10 @@ export function Rooms({ view }: { view: RoomsView }) {
               {rooms.map((r) => (
                 <li key={r.id}>
                   <a className="room-item" href={'#/room/' + r.id} aria-current={r.id === openId ? 'page' : undefined}>
-                    <span className="room-name">{r.name}</span>
+                    <span className="room-name">
+                      {r.name}
+                      {roomAwaitsMyVote(r, savedEvents(r), savedOffers(r)) && <span className="badge court-badge">вы в суде</span>}
+                    </span>
                     <span className="hint">
                       {currencyLabel(r.currency)} · {participants(r.members.length)}
                       {r.hostId === r.memberId ? ' · вы ведущий' : ''}
@@ -134,6 +147,27 @@ export function Rooms({ view }: { view: RoomsView }) {
       </div>
     </div>
   )
+}
+
+// Копии старше 5 минут (или без ответа сервера) — один раз при открытии «Моих комнат» спросить сервер:
+// «вы в суде» — по свежему ответу, без пушей. Не вышло (нет связи, нет доступа) — остаётся копия
+const STALE = 5 * 60 * 1000
+
+function refreshStale(rooms: readonly SavedRoom[], onUpdate: (room: SavedRoom) => void): void {
+  const now = Date.now()
+  for (const room of rooms) {
+    if (room.syncedAt !== null && now - room.syncedAt <= STALE) continue
+    void fetchRoom(room.server, room.id, room.key).then(async (res) => {
+      if (!res.ok) return
+      // Пока шёл запрос, комнату могли открыть — ответ ложится поверх записи на устройстве, как у опроса
+      const saved = (await store().getRoom(room.id).catch(() => undefined)) ?? room
+      const next = withState(saved, res.value, Date.now())
+      onUpdate(next)
+      await store()
+        .saveRoom(next)
+        .catch(() => undefined)
+    })
+  }
 }
 
 // Другая ссылка — экран заново, со своим состоянием

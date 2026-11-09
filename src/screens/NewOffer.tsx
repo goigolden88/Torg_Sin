@@ -14,7 +14,7 @@ import { formKey, requestFor, type PendingRequest } from '../rules/request'
 import { ulid } from '../rules/ulid'
 import type { SavedRoom } from '../store/db'
 import { BackLink, useEscape } from './BackLink'
-import { money, nameOf } from './eventParts'
+import { money, nameOf, SMALL_ROOM, SMALL_ROOM_NOTE } from './eventParts'
 import { OddsField, oddsLabel, oddsNumber, offerHref, roomRolesOf, sideLabel, validOdds } from './offerParts'
 import { serverTime, useRoom } from './useRoom'
 
@@ -245,6 +245,7 @@ export function NewOffer({ room, onUpdate }: { room: SavedRoom; onUpdate: (room:
                 : 'Гарант решает исход, если вы с соперником разойдётесь или кто-то промолчит 3 дня. Он не принимает пари.'}
             </span>
           </fieldset>
+          {room.members.length < SMALL_ROOM && <p className="hint">{SMALL_ROOM_NOTE}</p>}
         </div>
 
         <Summary side={side} a={a} b={b} amount={amount} code={code} currency={room.currency} />
