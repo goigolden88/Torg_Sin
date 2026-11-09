@@ -1,6 +1,6 @@
 // Протокол сайта и сервера (Р-01): версия — в каждом ответе и сообщении. Чистые
 // функции и типы — ими пользуются и экран, и сервер; ни DOM, ни Cloudflare здесь нет
-export const PROTOCOL_VERSION = 2
+export const PROTOCOL_VERSION = 3
 
 // Ответ GET /health: сервер жив, его протокол и время (UTC, мс) — по нему закрываются сроки
 export type Health = { v: number; ok: true; time: number }
@@ -102,6 +102,24 @@ export type CourtView = {
 }
 // Апелляция: кто подал, когда, причина, кто присоединился
 export type AppealView = { id: string; at: number; by: string; reason: string; joined: { id: string; at: number; by: string }[] }
+
+// Апелляция и суд на сервере (Р-25). Адреса — POST …/events/<событие>/ и …/offers/<пари>/ + appeal |
+// appeal/join | judge | replace; requestId — номер запроса (ULID): повтор — тот же ответ без второй
+// записи. target — событие или пари. Действие с апелляцией или судом: кто, когда, по какому спору
+export type CourtAct = { id: string; at: number; by: string; target: string }
+// …/appeal { reason } — ставивший (не согласившийся) или сторона пари; суд собран в этот миг: зерно
+// жребия и кандидаты — в ответе (порядок жребия и места — в состоянии комнаты, court)
+export type AppealRequest = { v?: number; reason: string; requestId?: string }
+export type AppealResponse = { v: number; appeal: CourtAct & { reason: string; seed: string; candidates: string[] } }
+// …/appeal/join {} — тот, кто мог бы подать
+export type JoinAppealRequest = { v?: number; requestId?: string }
+export type JoinAppealResponse = { v: number; joined: CourtAct }
+// …/judge { verdict, outcome? | winner? } — член суда на своём месте
+export type JudgeRequest = { v?: number; verdict: CourtVerdict['verdict']; outcome?: string; winner?: OfferSide; requestId?: string }
+export type JudgeResponse = { v: number; voted: CourtAct & CourtVerdict }
+// …/replace { member, reason } — ведущий досрочно заменяет не проголосовавшего члена суда
+export type ReplaceJurorRequest = { v?: number; member: string; reason: string; requestId?: string }
+export type ReplaceJurorResponse = { v: number; replaced: CourtAct & { member: string; reason: string } }
 
 // Исход принятого пари (offerOutcome в offer.ts): marks — последняя отметка каждой стороны (null — не
 // отмечала); guarantorId — нынешний гарант; turnAt — с какого мига решает гарант; guarantorUntil — до
@@ -701,4 +719,28 @@ export function isDeclineOfferResponse(x: unknown): x is DeclineOfferResponse {
 
 export function isNominateResponse(x: unknown): x is NominateResponse {
   return recordIn(x, 'nominated', (r) => isOfferAct(r) && strings(r, 'guarantor'))
+}
+
+function isCourtAct(r: Record<string, unknown>): boolean {
+  return strings(r, 'id', 'by', 'target') && numbers(r, 'at')
+}
+
+export function isAppealResponse(x: unknown): x is AppealResponse {
+  return recordIn(
+    x,
+    'appeal',
+    (r) => isCourtAct(r) && strings(r, 'reason', 'seed') && Array.isArray(r.candidates) && r.candidates.every((m) => typeof m === 'string'),
+  )
+}
+
+export function isJoinAppealResponse(x: unknown): x is JoinAppealResponse {
+  return recordIn(x, 'joined', isCourtAct)
+}
+
+export function isJudgeResponse(x: unknown): x is JudgeResponse {
+  return recordIn(x, 'voted', (r) => isCourtAct(r) && isVerdict(r))
+}
+
+export function isReplaceJurorResponse(x: unknown): x is ReplaceJurorResponse {
+  return recordIn(x, 'replaced', (r) => isCourtAct(r) && strings(r, 'member', 'reason'))
 }

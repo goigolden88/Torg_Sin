@@ -34,8 +34,9 @@ export class Room extends DurableObject<Env> {
     return room.createRoom(this.ctx.storage, input, Date.now())
   }
 
+  // Чтение комнаты может дописать суд по «ждёт суда» (Р-25); зерно жребия — crypto (keys.ts)
   async state(keyHash: string): Promise<room.StateResult> {
-    return room.roomState(this.ctx.storage, keyHash)
+    return room.roomState(this.ctx.storage, keyHash, Date.now())
   }
 
   // Вход по ссылке и решения ведущего (room.act): по одному, по времени сервера

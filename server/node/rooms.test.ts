@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { afterAll } from 'vitest'
 import type { RoomStorage } from '../src/room'
 import { roomsSuite } from '../src/rooms.suite'
-import { START_TIME, type TestServer } from '../src/testing'
+import { START_TIME, testSeeds, type TestServer } from '../src/testing'
 import { startServer } from './app'
 
 const dir = mkdtempSync(join(tmpdir(), 'torgsin-'))
@@ -29,6 +29,7 @@ function recording(storage: RoomStorage, puts: string[]): RoomStorage {
 async function sqliteServer(password: string | undefined): Promise<TestServer> {
   const file = join(dir, `rooms-${++files}.sqlite`)
   const clock = { now: START_TIME }
+  const random = testSeeds()
   const puts = new Map<string, string[]>()
   const putsOf = (roomId: string) => {
     let p = puts.get(roomId)
@@ -41,6 +42,7 @@ async function sqliteServer(password: string | undefined): Promise<TestServer> {
     port: 0,
     host: '127.0.0.1',
     now: () => clock.now,
+    seed: random.next,
     wrapStorage: (roomId, storage) => recording(storage, putsOf(roomId)),
   })
   return {
@@ -49,6 +51,7 @@ async function sqliteServer(password: string | undefined): Promise<TestServer> {
     storage: server.storage,
     puts: putsOf,
     clock,
+    seeds: random.seeds,
     close: server.close,
   }
 }

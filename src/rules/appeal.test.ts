@@ -45,6 +45,10 @@ import {
   courtState,
   courtVerdict,
   drawCourt,
+  appealRecord,
+  courtRoom as courtRoomOf,
+  isAppealEntry,
+  logAppeals,
   roomAppeals,
   type AppealRecord,
   type AppealTarget,
@@ -54,7 +58,7 @@ import {
 import { eventOutcome, eventView, FINAL_TIME, OBJECTION_TIME, roomEvents, VOTING_TIME, type EventState } from './event'
 import { offerOutcome, offerResult, offerView, roomOffers, type OfferRecord, type OfferState } from './offer'
 import { isEventView, isOfferView, type CourtVerdict } from './protocol'
-import type { LogEntry } from './room'
+import { foldLog, type LogEntry, type RoomState } from './room'
 
 const HOUR = 60 * 60 * 1000
 const DAY = 24 * HOUR
@@ -773,5 +777,40 @@ describe('свёртка записей (roomAppeals)', () => {
     expect(view.outcome?.appeal?.joined.map((j) => j.by)).toEqual(['C'])
     expect(isEventView({ ...view, outcome: { ...view.outcome, court: { ...view.outcome?.court, seats: 'нет' } } })).toBe(false)
     expect(isEventView({ ...view, outcome: { ...view.outcome, appeal: { by: 'B' } } })).toBe(false)
+  })
+})
+
+describe('журнал комнаты (logAppeals, Р-25)', () => {
+  // Записи журнала — те же, что записи правил, плюс номер запроса; у court.drawn номера нет
+  const toLog = (r: AppealRecord, requestId: string): LogEntry => (r.type === 'court.drawn' ? r : { ...r, requestId }) as LogEntry
+
+  it('записи appeal.* и court.* журнала — те же дела суда, что у записей правил', () => {
+    const records = [
+      filed('B', FILED),
+      joined('C', FILED + 1),
+      replaced('H', J1, FILED + 2),
+      voted('H', FILED + 3, { verdict: 'change', outcome: '2' }),
+      voted(J2, FILED + 4, { verdict: 'keep' }),
+    ]
+    const log = [...POOL, ...records.map((r, i) => toLog(r, 'QA' + i))]
+    const cases = logAppeals(log)
+    expect(cases).toEqual(roomAppeals(records, { events: roomEvents(log), offers: [] }, ROOM))
+    expect(caseOf(cases, 'E1')?.acts.map((a) => a.type)).toEqual(['replace', 'vote', 'vote'])
+    // Номер запроса в запись правил не идёт; прочие записи журнала — не апелляция
+    expect(log.filter(isAppealEntry).map(appealRecord)).toEqual(records)
+    expect(POOL.some(isAppealEntry)).toBe(false)
+  })
+
+  it('суд по «ждёт суда» из журнала; комнаты нет — дел нет', () => {
+    const log = [...POOL, object('B', P + HOUR), toLog(drawn(P + VOTING_TIME + HOUR, ['D', 'E', 'F']), '')]
+    // Ведущий не ставил — решал бы он; без его решения «ждёт суда» не наступает: записи нет в деле
+    expect(logAppeals(log)).toEqual([])
+    const tie = [...roomLog(MEMBERS), created('H'), bet('A', '1', 300), bet('B', '2', 100), propose('A', '1'), object('B', P + HOUR)]
+    // Ведущий — предмет спора: голосуют C, D, E, F; никто не голосовал — «ждёт суда» через 72 часа
+    const at = P + HOUR + VOTING_TIME
+    const withCourt = [...tie, toLog(drawn(at, ['C', 'D', 'E', 'F']), '')]
+    expect(caseOf(logAppeals(withCourt), 'E1')).toMatchObject({ appeal: null, drawnAt: at, candidates: ['C', 'D', 'E', 'F'] })
+    expect(logAppeals(withCourt.slice(1))).toEqual([])
+    expect(courtRoomOf(foldLog(withCourt) as RoomState)).toEqual(courtRoom(MEMBERS))
   })
 })
