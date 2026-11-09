@@ -1411,6 +1411,19 @@ async function courts(cdp: Cdp, size: Size, startServer: ServerModule['startServ
       const scroll = await device.eval<number>('document.documentElement.scrollWidth - document.documentElement.clientWidth')
       if (scroll > 0) throw new Error(`${where} на ${size.width} px: прокрутка вбок ${scroll} px`)
     }
+    // Нажать, когда кнопка открыта: после перехода экран сначала показывает копию, а действия
+    // закрыты до первого ответа сервера
+    const press = async (device: Device, text: string) => {
+      const started = Date.now()
+      for (;;) {
+        try {
+          return await device.click(text)
+        } catch (e) {
+          if (Date.now() - started > TIMEOUT) throw e
+          await sleep(200)
+        }
+      }
+    }
     // Кнопки исхода, апелляции и суда не ниже 44 px; без прокрутки вбок
     const check = async (device: Device, where: string) => {
       await noScroll(device, where)
@@ -1449,7 +1462,7 @@ async function courts(cdp: Cdp, size: Size, startServer: ServerModule['startServ
     await v.waitIn(APPEAL, 'Подать апелляцию')
     await check(v, 'Событие: можно подать апелляцию')
     await v.shot('80-apellyatsiya-mozhno-podat')
-    await v.click('Подать апелляцию')
+    await press(v, 'Подать апелляцию')
     await v.click('Подать апелляцию')
     await v.waitText('Нужна причина апелляции')
     await v.fill('Причина апелляции', 'Боря срезал через протоку — по треку видно')
@@ -1473,7 +1486,7 @@ async function courts(cdp: Cdp, size: Size, startServer: ServerModule['startServ
     const z = deviceOf(zhenya)
     await z.goto(eventHref)
     await z.waitIn(APPEAL, 'Апелляция: Вера')
-    await z.click('Присоединиться')
+    await press(z, 'Присоединиться')
     await z.waitText('Присоединиться к апелляции?')
     await confirmTwice(z, 'Присоединились: Женя (вы)')
     await z.shot('82-prisoedinilsya')
@@ -1491,7 +1504,7 @@ async function courts(cdp: Cdp, size: Size, startServer: ServerModule['startServ
     await j.waitText('Вы в суде: голос до')
     await check(j, 'Событие: член суда')
     await j.shot('85-chlen-suda-golosuet')
-    await j.click('Изменить на „Нет“')
+    await press(j, 'Изменить на „Нет“')
     await j.waitIn('.modal', 'Голос не изменить.')
     await j.shot('85a-golos-podtverzhdenie')
     await confirmTwice(j, 'голос: изменить на „Нет“')
@@ -1499,7 +1512,7 @@ async function courts(cdp: Cdp, size: Size, startServer: ServerModule['startServ
     // Ведущая не заинтересована — досрочно заменяет молчащего: причина, окно, следующий по жребию
     await host.goto(eventHref)
     await host.waitIn(COURT, 'Заменить')
-    await host.click('Заменить')
+    await press(host, 'Заменить')
     await host.fill('Причина замены', 'В походе без связи — не ответит до конца недели')
     await host.click('Заменить')
     await host.waitIn('.modal', 'Место перейдёт следующему по жребию; одна замена на место.')
@@ -1538,7 +1551,7 @@ async function courts(cdp: Cdp, size: Size, startServer: ServerModule['startServ
     const offerHref = `${SITE}#/room/${room.roomId}/offer/${offer.id}`
     await v.goto(offerHref)
     await v.waitText(', если до неё нет апелляции.')
-    await v.click('Подать апелляцию')
+    await press(v, 'Подать апелляцию')
     await v.fill('Причина апелляции', 'Ветер был боковой — видно на видео')
     await v.click('Подать апелляцию')
     await v.waitIn('.modal', 'Апелляция одна на пари.')
@@ -1557,7 +1570,7 @@ async function courts(cdp: Cdp, size: Size, startServer: ServerModule['startServ
     await oj.waitIn(COURT, 'Изменить на „прав соперник“')
     await check(oj, 'Пари: член суда')
     await oj.shot('89-pari-chlen-suda')
-    await oj.click('Отменить — вернуть ставки')
+    await press(oj, 'Отменить — вернуть ставки')
     await oj.waitIn('.modal', 'Голос не изменить.')
     await confirmTwice(oj, 'голос: отменить — вернуть ставки')
     await api(server, `${rooms}/offers/${offer.id}/judge`, room.key, { verdict: 'cancel' })
