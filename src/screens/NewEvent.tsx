@@ -11,7 +11,7 @@ import { formKey, requestFor, type PendingRequest } from '../rules/request'
 import { ulid } from '../rules/ulid'
 import type { SavedRoom } from '../store/db'
 import { BackLink, useEscape } from './BackLink'
-import { eventHref } from './eventParts'
+import { eventHref, SMALL_ROOM, SMALL_ROOM_NOTE } from './eventParts'
 import { useRoom } from './useRoom'
 
 type Mode = 'yes-no' | 'own'
@@ -198,6 +198,7 @@ export function NewEvent({ room, onUpdate }: { room: SavedRoom; onUpdate: (room:
             </div>
             <span className="hint">Если спор о ком-то из участников («Боря подтянется 20 раз»): он может ставить, но не объявляет исход.</span>
           </fieldset>
+          {room.members.length < SMALL_ROOM && <p className="hint">{SMALL_ROOM_NOTE}</p>}
         </div>
 
         {error && (

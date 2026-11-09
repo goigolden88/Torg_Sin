@@ -2,6 +2,7 @@
 // итог сторон по исходу, строка статуса с отсчётом и фазой исхода по времени сервера, поле кэфа, окно
 // подтверждения. Считают правила (offer.ts), здесь — только показ
 import type { Result } from '../api'
+import type { CourtCase } from '../rules/appeal'
 import { formatCountdown, formatDateTime } from '../rules/date'
 import {
   GUARANTOR_SILENCE,
@@ -12,6 +13,7 @@ import {
   offerStakes,
   offerStatus,
   SIDE_SILENCE,
+  type OfferOutcome,
   type OfferSide,
   type OfferState,
   type OfferStakes,
@@ -19,6 +21,7 @@ import {
 } from '../rules/offer'
 import type { OfferView } from '../rules/protocol'
 import type { SavedRoom } from '../store/db'
+import { courtCaseOf } from './courtParts'
 import { money, nameOf } from './eventParts'
 
 export function offerHref(roomId: string, offerId: string): string {
@@ -45,7 +48,12 @@ function outcomeState(o: OfferView): Pick<OfferState, 'guarantorSince' | 'marks'
   if (!out) return { guarantorSince: null, marks: [], disagreedAt: null, agreed: null, decision: null, declinedAt: null, nominations: {} }
   const markAt = Math.max(o.expectedAt, out.turnAt - SIDE_SILENCE)
   const sides: OfferSide[] = ['author', 'taker']
-  const a = out.approved
+  // Суд изменил решение гаранта (Р-24): в ответе — новый исход, а правилам нужно решение гаранта, на
+  // которое подана апелляция (согласие не обжалуется): прав был другой, решено не позже подачи
+  const a =
+    out.approved?.how === 'court'
+      ? { winner: other(out.approved.winner), at: out.appeal?.at ?? out.court?.drawnAt ?? out.approved.at, how: 'guarantor' as const, by: out.guarantorId }
+      : out.approved
   return {
     guarantorSince: out.guarantorUntil === null ? null : out.guarantorUntil - GUARANTOR_SILENCE,
     marks: sides.flatMap((by) => {
@@ -85,6 +93,21 @@ export function offerState(o: OfferView): OfferState {
   }
 }
 
+// Другая сторона пари
+export function other(side: OfferSide): OfferSide {
+  return side === 'author' ? 'taker' : 'author'
+}
+
+// Дело суда по пари из ответа (courtCaseOf) — для offerOutcome и проверок апелляции; суда нет — null
+export function offerCourt(room: SavedRoom, o: OfferView): CourtCase | null {
+  return courtCaseOf(o.id, o.outcome, room.hostId)
+}
+
+// Исход пари на часах сервера с учётом суда (offerOutcome с делом суда, как у сервера)
+export function offerOutcomeOf(room: SavedRoom, o: OfferView, now: number): OfferOutcome | null {
+  return offerOutcome(offerState(o), now, offerCourt(room, o))
+}
+
 // Номер участника стороны: автор или принявший
 export function sideMember(o: OfferView, side: OfferSide): string {
   return side === 'author' ? o.authorId : (o.accepted?.by ?? '')
@@ -113,16 +136,18 @@ export function netsOf(room: SavedRoom, o: OfferView, winner: OfferSide) {
 // Строка исхода у принятого (offerOutcome на часах сервера): до «исход к» без отметок — «ждём исхода
 // к …»; дальше — фаза; окончательно — плюс выигравшего
 function acceptedLine(room: SavedRoom, offer: OfferView, now: number) {
-  const out = offerOutcome(offerState(offer), now)
+  const out = offerOutcomeOf(room, offer, now)
   if (!out || (out.phase === 'marking' && now < offer.expectedAt && !out.marks.author && !out.marks.taker)) {
     return <span className="status open">принято — ждём исхода к {formatDateTime(offer.expectedAt)}</span>
   }
   if (out.phase === 'marking') return <span className="status open">принято — ждём отметок сторон</span>
   if (out.phase === 'guarantor') return <span className="status open">решает гарант — {who(room, out.guarantorId)}</span>
   if (out.phase === 'need-guarantor') return <span className="status cancelled">нужен новый гарант</span>
+  if (out.phase === 'cancelled') return <span className="status cancelled">отменено судом — ставки возвращены</span>
   const winner = out.approved?.winner ?? 'author'
   const nets = netsOf(room, offer, winner)
   const plus = nets ? `${nets.lines.find((l) => l.side === winner)?.text} ${nets.winner}` : winnerLabel(winner)
+  if (out.phase === 'approved' && out.finalAt === null) return <span className="status open">апелляция — решает суд</span>
   if (out.phase === 'approved') {
     return (
       <span className="status open">

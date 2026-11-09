@@ -3,10 +3,12 @@
 // сверху); пусто — «Пари пока нет». У каждого — условие, кто автор и на какую сторону, кэф, суммы
 // обеих сторон, кому, статус (у принятого — фаза исхода: «ждём отметок», «решает гарант»,
 // «окончательно: +100 ₽ Аня»). Пари — последнее известное с сервера (у комнаты на устройстве),
-// статус и отсчёт — по времени сервера. На экране пари — тот же список рядом, открытое отмечено
+// статус и отсчёт — по времени сервера. На экране пари — тот же список рядом, открытое отмечено.
+// Участник — член суда по пари и ещё не голосовал — значок «вы в суде» (Р-24)
 import { offerStatus } from '../rules/offer'
 import type { OfferView } from '../rules/protocol'
 import { savedOffers, type SavedRoom } from '../store/db'
+import { awaitsMyVote } from './courtParts'
 import { offerHref, offerState, OfferStatusLine, stakesLine, toLabel, who } from './offerParts'
 import { useServerNow, type Clock } from './useRoom'
 
@@ -64,7 +66,10 @@ function Group({
           return (
             <li key={o.id}>
               <a className="event-item" href={offerHref(room.id, o.id)} aria-current={o.id === current ? 'page' : undefined}>
-                <span className="event-name">{o.condition}</span>
+                <span className="event-name">
+                  {o.condition}
+                  {awaitsMyVote(o.outcome, room.memberId, now) && <span className="badge court-badge">вы в суде</span>}
+                </span>
                 <span className="hint">
                   {o.counterTo !== null ? 'встречное · ' : ''}автор — {who(room, o.authorId)}, кому — {toLabel(room, o)}
                 </span>

@@ -16,6 +16,11 @@ export function nameOf(room: SavedRoom, memberId: string | null): string {
   return room.members.find((m) => m.id === memberId)?.name ?? 'участник'
 }
 
+// Комната меньше 4 участников: незаинтересованных в споре может не остаться — суду некого собрать
+// (Архитектура, «Крайние случаи»: экран предупреждает при создании события и пари)
+export const SMALL_ROOM = 4
+export const SMALL_ROOM_NOTE = 'В маленькой комнате суда может не хватить: судят только не ставившие.'
+
 export function eventHref(roomId: string, eventId: string): string {
   return `#/room/${roomId}/event/${eventId}`
 }
