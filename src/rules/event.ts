@@ -1,6 +1,7 @@
 // События-пул (Р-04): шаблон «Условие / Как проверяем / Срок», исходы, ставки, уточнения,
 // отмена. Записи — в журнале комнаты (room.ts, LogEntry); здесь — проверка формы и состояние
 // событий из журнала. Деньги пула (возврат при отмене) — pool.ts. Ни DOM, ни Cloudflare
+import { appealView, courtVerdict, courtView, type CourtCase } from './court'
 import { settlePool, type PoolBet } from './pool'
 import type {
   Agreement,
@@ -291,9 +292,10 @@ export function eventBank(e: EventState): number {
   return e.bets.reduce((s, b) => s + b.amount, 0)
 }
 
-// Возврат при отмене — расчёт пула «без игры» (pool.ts): каждому его сумма
-export function eventRefunds(e: EventState): { memberId: string; amount: number }[] {
-  if (!e.cancelled) return []
+// Возврат при отмене — расчёт пула «без игры» (pool.ts): каждому его сумма. Отменено событие или
+// исход (outcome — eventOutcome: «отменить» суда или «ждёт суда» без большинства, Р-24)
+export function eventRefunds(e: EventState, outcome: OutcomeView | null = null): { memberId: string; amount: number }[] {
+  if (!e.cancelled && outcome?.status !== 'cancelled') return []
   return settlePool(poolBets(e), null).payouts.map((p) => ({ memberId: p.memberId, amount: p.payout }))
 }
 
@@ -361,8 +363,9 @@ export function voteWinner(votes: readonly OutcomeMark[]): string | null {
 // кроме предложившего, не ставил — в миг предложения; Р-21); иначе «утверждён сам» через сутки
 // без возражения, голосование кончается через 72 часа или когда проголосовали все, «окончательный» —
 // через 7 дней после утверждения. Не предложен — null. Отменённое событие — статус «отменено» на
-// любом шаге, без выплат и без finalAt: окончательным не станет (возврат — eventRefunds; Р-19)
-export function eventOutcome(e: EventState, now: number): OutcomeView | null {
+// любом шаге, без выплат и без finalAt: окончательным не станет (возврат — eventRefunds; Р-19).
+// court — дело суда по событию (roomAppeals в appeal.ts; Р-24), нет — null
+export function eventOutcome(e: EventState, now: number, court: CourtCase | null = null): OutcomeView | null {
   const p = e.proposal
   if (!p) return null
   const objectionUntil = p.at + OBJECTION_TIME
@@ -401,10 +404,22 @@ export function eventOutcome(e: EventState, now: number): OutcomeView | null {
   }
   let settled: ReturnType<typeof settlePool> | null = null
   // Согласием всех — окончательный сразу: апелляцию подают ставившие, а они согласны (Р-21)
-  const finalAt = approved ? approved.at + (approved.how === 'agreed' ? 0 : FINAL_TIME) : null
-  if (e.cancelled) status = 'cancelled'
-  else if (approved && finalAt !== null) {
-    status = now >= finalAt ? 'final' : 'approved'
+  let finalAt = approved ? approved.at + (approved.how === 'agreed' ? 0 : FINAL_TIME) : null
+  // Суд (Р-24): апелляция подана до окончательности — окончательный с решения суда; «изменить» —
+  // утверждён судом; «отменить» — отменено с возвратом. Суд по «ждёт суда» — «изменить» или отмена
+  let courtCancels = false
+  const decision = court && courtVerdict(court, now)
+  if (court && (court.appeal ? approved !== null : status === 'court')) {
+    finalAt = null
+    if (decision?.verdict === 'change' && 'outcome' in decision) {
+      approved = { outcome: decision.outcome, at: decision.at, how: 'court', by: null }
+      finalAt = decision.at
+    } else if (decision?.verdict === 'keep' && court.appeal) finalAt = decision.at
+    else if (decision) courtCancels = true
+  }
+  if (e.cancelled || courtCancels) status = 'cancelled'
+  else if (approved) {
+    status = finalAt !== null && now >= finalAt ? 'final' : 'approved'
     settled = settlePool(poolBets(e), approved.outcome)
   }
   return {
@@ -419,9 +434,11 @@ export function eventOutcome(e: EventState, now: number): OutcomeView | null {
     votingUntil,
     votes,
     approved,
-    finalAt: e.cancelled ? null : finalAt,
+    finalAt: e.cancelled || courtCancels ? null : finalAt,
     void: settled?.void ?? false,
     payouts: settled?.payouts ?? [],
+    // Суда нет — полей нет: ответ как до этапа 4 (всегда — с подъёмом версии протокола, задача сервера)
+    ...(court && { appeal: appealView(court), court: courtView(court, now) }),
   }
 }
 
@@ -445,16 +462,18 @@ export function betOf(b: BetInfo): BetInfo {
   return { id: b.id, event: b.event, memberId: b.memberId, outcome: b.outcome, amount: b.amount, at: b.at }
 }
 
-// Событие для ответа GET /rooms/<номер>: без номеров запросов, со статусом на now
-export function eventView(e: EventState, now: number): EventView {
+// Событие для ответа GET /rooms/<номер>: без номеров запросов, со статусом на now; court — дело суда
+// по событию (Р-24), нет — null
+export function eventView(e: EventState, now: number, court: CourtCase | null = null): EventView {
+  const outcome = eventOutcome(e, now, court)
   return {
     ...infoOf(e),
     status: eventStatus(e, now),
     clarifications: e.clarifications,
     bets: e.bets.map((b) => ({ id: b.id, memberId: b.memberId, outcome: b.outcome, amount: b.amount, at: b.at })),
     cancelled: e.cancelled,
-    refunds: eventRefunds(e),
-    outcome: eventOutcome(e, now),
+    refunds: eventRefunds(e, outcome),
+    outcome,
   }
 }
 
