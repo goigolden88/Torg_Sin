@@ -1,12 +1,13 @@
 // Апелляция и суд (этап 4, Р-05, Р-17, Р-21, Р-24; Архитектура, «Правила апелляции в коде»): кто
 // подаёт и присоединяется, кто судит, голос, досрочная замена и свёртка записей AppealRecord (автор,
 // время сервера at, порядок — порядок журнала) в дела суда CourtCase. Жребий, места и решение — court.ts;
-// учёт решения в исходе — eventOutcome (event.ts) и offerOutcome (offer.ts). Журнала комнаты здесь
-// нет: записи appeal.* и court.* в нём — задача сервера. Ни DOM, ни Cloudflare
+// учёт решения в исходе — eventOutcome (event.ts) и offerOutcome (offer.ts). Записи appeal.* и
+// court.* журнала комнаты (Р-25) переводит в записи правил logAppeals (внизу). Ни DOM, ни Cloudflare
 import { courtState, courtVerdict, type CourtCase } from './court'
-import { eventBettors, eventOutcome, MAX_EVENT_TEXT, type EventState } from './event'
-import { offerOutcome, type OfferSide, type OfferState } from './offer'
+import { eventBettors, eventOutcome, MAX_EVENT_TEXT, roomEvents, type EventState } from './event'
+import { logOffers, offerOutcome, type OfferSide, type OfferState } from './offer'
 import type { CourtVerdict } from './protocol'
+import { foldLog, type LogEntry, type RoomState } from './room'
 
 export { COURT_SIZE, SEAT_TIME, courtHash, courtState, courtVerdict, courtView, drawCourt, type CourtCase } from './court'
 
@@ -336,4 +337,43 @@ export function roomAppeals(
 // Дело суда по событию или пари из списка дел (roomAppeals); нет — null
 export function caseOf(cases: readonly CourtCase[], target: string): CourtCase | null {
   return cases.find((c) => c.target === target) ?? null
+}
+
+// Апелляция и суд в журнале комнаты (Р-25). requestId — номер запроса телефона: повтор узнаётся по нему
+const APPEAL_ENTRIES = ['appeal.filed', 'appeal.joined', 'court.drawn', 'court.voted', 'court.replaced'] as const
+export type AppealEntry = Extract<LogEntry, { type: (typeof APPEAL_ENTRIES)[number] }>
+
+export function isAppealEntry(e: LogEntry): e is AppealEntry {
+  return (APPEAL_ENTRIES as readonly string[]).includes(e.type)
+}
+
+// Запись журнала → запись правил: те же поля без номера запроса
+export function appealRecord(e: AppealEntry): AppealRecord {
+  const base = { id: e.id, at: e.at, memberId: e.memberId, target: e.target }
+  switch (e.type) {
+    case 'appeal.filed':
+      return { ...base, type: 'appeal.filed', reason: e.reason, seed: e.seed, candidates: [...e.candidates] }
+    case 'appeal.joined':
+      return { ...base, type: 'appeal.joined' }
+    case 'court.drawn':
+      return { ...base, type: 'court.drawn', seed: e.seed, candidates: [...e.candidates] }
+    case 'court.voted':
+      return { ...base, type: 'court.voted', ...verdictOf(e) }
+    case 'court.replaced':
+      return { ...base, type: 'court.replaced', member: e.member, reason: e.reason }
+  }
+}
+
+// Ведущий и участники комнаты с мигом, когда впущены, — для кандидатов в суд
+export function courtRoom(state: RoomState): CourtRoom {
+  return { hostId: state.hostId, members: state.members.map((m) => ({ id: m.id, addedAt: m.addedAt })) }
+}
+
+// Дела суда комнаты из журнала (roomAppeals) — по событиям и пари из того же журнала; комнаты нет — пусто
+export function logAppeals(
+  log: readonly LogEntry[],
+  targets: { events: readonly EventState[]; offers: readonly OfferState[] } = { events: roomEvents(log), offers: logOffers(log) },
+): CourtCase[] {
+  const state = foldLog(log)
+  return state ? roomAppeals(log.filter(isAppealEntry).map(appealRecord), targets, courtRoom(state)) : []
 }

@@ -1213,7 +1213,8 @@ export function roomsSuite(storageName: string, start: (password: string | undef
           })
           await refused(act(s, room.roomId, dasha.key, about.id, 'vote', { outcome: '2' }), 409, VOTING_OVER)
           s.clock.now = until + 30 * DAY
-          expect((await outcomeOf(s, room.roomId, vera.key, tie.id))?.status).toBe('court')
+          // Суд по «ждёт суда» собрался сам (Р-25), его 72 часа прошли без голосов — отмена с возвратом
+          expect(await outcomeOf(s, room.roomId, vera.key, tie.id)).toMatchObject({ status: 'cancelled', appeal: null, court: { decision: { majority: false, verdict: 'cancel' } } })
           expect((await outcomeOf(s, room.roomId, vera.key, about.id))?.status).toBe('final')
         })
 

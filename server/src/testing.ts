@@ -33,10 +33,18 @@ export type TestServer = {
   storage(roomId: string): RoomStorage // хранилище комнаты — проверить журнал напрямую
   puts(roomId: string): string[] // ключи всех записей хранилища комнаты по порядку
   clock: { now: number } // время сервера задаёт тест
+  seeds: string[] // зёрна следующих жребиев суда по очереди (Р-25) — вместо случайных
   close(): Promise<void>
 }
 
 export const START_TIME = 1_700_000_000_000
+
+// Источник зёрен жребия для тестов: по очереди из seeds, кончились — по счётчику (тоже hex)
+export function testSeeds(): { seeds: string[]; next: () => string } {
+  const seeds: string[] = []
+  let n = 0
+  return { seeds, next: () => seeds.shift() ?? (++n).toString(16).padStart(32, '0') }
+}
 
 // Сервер в памяти: хранилище на каждый номер комнаты, время задаёт тест
 export function fakeServer(password: string | undefined): TestServer & { deps: RoomsDeps } {
@@ -48,12 +56,13 @@ export function fakeServer(password: string | undefined): TestServer & { deps: R
     return s
   }
   const serial = perKey() // как объект Room: вызовы комнаты по одному
+  const random = testSeeds()
   const deps: RoomsDeps = {
     password,
     now: () => clock.now,
     create: (input) => serial(input.roomId, () => createRoom(storage(input.roomId), input, clock.now)),
-    state: (roomId, keyHash) => serial(roomId, () => roomState(storage(roomId), keyHash)),
-    act: (roomId, action) => serial(roomId, () => act(storage(roomId), action, clock.now)),
+    state: (roomId, keyHash) => serial(roomId, () => roomState(storage(roomId), keyHash, clock.now, random.next)),
+    act: (roomId, action) => serial(roomId, () => act(storage(roomId), action, clock.now, random.next)),
   }
   return {
     deps,
@@ -62,6 +71,7 @@ export function fakeServer(password: string | undefined): TestServer & { deps: R
     storage,
     puts: (roomId) => storage(roomId).puts,
     clock,
+    seeds: random.seeds,
     close: async () => {},
   }
 }

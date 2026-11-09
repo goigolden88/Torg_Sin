@@ -2,6 +2,7 @@
 // Общее для экрана и сервера: ни DOM, ни Cloudflare
 import { CURRENCIES, isCurrencyCode, type CurrencyCode } from './currency'
 import type { AuthorSide, Odds, OfferSide } from './offer'
+import type { CourtVerdict } from './protocol'
 
 export const MAX_ROOM_NAME = 60
 export const MAX_MEMBER_NAME = 30
@@ -92,6 +93,19 @@ export type LogEntry =
   | (EntryBase & { type: 'offer.declined'; offer: string; requestId: string })
   // Сторона называет нового гаранта; обе назвали одного — он гарант
   | (EntryBase & { type: 'offer.nominated'; offer: string; guarantor: string; requestId: string })
+  // Апелляция и суд (этап 4, Р-24, Р-25; правила — appeal.ts). target — событие-пул или пари; requestId —
+  // номер запроса телефона. Апелляция подана (автор — ставивший или сторона); суд собран в этот миг:
+  // seed — зерно жребия (случайные байты сервера, hex), candidates — кандидаты на этот миг
+  | (EntryBase & { type: 'appeal.filed'; target: string; reason: string; seed: string; candidates: string[]; requestId: string })
+  // Присоединился к апелляции (автор — тот, кто мог бы подать)
+  | (EntryBase & { type: 'appeal.joined'; target: string; requestId: string })
+  // Суд по «ждёт суда» без апелляции (Р-17): дописывает сам сервер при первом запросе к комнате
+  // после перехода; автор — ведущий комнаты (не проверяется)
+  | (EntryBase & { type: 'court.drawn'; target: string; seed: string; candidates: string[] })
+  // Голос члена суда: verdict — keep / cancel / change с outcome (пул) или winner (пари)
+  | (EntryBase & { type: 'court.voted'; target: string; requestId: string } & CourtVerdict)
+  // Досрочная замена члена суда ведущим, с причиной
+  | (EntryBase & { type: 'court.replaced'; target: string; member: string; reason: string; requestId: string })
 
 export type Member = {
   id: string // номер участника: не привязан к способу входа (Р-03)
@@ -144,6 +158,13 @@ export function applyEntry(state: RoomState | null, e: LogEntry): RoomState | nu
     case 'offer.decided':
     case 'offer.declined':
     case 'offer.nominated':
+      return state
+    // Апелляции и суд считает logAppeals (appeal.ts)
+    case 'appeal.filed':
+    case 'appeal.joined':
+    case 'court.drawn':
+    case 'court.voted':
+    case 'court.replaced':
       return state
   }
 }

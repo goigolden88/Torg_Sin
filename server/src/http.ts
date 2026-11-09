@@ -9,6 +9,7 @@ import {
 } from '../../src/rules/protocol'
 import { checkAmount, checkClarification, checkEventInput, checkObjection, checkReason, eventView } from '../../src/rules/event'
 import { BAD_GUARANTOR, BAD_MARK, BAD_ODDS, checkOfferInput, MAX_ODDS, MIN_ODDS, NO_OFFER, offerView, type Odds } from '../../src/rules/offer'
+import { appealReason, caseOf, courtVote, NOT_SEAT, replaceReason } from '../../src/rules/appeal'
 import { checkMemberName, checkRoomInput } from '../../src/rules/room'
 import { ulid } from '../../src/rules/ulid'
 import { deriveCreation, hashKey, randomToken, sameText, ULID_PATTERN } from './keys'
@@ -20,6 +21,7 @@ import {
   NO_ROOM,
   type ActionResult,
   type ActionType,
+  type CourtKind,
   type CreateInput,
   type CreateResult,
   type RoomAction,
@@ -103,14 +105,15 @@ export async function handle(request: Request, deps: RoomsDeps): Promise<Respons
     const r = await roomAction(sub[1], sub[2], request, deps)
     if (r) return json(r.status, r.body)
   }
-  // События-пул: /rooms/<номер>/events и /rooms/<номер>/events/<событие>/<действие>
-  const ev = /^\/rooms\/([^/]+)\/events(?:\/([^/]+)\/(bets|clarify|cancel|propose|object|agree|decide|vote))?$/.exec(path)
+  // События-пул: /rooms/<номер>/events и /rooms/<номер>/events/<событие>/<действие>; апелляция и суд —
+  // appeal | appeal/join | judge | replace (Р-25)
+  const ev = /^\/rooms\/([^/]+)\/events(?:\/([^/]+)\/(bets|clarify|cancel|propose|object|agree|decide|vote|appeal|appeal\/join|judge|replace))?$/.exec(path)
   if (ev && request.method === 'POST') {
     const r = await eventAction(ev[1], ev[2], ev[3], request, deps)
     return json(r.status, r.body)
   }
-  // Пари (Р-22; исход — Р-23): /rooms/<номер>/offers и /rooms/<номер>/offers/<пари>/<действие>
-  const of = /^\/rooms\/([^/]+)\/offers(?:\/([^/]+)\/(accept|revoke|counter|mark|decide|decline|nominate))?$/.exec(path)
+  // Пари (Р-22; исход — Р-23; апелляция и суд — Р-25): /rooms/<номер>/offers и /rooms/<номер>/offers/<пари>/<действие>
+  const of = /^\/rooms\/([^/]+)\/offers(?:\/([^/]+)\/(accept|revoke|counter|mark|decide|decline|nominate|appeal|appeal\/join|judge|replace))?$/.exec(path)
   if (of && request.method === 'POST') {
     const r = await offerAction(of[1], of[2], of[3], request, deps)
     return json(r.status, r.body)
@@ -134,9 +137,13 @@ async function offerAction(
   const raw: unknown = await request.json().catch(() => null)
   return withKey(roomId, authorization, async (keyHash) => {
     if (offerId !== undefined && !ULID_PATTERN.test(offerId)) return failure(404, NO_OFFER)
-    const read = readBody(raw, action === 'accept' || action === 'revoke' || action === 'decline')
+    const read = readBody(raw, action === 'accept' || action === 'revoke' || action === 'decline' || action === 'appeal/join')
     if (!read.ok) return read.reply
     const b = read.body
+    if (offerId !== undefined && action !== undefined) {
+      const court = await courtAction(roomId, 'offer', offerId, action, b, keyHash, deps)
+      if (court) return court
+    }
     const requestId = requestIdOf(b, deps)
     if (offerId === undefined) {
       const checked = checkOfferInput({
@@ -216,9 +223,11 @@ async function eventAction(
   if (eventId === undefined) return createEvent(roomId, authorization, raw, deps)
   return withKey(roomId, authorization, async (keyHash) => {
     if (!ULID_PATTERN.test(eventId)) return failure(404, NO_EVENT)
-    const read = readBody(raw, action === 'cancel')
+    const read = readBody(raw, action === 'cancel' || action === 'appeal/join')
     if (!read.ok) return read.reply
     const body = read.body
+    const court = action === undefined ? null : await courtAction(roomId, 'event', eventId, action, body, keyHash, deps)
+    if (court) return court
     switch (action) {
       case 'bets': {
         const amount = checkAmount(body.amount)
@@ -263,6 +272,51 @@ async function eventAction(
       }
     }
   })
+}
+
+// Апелляция и суд (Р-25) у события и пари: …/appeal { reason }, …/appeal/join {}, …/judge { verdict:
+// "keep" | "change" | "cancel", outcome? (пул) | winner? (пари) }, …/replace { member, reason } — все с
+// requestId?. Не то действие — null
+async function courtAction(
+  roomId: string,
+  kind: CourtKind,
+  target: string,
+  action: string,
+  body: Record<string, unknown>,
+  keyHash: string,
+  deps: RoomsDeps,
+): Promise<Reply<unknown> | null> {
+  const a = { keyHash, kind, target }
+  switch (action) {
+    case 'appeal': {
+      const reason = appealReason(body.reason)
+      if (!reason.ok) return failure(400, reason.error)
+      const requestId = requestIdOf(body, deps)
+      if (!requestId) return failure(400, BAD_REQUEST_ID)
+      return reply(await deps.act(roomId, { type: 'appealOutcome', ...a, reason: reason.value, requestId }))
+    }
+    case 'appeal/join': {
+      const requestId = requestIdOf(body, deps)
+      if (!requestId) return failure(400, BAD_REQUEST_ID)
+      return reply(await deps.act(roomId, { type: 'joinAppeal', ...a, requestId }))
+    }
+    case 'judge': {
+      const vote = courtVote(body, kind)
+      if (!vote.ok) return failure(400, vote.error)
+      const requestId = requestIdOf(body, deps)
+      if (!requestId) return failure(400, BAD_REQUEST_ID)
+      return reply(await deps.act(roomId, { type: 'judgeCourt', ...a, vote: vote.value, requestId }))
+    }
+    case 'replace': {
+      if (typeof body.member !== 'string' || !body.member) return failure(400, NOT_SEAT)
+      const reason = replaceReason(body.reason)
+      if (!reason.ok) return failure(400, reason.error)
+      const requestId = requestIdOf(body, deps)
+      if (!requestId) return failure(400, BAD_REQUEST_ID)
+      return reply(await deps.act(roomId, { type: 'replaceJuror', ...a, member: body.member, reason: reason.value, requestId }))
+    }
+  }
+  return null
 }
 
 // Номер запроса из тела: нет — новый (повтор не узнать, но действие выполняется); кривой — null
@@ -472,8 +526,9 @@ export async function getRoom(roomId: string, authorization: string | null, deps
       room: { id: state.id, name: state.name, currency: state.currency, hostId: state.hostId, createdAt: state.createdAt },
       members: state.members.map((m) => ({ id: m.id, name: m.name })),
       me: r.me,
-      events: r.events.map((e) => eventView(e, now)),
-      offers: r.offers.map((o) => offerView(o, now)),
+      // Апелляция и суд (Р-25) — у исхода своего события или пари
+      events: r.events.map((e) => eventView(e, now, caseOf(r.cases, e.id))),
+      offers: r.offers.map((o) => offerView(o, now, caseOf(r.cases, o.id))),
       now,
     },
   }

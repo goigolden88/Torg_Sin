@@ -34,6 +34,11 @@ export function randomToken(bytes = 16): string {
   return base64url(crypto.getRandomValues(new Uint8Array(bytes)))
 }
 
+// Зерно жребия суда (Р-25): 16 случайных байт, hex — в журнал вместе с кандидатами
+export function randomSeed(): string {
+  return hex(crypto.getRandomValues(new Uint8Array(16)))
+}
+
 // Сравнение без раннего выхода: время ответа не подсказывает, сколько знаков угадано
 export function sameText(given: string, expected: string): boolean {
   const a = encoder.encode(given)

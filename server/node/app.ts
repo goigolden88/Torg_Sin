@@ -4,6 +4,7 @@
 import type { Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { handle } from '../src/http'
+import { randomSeed } from '../src/keys'
 import { act, createRoom, roomState, type RoomStorage } from '../src/room'
 import { perKey } from '../src/serial'
 import { Alarms } from './alarms'
@@ -19,6 +20,7 @@ export type NodeServerOptions = {
   port: number // 0 — любой свободный (тесты)
   host?: string // не задан — все адреса машины
   now?: () => number // время сервера, UTC, мс
+  seed?: () => string // зерно жребия суда (Р-25); не задано — crypto (keys.ts, randomSeed)
   // Будильник комнаты сработал (как alarm() объекта Room); своих сроков у комнат пока нет
   onAlarm?: (roomId: string, storage: RoomStorage) => Promise<void>
   // Для тестов: подменить хранилище комнаты (например, следить за записями)
@@ -34,6 +36,7 @@ export type NodeServer = {
 
 export async function startServer(options: NodeServerOptions): Promise<NodeServer> {
   const now = options.now ?? (() => Date.now())
+  const seed = options.seed ?? randomSeed
   const rooms = new SqliteRooms(options.file)
   const storage = (roomId: string) => {
     const base = rooms.storage(roomId)
@@ -61,8 +64,8 @@ export async function startServer(options: NodeServerOptions): Promise<NodeServe
           password: options.password,
           now,
           create: (input) => serial(input.roomId, () => createRoom(storage(input.roomId), input, now())),
-          state: (roomId, keyHash) => serial(roomId, () => roomState(storage(roomId), keyHash)),
-          act: (roomId, action) => serial(roomId, () => act(storage(roomId), action, now())),
+          state: (roomId, keyHash) => serial(roomId, () => roomState(storage(roomId), keyHash, now(), seed)),
+          act: (roomId, action) => serial(roomId, () => act(storage(roomId), action, now(), seed)),
         }),
       options.port,
       options.host,

@@ -80,20 +80,28 @@ import {
   type Odds,
   type RoomRoles,
 } from '../../src/rules/offer'
+import * as appeal from '../../src/rules/appeal'
+import type { CourtCase } from '../../src/rules/court'
 import type {
   Agreement,
+  AppealResponse,
   BetInfo,
   Cancellation,
   Clarification,
+  CourtAct,
+  CourtVerdict,
   EventInfo,
+  JoinAppealResponse,
+  JudgeResponse,
   Objection,
   OfferAct,
   OfferInfo,
   OfferWinnerAct,
   OutcomeMark,
+  ReplaceJurorResponse,
 } from '../../src/rules/protocol'
 import { ulid } from '../../src/rules/ulid'
-import { deriveJoinKey, hashKey, randomToken, sameText } from './keys'
+import { deriveJoinKey, hashKey, randomSeed, randomToken, sameText } from './keys'
 
 export type RoomStorage = {
   get<T>(key: string): Promise<T | undefined>
@@ -151,6 +159,8 @@ export const REQUEST_USED = 'Этот номер запроса уже заня�
 // Пари (Р-22): прочие отказы — тексты правил offer.ts
 export const OFFER_CLOSED = 'Приём закрыт — срок «приём до» прошёл'
 export { NO_OFFER }
+// Апелляция и суд (Р-25): прочие отказы — тексты правил appeal.ts
+export const NO_COURT = 'Суда по этому спору нет'
 
 // Ссылка для другого устройства живёт сутки
 export const DEVICE_LINK_TTL = 24 * 60 * 60 * 1000
@@ -229,8 +239,11 @@ export async function createRoom(storage: RoomStorage, input: CreateInput, now: 
 // Отказ комнаты; join — ключ заявки, которую ещё не впустили или отклонили (экран ожидания)
 export type Failure = { ok: false; status: 400 | 403 | 404 | 409; error: string; join?: 'waiting' | 'rejected' }
 
-// events и offers — события и пари комнаты из журнала (статус на время ответа считает http.ts)
-export type StateResult = { ok: true; state: RoomState; me: string; events: EventState[]; offers: OfferState[] } | Failure
+// events и offers — события и пари комнаты из журнала, cases — дела суда по ним (Р-25; статус на
+// время ответа считает http.ts)
+export type StateResult =
+  | { ok: true; state: RoomState; me: string; events: EventState[]; offers: OfferState[]; cases: CourtCase[] }
+  | Failure
 
 function fail(status: Failure['status'], error: string, join?: Failure['join']): Failure {
   return join ? { ok: false, status, error, join } : { ok: false, status, error }
@@ -258,10 +271,38 @@ async function hostCaller(storage: RoomStorage, keyHash: string): Promise<Caller
   return c
 }
 
-// Состояние комнаты для владельца ключа (по хешу ключа)
-export async function roomState(storage: RoomStorage, keyHash: string): Promise<StateResult> {
+// Состояние комнаты для владельца ключа (по хешу ключа). Сначала — суд по «ждёт суда», если пора
+// (drawDueCourts): чтение комнаты тоже может дописать запись, один раз на суд. seed — источник зёрен
+// жребия (тесты подставляют своё)
+export async function roomState(storage: RoomStorage, keyHash: string, now: number, seed: () => string = randomSeed): Promise<StateResult> {
+  await drawDueCourts(storage, now, seed)
   const c = await caller(storage, keyHash)
-  return c.ok ? { ok: true, state: c.state, me: c.me, events: roomEvents(c.log), offers: logOffers(c.log) } : c
+  if (!c.ok) return c
+  const events = roomEvents(c.log)
+  const offers = logOffers(c.log)
+  return { ok: true, state: c.state, me: c.me, events, offers, cases: appeal.logAppeals(c.log, { events, offers }) }
+}
+
+// Суд по «ждёт суда» (Р-17, Р-25) собирается сам — будильника нет: при первом запросе к комнате после
+// того, как исход пула перешёл в «ждёт суда», — запись court.drawn (зерно, кандидаты на этот миг; автор —
+// ведущий). Суд уже собран — второй записи нет; кандидатов нет — записи нет, исход остаётся «ждёт суда»
+// (выход — отмена ведущим с причиной, Р-19)
+export async function drawDueCourts(storage: RoomStorage, now: number, seed: () => string): Promise<void> {
+  const log = await readLog(storage)
+  const state = foldLog(log)
+  if (!state) return
+  const events = roomEvents(log)
+  const cases = appeal.logAppeals(log, { events, offers: [] })
+  const room = appeal.courtRoom(state)
+  const entries: LogEntry[] = []
+  for (const event of events) {
+    const t = { kind: 'event', event } as const
+    if (appeal.checkCourtDraw(t, appeal.caseOf(cases, event.id), now)) continue
+    const candidates = appeal.courtCandidates(t, room, now)
+    if (candidates.length === 0) continue
+    entries.push({ id: ulid(now), at: now, memberId: state.hostId, type: 'court.drawn', target: event.id, seed: seed(), candidates })
+  }
+  if (entries.length > 0) await append(storage, entries)
 }
 
 // Действия комнаты, кроме создания и чтения состояния. Токены и ключи, которые выдаёт сервер,
@@ -297,6 +338,14 @@ export type RoomAction =
   | { type: 'decideOffer'; keyHash: string; offer: string; winner: OfferSide; requestId: string }
   | { type: 'declineOffer'; keyHash: string; offer: string; requestId: string }
   | { type: 'nominateGuarantor'; keyHash: string; offer: string; guarantor: string; requestId: string }
+  // Апелляция и суд (Р-25) у события-пул (kind: 'event') и пари ('offer'): правила — appeal.ts, на
+  // время сервера в момент запроса. Зерно жребия при подаче — из источника seed у act
+  | { type: 'appealOutcome'; keyHash: string; kind: CourtKind; target: string; reason: string; requestId: string }
+  | { type: 'joinAppeal'; keyHash: string; kind: CourtKind; target: string; requestId: string }
+  | { type: 'judgeCourt'; keyHash: string; kind: CourtKind; target: string; vote: CourtVerdict; requestId: string }
+  | { type: 'replaceJuror'; keyHash: string; kind: CourtKind; target: string; member: string; reason: string; requestId: string }
+
+export type CourtKind = appeal.AppealTarget['kind']
 
 export type JoinStatus = JoinRequest['status']
 
@@ -327,6 +376,10 @@ export type ActionValues = {
   decideOffer: { decided: OfferWinnerAct }
   declineOffer: { declined: OfferAct }
   nominateGuarantor: { nominated: OfferAct & { guarantor: string } }
+  appealOutcome: { appeal: AppealResponse['appeal'] }
+  joinAppeal: { joined: JoinAppealResponse['joined'] }
+  judgeCourt: { voted: JudgeResponse['voted'] }
+  replaceJuror: { replaced: ReplaceJurorResponse['replaced'] }
 }
 
 export type ActionType = RoomAction['type']
@@ -336,13 +389,16 @@ function ok<V>(value: V): { ok: true; value: V } {
   return { ok: true, value }
 }
 
-// Одно действие комнаты; объект Room (и очередь Node-обёртки) вызывает их по одному
+// Одно действие комнаты; объект Room (и очередь Node-обёртки) вызывает их по одному. Сначала — суд по
+// «ждёт суда», если пора (drawDueCourts). seed — источник зёрен жребия (тесты подставляют своё)
 export async function act<K extends ActionType>(
   storage: RoomStorage,
   action: Extract<RoomAction, { type: K }>,
   now: number,
+  seed: () => string = randomSeed,
 ): Promise<ActionResult<K>> {
   const a = action as RoomAction
+  await drawDueCourts(storage, now, seed)
   let r: ActionResult
   switch (a.type) {
     case 'preview':
@@ -419,6 +475,18 @@ export async function act<K extends ActionType>(
       break
     case 'nominateGuarantor':
       r = await nominateGuarantor(storage, a, now)
+      break
+    case 'appealOutcome':
+      r = await appealOutcome(storage, a, now, seed)
+      break
+    case 'joinAppeal':
+      r = await joinAppeal(storage, a, now)
+      break
+    case 'judgeCourt':
+      r = await judgeCourt(storage, a, now)
+      break
+    case 'replaceJuror':
+      r = await replaceJuror(storage, a, now)
       break
   }
   return r as ActionResult<K>
@@ -1158,4 +1226,204 @@ async function nominateGuarantor(
   } as const
   await append(storage, [entry])
   return ok({ nominated: nominatedAct(entry) })
+}
+
+// --- Апелляция и суд (Р-24, Р-25). Правила — checkAppeal / checkJoin / checkCourtVote / checkReplace
+// (appeal.ts) на время сервера в момент запроса, на том же деле суда, что даёт свёртка журнала
+// (logAppeals): сервер и свёртка не расходятся. Повтор с тем же номером запроса — тот же ответ без
+// новой записи (и после сроков); тот же номер у другого действия, спора или содержимого — 409
+
+type CourtAction = { keyHash: string; kind: CourtKind; target: string; requestId: string }
+type FiledEntry = Extract<LogEntry, { type: 'appeal.filed' }>
+type JoinedEntry = Extract<LogEntry, { type: 'appeal.joined' }>
+type VotedEntry = Extract<LogEntry, { type: 'court.voted' }>
+type ReplacedEntry = Extract<LogEntry, { type: 'court.replaced' }>
+
+// Спор для апелляции: событие или пари комнаты, дело суда по нему (или null) и участники для жребия;
+// again — запись журнала с этим номером запроса (повтор узнаётся до проверки спора)
+type CourtCaller = Caller & { again: undefined; dispute: appeal.AppealTarget; court: CourtCase | null; room: appeal.CourtRoom }
+
+async function courtCaller(storage: RoomStorage, a: CourtAction): Promise<(Caller & { again: LogEntry }) | CourtCaller | Failure> {
+  const c = await caller(storage, a.keyHash)
+  if (!c.ok) return c
+  const again = c.log.find((e) => 'requestId' in e && e.requestId === a.requestId)
+  if (again) return { ...c, again }
+  let dispute: appeal.AppealTarget
+  if (a.kind === 'event') {
+    const event = roomEvents(c.log).find((e) => e.id === a.target)
+    if (!event) return fail(404, NO_EVENT)
+    dispute = { kind: 'event', event }
+  } else {
+    const offer = logOffers(c.log).find((o) => o.id === a.target)
+    if (!offer) return fail(404, NO_OFFER)
+    dispute = { kind: 'offer', offer }
+  }
+  // Дело суда — только по этому спору: свёртке нужен лишь он
+  const one = dispute.kind === 'event' ? { events: [dispute.event], offers: [] } : { events: [], offers: [dispute.offer] }
+  const court = appeal.caseOf(appeal.logAppeals(c.log, one), a.target)
+  return { ...c, again: undefined, dispute, court, room: appeal.courtRoom(c.state) }
+}
+
+// Отказ правил апелляции: «не вам» — 403, кривое тело (причина, голос, кого заменить) — 400, «уже не
+// то состояние» — 409
+const COURT_FORBIDDEN: readonly string[] = [
+  appeal.NOT_BETTOR,
+  appeal.AGREED_BETTOR,
+  appeal.NOT_SIDE,
+  appeal.OWN_APPEAL,
+  appeal.NOT_JUROR,
+  appeal.ONLY_HOST,
+  appeal.HOST_INTERESTED,
+  appeal.OWN_SEAT,
+]
+const COURT_BAD_BODY: readonly string[] = [
+  appeal.NEED_APPEAL,
+  appeal.LONG_APPEAL,
+  appeal.BAD_VERDICT,
+  appeal.NO_KEEP,
+  appeal.SAME_CHANGE,
+  appeal.NOT_SEAT,
+  appeal.NEED_REPLACE,
+  appeal.LONG_REPLACE,
+]
+
+function courtRefusal(error: string): Failure {
+  if (COURT_BAD_BODY.includes(error)) return fail(400, error)
+  return fail(COURT_FORBIDDEN.includes(error) ? 403 : 409, error)
+}
+
+function courtAct(e: { id: string; at: number; memberId: string; target: string }): CourtAct {
+  return { id: e.id, at: e.at, by: e.memberId, target: e.target }
+}
+
+function verdictOf(v: CourtVerdict): CourtVerdict {
+  if (v.verdict !== 'change') return { verdict: v.verdict }
+  return 'outcome' in v ? { verdict: 'change', outcome: v.outcome } : { verdict: 'change', winner: v.winner }
+}
+
+function sameVerdict(a: CourtVerdict, b: CourtVerdict): boolean {
+  return JSON.stringify(verdictOf(a)) === JSON.stringify(verdictOf(b))
+}
+
+// Подать апелляцию: ставивший на событие (кроме согласившихся) или сторона пари, пока исход утверждён
+// и не окончательный; суд собирается в этот миг — зерно сервера и кандидаты на этот миг в той же записи
+async function appealOutcome(
+  storage: RoomStorage,
+  a: CourtAction & { reason: string },
+  now: number,
+  seed: () => string,
+): Promise<ActionResult<'appealOutcome'>> {
+  const c = await courtCaller(storage, a)
+  if (!c.ok) return c
+  if (c.again) {
+    const e = c.again
+    return e.type === 'appeal.filed' && e.target === a.target && e.memberId === c.me && e.reason === a.reason
+      ? ok({ appeal: filedOut(e) })
+      : fail(409, REQUEST_USED)
+  }
+  const d: CourtCaller = c
+  const refused = appeal.checkAppeal(d.dispute, d.court, c.me, a.reason, d.room, now)
+  if (refused) return courtRefusal(refused)
+  const candidates = appeal.courtCandidates(d.dispute, d.room, now, [c.me])
+  const entry: FiledEntry = {
+    id: ulid(now),
+    at: now,
+    memberId: c.me,
+    type: 'appeal.filed',
+    target: a.target,
+    reason: a.reason,
+    seed: seed(),
+    candidates,
+    requestId: a.requestId,
+  }
+  await append(storage, [entry])
+  return ok({ appeal: filedOut(entry) })
+}
+
+function filedOut(e: FiledEntry): AppealResponse['appeal'] {
+  return { ...courtAct(e), reason: e.reason, seed: e.seed, candidates: [...e.candidates] }
+}
+
+// Присоединиться к апелляции: тот, кто мог бы подать, кроме подавшего; один раз; до решения суда
+async function joinAppeal(storage: RoomStorage, a: CourtAction, now: number): Promise<ActionResult<'joinAppeal'>> {
+  const c = await courtCaller(storage, a)
+  if (!c.ok) return c
+  if (c.again) {
+    const e = c.again
+    return e.type === 'appeal.joined' && e.target === a.target && e.memberId === c.me ? ok({ joined: courtAct(e) }) : fail(409, REQUEST_USED)
+  }
+  const d: CourtCaller = c
+  const refused = appeal.checkJoin(d.dispute, d.court, c.me, now)
+  if (refused) return courtRefusal(refused)
+  const entry: JoinedEntry = { id: ulid(now), at: now, memberId: c.me, type: 'appeal.joined', target: a.target, requestId: a.requestId }
+  await append(storage, [entry])
+  return ok({ joined: courtAct(entry) })
+}
+
+// Голос суда: член суда на своём месте в свои 72 часа, один раз, не меняется
+async function judgeCourt(storage: RoomStorage, a: CourtAction & { vote: CourtVerdict }, now: number): Promise<ActionResult<'judgeCourt'>> {
+  const c = await courtCaller(storage, a)
+  if (!c.ok) return c
+  if (c.again) {
+    const e = c.again
+    return e.type === 'court.voted' && e.target === a.target && e.memberId === c.me && sameVerdict(e, a.vote)
+      ? ok({ voted: votedOut(e) })
+      : fail(409, REQUEST_USED)
+  }
+  const d: CourtCaller = c
+  if (!d.court) return fail(409, NO_COURT)
+  const refused = appeal.checkCourtVote(d.dispute, d.court, c.me, a.vote, now)
+  if (refused) return courtRefusal(refused)
+  const entry = {
+    id: ulid(now),
+    at: now,
+    memberId: c.me,
+    type: 'court.voted',
+    target: a.target,
+    requestId: a.requestId,
+    ...verdictOf(a.vote),
+  } as VotedEntry
+  await append(storage, [entry])
+  return ok({ voted: votedOut(entry) })
+}
+
+function votedOut(e: VotedEntry): JudgeResponse['voted'] {
+  return { ...courtAct(e), ...verdictOf(e) }
+}
+
+// Досрочная замена: ведущий, если сам не заинтересован; не проголосовавшего на своём месте, не себя,
+// одна замена на место, с причиной, до решения
+async function replaceJuror(
+  storage: RoomStorage,
+  a: CourtAction & { member: string; reason: string },
+  now: number,
+): Promise<ActionResult<'replaceJuror'>> {
+  const c = await courtCaller(storage, a)
+  if (!c.ok) return c
+  if (c.again) {
+    const e = c.again
+    return e.type === 'court.replaced' && e.target === a.target && e.memberId === c.me && e.member === a.member && e.reason === a.reason
+      ? ok({ replaced: replacedOut(e) })
+      : fail(409, REQUEST_USED)
+  }
+  const d: CourtCaller = c
+  if (!d.court) return fail(409, NO_COURT)
+  const refused = appeal.checkReplace(d.court, c.me, a.member, a.reason, now)
+  if (refused) return courtRefusal(refused)
+  const entry: ReplacedEntry = {
+    id: ulid(now),
+    at: now,
+    memberId: c.me,
+    type: 'court.replaced',
+    target: a.target,
+    member: a.member,
+    reason: a.reason,
+    requestId: a.requestId,
+  }
+  await append(storage, [entry])
+  return ok({ replaced: replacedOut(entry) })
+}
+
+function replacedOut(e: ReplacedEntry): ReplaceJurorResponse['replaced'] {
+  return { ...courtAct(e), member: e.member, reason: e.reason }
 }
