@@ -72,6 +72,7 @@ describe('ответы комнат', () => {
     closesAt: 10,
     expectedAt: 20,
     subjectId: null,
+    subjectRule: false,
   }
   const view = {
     ...event,
@@ -116,6 +117,10 @@ describe('ответы комнат', () => {
     const cancelled = { ...view, status: 'cancelled', cancelled: { at: 4, by: 'M', reason: null }, refunds: [{ memberId: 'M', amount: 100 }] }
     expect(isRoomStateResponse({ ...state, events: [cancelled] })).toBe(true)
     expect(isRoomStateResponse({ ...state, events: [{ ...view, subjectId: 'M' }] })).toBe(true)
+    // Правило предмета (Р-26): признак обязателен — копия до него проверку не проходит
+    expect(isRoomStateResponse({ ...state, events: [{ ...view, subjectId: 'M', subjectRule: true }] })).toBe(true)
+    expect(isRoomStateResponse({ ...state, events: [{ ...view, subjectRule: undefined }] })).toBe(false)
+    expect(isRoomStateResponse({ ...state, events: [{ ...view, subjectRule: 1 }] })).toBe(false)
     expect(isRoomStateResponse({ ...state, now: undefined })).toBe(false)
     expect(isRoomStateResponse({ ...state, events: undefined })).toBe(false)
     expect(isRoomStateResponse({ ...state, events: [{ ...view, status: 'потом' }] })).toBe(false)
@@ -239,6 +244,7 @@ describe('пари (Р-22)', () => {
     expectedAt: 20,
     guarantorId: 'M',
     counterTo: null,
+    subjectId: null,
   }
   const outcome = {
     phase: 'guarantor',
@@ -256,6 +262,7 @@ describe('пари (Р-22)', () => {
 
   it('состояние комнаты — с пари; сервер без пари (до выкатки) — тоже ответ', () => {
     expect(isRoomStateResponse({ ...state, offers: [view] })).toBe(true)
+    expect(isRoomStateResponse({ ...state, offers: [{ ...view, subjectId: 'A' }] })).toBe(true)
     expect(isRoomStateResponse({ ...state, offers: [] })).toBe(true)
     expect(isRoomStateResponse(state)).toBe(true)
     expect(isRoomStateResponse({ ...state, offers: [{ ...view, closedBy: { offer: 'C', at: 4 }, status: 'countered', accepted: null, outcome: null }] })).toBe(true)
@@ -276,6 +283,9 @@ describe('пари (Р-22)', () => {
       { ...view, accepted: { by: 'B' } },
       { ...view, withdrawnAt: undefined },
       { ...view, to: 5 },
+      // О ком спор (Р-26): поле обязательно (null — ни о ком)
+      { ...view, subjectId: undefined },
+      { ...view, subjectId: 5 },
     ]) {
       expect(isRoomStateResponse({ ...state, offers: [bad] })).toBe(false)
     }

@@ -31,6 +31,14 @@ import {
   TAKER_TOO_SMALL,
   WITHDRAWN,
   ACCEPTED_NO_WITHDRAW,
+  BAD_SUBJECT,
+  NEED_GUARANTOR_SUBJECT,
+  SUBJECT_ADDRESSEE_NO,
+  SUBJECT_AUTHOR_YES,
+  SUBJECT_GUARANTOR,
+  SUBJECT_TAKES,
+  checkOfferSubject,
+  subjectIsSide,
   checkAccept,
   checkCounter,
   checkDecide,
@@ -85,6 +93,7 @@ function created(over: Partial<OfferCreated> = {}): OfferCreated {
     expectedAt: EXPECT,
     guarantor: 'h',
     counterTo: null,
+    subject: null,
     ...over,
   }
 }
@@ -136,7 +145,7 @@ describe('форма пари', () => {
   it('годная форма — по умолчанию «сбудется», открытое, гарант не выбран', () => {
     expect(checkOfferInput(form)).toEqual({
       ok: true,
-      value: { ...form, condition: 'Вася подтянется', side: 'yes', to: null, guarantor: null },
+      value: { ...form, condition: 'Вася подтянется', side: 'yes', to: null, guarantor: null, subject: null },
     })
   })
   it('кэф — целые 1…100', () => {
@@ -252,6 +261,7 @@ describe('встречное', () => {
       closesAt: CLOSE,
       expectedAt: EXPECT,
       guarantor: 'h',
+      subject: null,
     })
   })
   it('принять может только автор исходного; принял — исходное закрыто встречным', () => {
@@ -408,9 +418,10 @@ describe('пари из журнала комнаты (Р-22)', () => {
     ...['h', 'a', 'b', 'c'].map((m): LogEntry => ({ ...base, id: 'm' + m, memberId: 'h', type: 'member.added', member: m, name: m })),
   ]
   function entry(over: Partial<OfferCreated> = {}): LogEntry {
-    const { type: _type, ...c } = created(over)
+    const { type: _type, subject, ...c } = created(over)
     void _type
-    return { ...c, type: 'offer.created', requestId: 'q-' + c.id }
+    // Ни о ком — поля в записи нет, как у пари до выкатки (Р-26)
+    return { ...c, ...(subject !== null && { subject }), type: 'offer.created', requestId: 'q-' + c.id }
   }
 
   it('записи журнала — записи правил: offer.revoked — это offer.withdrawn', () => {
@@ -459,6 +470,7 @@ describe('пари из журнала комнаты (Р-22)', () => {
       expectedAt: EXPECT,
       guarantorId: 'h',
       counterTo: null,
+      subjectId: null,
     })
     expect(offerView(o, T)).toMatchObject({ status: 'open', accepted: null, withdrawnAt: null, closedBy: null, outcome: null })
     expect(offerView(o, CLOSE).status).toBe('expired')
@@ -494,5 +506,87 @@ describe('пари из журнала комнаты (Р-22)', () => {
       guarantorId: 'c',
       approved: { winner: 'taker', at: T + 25, how: 'guarantor', by: 'c' },
     })
+  })
+
+  it('о ком спор (Р-26): поле в записи — в правилах и в ответе; пари без поля — ни о ком', () => {
+    const e = entry({ subject: 'a' })
+    expect(e).toMatchObject({ subject: 'a' })
+    expect(isOfferEntry(e) && offerRecord(e)).toEqual(created({ subject: 'a' }))
+    expect('subject' in entry()).toBe(false)
+    const [o] = logOffers([...roomLog, e])
+    expect(offerInfo(o).subjectId).toBe('a')
+    const [old] = logOffers([...roomLog, entry()])
+    expect(offerInfo(old).subjectId).toBeNull()
+  })
+})
+
+describe('о ком спор у пари (Р-26)', () => {
+  const form = { condition: 'Аня найдёт работу', check: 'Скажет сама', odds: { a: 1, b: 1 }, amount: 100, closesAt: CLOSE, expectedAt: EXPECT }
+
+  it('форма: о ком спор — номер участника или ничего', () => {
+    expect(checkOfferInput({ ...form, subject: 'a' })).toMatchObject({ ok: true, value: { subject: 'a' } })
+    expect(checkOfferInput({ ...form, subject: null })).toMatchObject({ ok: true, value: { subject: null } })
+    for (const subject of ['', 5, {}]) expect(checkOfferInput({ ...form, subject })).toEqual({ ok: false, error: BAD_SUBJECT })
+  })
+
+  it('предмет — участник; автор-предмет — только «сбудется»; адресат-предмет — сторона автора только «не сбудется»', () => {
+    expect(checkOfferSubject({ subject: null, side: 'no', to: null }, 'a', room)).toBeNull()
+    expect(checkOfferSubject({ subject: 'x', side: 'yes', to: null }, 'a', room)).toBe(BAD_SUBJECT)
+    expect(checkOfferSubject({ subject: 'a', side: 'yes', to: null }, 'a', room)).toBeNull()
+    expect(checkOfferSubject({ subject: 'a', side: 'no', to: null }, 'a', room)).toBe(SUBJECT_AUTHOR_YES)
+    expect(checkOfferSubject({ subject: 'b', side: 'no', to: 'b' }, 'a', room)).toBeNull()
+    expect(checkOfferSubject({ subject: 'b', side: 'yes', to: 'b' }, 'a', room)).toBe(SUBJECT_ADDRESSEE_NO)
+    // Предмет — не сторона и не адресат: сторона автора любая
+    expect(checkOfferSubject({ subject: 'c', side: 'no', to: 'b' }, 'a', room)).toBeNull()
+    expect(checkOfferSubject({ subject: 'c', side: 'yes', to: null }, 'a', room)).toBeNull()
+  })
+
+  it('предмет не гарант: выбран — отказ; ведущий — предмет — гаранта надо выбрать', () => {
+    expect(offerGuarantor({ to: null, guarantor: 'c', subject: 'c' }, 'a', room)).toEqual({ ok: false, error: SUBJECT_GUARANTOR })
+    expect(offerGuarantor({ to: null, guarantor: null, subject: 'h' }, 'a', room)).toEqual({ ok: false, error: NEED_GUARANTOR_SUBJECT })
+    expect(offerGuarantor({ to: null, guarantor: 'g', subject: 'h' }, 'a', room)).toEqual({ ok: true, value: 'g' })
+    expect(offerGuarantor({ to: null, guarantor: null, subject: 'c' }, 'a', room)).toEqual({ ok: true, value: 'h' })
+  })
+
+  it('принять: предмет — только если автор за «не сбудется»; остальные — как раньше', () => {
+    const yes = one([created({ subject: 'b' })])
+    expect(checkAccept(yes, 'b', room, T)).toBe(SUBJECT_TAKES)
+    expect(checkAccept(yes, 'c', room, T)).toBeNull()
+    const no = one([created({ side: 'no', subject: 'b' })])
+    expect(checkAccept(no, 'b', room, T)).toBeNull()
+    // Свёртка: запись «принял» от предмета при стороне автора «сбудется» не действует
+    expect(one([created({ subject: 'b' }), act('offer.accepted', 'b', T + 1)]).accepted).toBeNull()
+    expect(one([created({ side: 'no', subject: 'b' }), act('offer.accepted', 'b', T + 1)]).accepted).toEqual({ by: 'b', at: T + 1 })
+  })
+
+  it('свёртка: запись пари против правила предмета не действует; пари без предмета — как раньше', () => {
+    expect(roomOffers([created({ subject: 'a', side: 'no' })], room)).toEqual([])
+    expect(roomOffers([created({ subject: 'h' })], room)).toEqual([]) // гарант — ведущий, он же предмет
+    expect(roomOffers([created({ subject: 'b', to: 'b', side: 'yes' })], room)).toEqual([])
+    expect(one([created({ subject: 'a' })]).subject).toBe('a')
+    expect(one([created(), act('offer.accepted', 'b', T + 1)]).accepted?.by).toBe('b')
+  })
+
+  it('встречное — то же правило: о ком спор переходит, предмет — за «сбудется»', () => {
+    // Автор — предмет, за «сбудется»; встречное от b — за «не сбудется», адресат — предмет: можно
+    const o = one([created({ subject: 'a' })])
+    const x = counterInput(o, { odds: { a: 1, b: 1 }, amount: 100, closesAt: CLOSE })
+    expect(x).toMatchObject({ side: 'no', to: 'a', subject: 'a' })
+    expect(checkOfferSubject(x, 'b', room)).toBeNull()
+    const counter = created({ id: 'o2', at: T + 5, memberId: 'b', side: 'no', to: 'a', counterTo: 'o1', subject: 'a' })
+    const both = roomOffers([created({ subject: 'a' }), counter, act('offer.accepted', 'a', T + 6, 'o2')], room)
+    expect(both.find((y) => y.id === 'o2')?.accepted).toEqual({ by: 'a', at: T + 6 })
+    // Предмет — b, автор за «сбудется»: встречное b было бы против себя — отказ
+    expect(checkCounter(one([created({ subject: 'b' })]), 'b', room, T)).toBe(SUBJECT_TAKES)
+    expect(checkCounter(one([created({ side: 'no', subject: 'b' })]), 'b', room, T)).toBeNull()
+  })
+
+  it('пометка: предмет — сторона пари (автор или принявший)', () => {
+    const view = (subjectId: string | null, accepted: { by: string } | null = null) => ({ subjectId, authorId: 'a', accepted })
+    expect(subjectIsSide(view(null))).toBe(false)
+    expect(subjectIsSide(view('a'))).toBe(true)
+    expect(subjectIsSide(view('b'))).toBe(false)
+    expect(subjectIsSide(view('b', { by: 'b' }))).toBe(true)
+    expect(subjectIsSide(view('c', { by: 'b' }))).toBe(false)
   })
 })

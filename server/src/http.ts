@@ -122,7 +122,7 @@ export async function handle(request: Request, deps: RoomsDeps): Promise<Respons
 }
 
 // POST /rooms/<номер>/offers { condition, check, side?, odds: { a, b }, amount, to?, closesAt,
-// expectedAt, guarantor?, requestId? } — предложить; …/offers/<пари>/accept | revoke { requestId? };
+// expectedAt, guarantor?, subject?, requestId? } — предложить; …/offers/<пари>/accept | revoke { requestId? };
 // …/offers/<пари>/counter { odds?, amount?, closesAt, requestId? } — встречное; исход (Р-23):
 // …/mark | decide { winner: "author" | "taker", requestId? }, …/decline { requestId? },
 // …/nominate { guarantor, requestId? }; апелляция и суд (Р-25) — courtAction
@@ -156,6 +156,7 @@ async function offerAction(
         closesAt: b.closesAt,
         expectedAt: b.expectedAt,
         guarantor: b.guarantor,
+        subject: b.subject,
       })
       if (!checked.ok) return failure(400, checked.error)
       if (!requestId) return failure(400, BAD_REQUEST_ID)

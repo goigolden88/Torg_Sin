@@ -39,6 +39,14 @@ import {
   roomEvents,
   SAME_OUTCOMES,
   sameEvent,
+  betOutcomes,
+  NO,
+  SUBJECT_NO_BETS,
+  SUBJECT_YES_ONLY,
+  subjectBetError,
+  subjectStake,
+  YES,
+  yesNoOutcomes,
 } from './event'
 import type { LogEntry } from './room'
 
@@ -223,6 +231,115 @@ describe('события из журнала', () => {
     expect(sameEvent(e, 'B', input)).toBe(false)
     expect(sameEvent(e, 'A', { ...input, closesAt: 2_001 })).toBe(false)
     expect(sameEvent(e, 'A', { ...input, outcomes: [...input.outcomes, { id: '3', title: OTHER }] })).toBe(false)
+  })
+})
+
+describe('предмет спора ставит только на «Да» (Р-26)', () => {
+  const yesNo = [
+    { id: '1', title: YES },
+    { id: '2', title: NO },
+  ]
+  const own = [
+    { id: '1', title: '<30' },
+    { id: '2', title: '30–50' },
+    { id: '3', title: OTHER },
+  ]
+  function created(id: string, outcomes = yesNo, rule = true): LogEntry {
+    return {
+      id,
+      at: 1_000,
+      memberId: 'B',
+      type: 'event.created',
+      condition: 'Аня найдёт работу до декабря',
+      check: 'Скажет сама',
+      outcomes,
+      closesAt: 2_000,
+      expectedAt: 3_000,
+      subject: 'A',
+      ...(rule && { subjectRule: 1 as const }),
+      requestId: 'Q' + id,
+    }
+  }
+  const bet = (id: string, event: string, memberId: string, outcome: string, amount: number): LogEntry => ({
+    id,
+    at: 1_100,
+    memberId,
+    type: 'bet.placed',
+    event,
+    outcome,
+    amount,
+    requestId: 'Q' + id,
+  })
+
+  it('событие «Да / Нет»: предмету — только «Да»; остальным — любой исход', () => {
+    const [e] = roomEvents([created('E1')])
+    expect(e.subjectRule).toBe(true)
+    expect(subjectBetError(e, 'A', '1')).toBeNull()
+    expect(subjectBetError(e, 'A', '2')).toBe(SUBJECT_YES_ONLY)
+    expect(SUBJECT_YES_ONLY).toBe('Вы — предмет спора: ставить можно только на „Да“')
+    expect(subjectBetError(e, 'C', '2')).toBeNull()
+    expect(betOutcomes(e, 'A')).toEqual([{ id: '1', title: YES }])
+    expect(betOutcomes(e, 'C')).toEqual(yesNo)
+  })
+
+  it('событие со своими исходами: предмет не ставит', () => {
+    const [e] = roomEvents([created('E1', own)])
+    for (const o of own) expect(subjectBetError(e, 'A', o.id)).toBe(SUBJECT_NO_BETS)
+    expect(SUBJECT_NO_BETS).toBe('Вы — предмет спора: в событии со своими исходами вы не ставите')
+    expect(betOutcomes(e, 'A')).toEqual([])
+    expect(betOutcomes(e, 'C')).toEqual(own)
+  })
+
+  it('свёртка: ставка предмета против правила не действует; другим — как всегда', () => {
+    const [e, f] = roomEvents([
+      created('E1'),
+      created('E2', own),
+      bet('B1', 'E1', 'A', '1', 300),
+      bet('B2', 'E1', 'A', '2', 100),
+      bet('B3', 'E1', 'C', '2', 200),
+      bet('B4', 'E2', 'A', '1', 50),
+      bet('B5', 'E2', 'C', '3', 70),
+    ])
+    expect(e.bets.map((b) => b.id)).toEqual(['B1', 'B3'])
+    expect(f.bets.map((b) => b.id)).toEqual(['B5'])
+  })
+
+  it('старое событие без признака: ставки предмета — как были, правила нет', () => {
+    const [e, f] = roomEvents([
+      created('E1', yesNo, false),
+      created('E2', own, false),
+      bet('B1', 'E1', 'A', '2', 100),
+      bet('B2', 'E2', 'A', '1', 50),
+    ])
+    expect(e.subjectRule).toBe(false)
+    expect(e.bets.map((b) => b.id)).toEqual(['B1'])
+    expect(f.bets.map((b) => b.id)).toEqual(['B2'])
+    expect(subjectBetError(e, 'A', '2')).toBeNull()
+    expect(betOutcomes(f, 'A')).toEqual(own)
+    expect(eventView(e, 1_500).subjectRule).toBe(false)
+  })
+
+  it('вид для сайта несёт признак правила', () => {
+    expect(eventView(roomEvents([created('E1')])[0], 1_500)).toMatchObject({ subjectId: 'A', subjectRule: true })
+  })
+
+  it('пометка: предмет сам ставит — сколько и на что; старое событие со ставкой на «Нет» — против себя', () => {
+    const [e] = roomEvents([created('E1'), bet('B1', 'E1', 'A', '1', 300), bet('B2', 'E1', 'A', '1', 200), bet('B3', 'E1', 'C', '2', 900)])
+    expect(subjectStake(e)).toEqual({ stakes: [{ outcome: '1', title: YES, amount: 500 }], against: false })
+    const [old] = roomEvents([created('E1', yesNo, false), bet('B1', 'E1', 'A', '2', 300)])
+    expect(subjectStake(old)).toEqual({ stakes: [{ outcome: '2', title: NO, amount: 300 }], against: true })
+    // Не ставил — пометки нет; предмета нет — тоже
+    expect(subjectStake(roomEvents([created('E1'), bet('B3', 'E1', 'C', '2', 900)])[0])).toBeNull()
+    expect(subjectStake({ subjectId: null, outcomes: yesNo, bets: [{ memberId: 'A', outcome: '1', amount: 5 }] })).toBeNull()
+    // Старое событие со своими исходами — какие исходы, без «против себя»
+    const [mine] = roomEvents([created('E1', own, false), bet('B1', 'E1', 'A', '2', 40)])
+    expect(subjectStake(mine)).toEqual({ stakes: [{ outcome: '2', title: '30–50', amount: 40 }], against: false })
+  })
+
+  it('«Да / Нет» — только исходы по умолчанию; свои «Да», «Нет» со «Другое» — свои', () => {
+    expect(yesNoOutcomes(yesNo)).toBe(true)
+    expect(yesNoOutcomes([...yesNo, { id: '3', title: OTHER }])).toBe(false)
+    expect(yesNoOutcomes(own)).toBe(false)
   })
 })
 

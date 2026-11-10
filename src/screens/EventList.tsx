@@ -1,13 +1,13 @@
 // «События» в комнате: сначала открытые (ближний срок сверху, с отсчётом до закрытия приёма),
 // ниже закрытые и отменённые (новые сверху); пусто — «Событий пока нет». События — последнее
 // известное с сервера (у комнаты на устройстве), отсчёт — по времени сервера. Участник — член суда
-// по событию и ещё не голосовал — значок «вы в суде» (Р-24)
+// по событию и ещё не голосовал — значок «вы в суде» (Р-24). Предмет спора сам поставил — пометка (Р-26)
 import { eventStatus } from '../rules/event'
 import { poolOdds } from '../rules/pool'
 import type { EventView } from '../rules/protocol'
 import { savedEvents, type SavedRoom } from '../store/db'
 import { awaitsMyVote } from './courtParts'
-import { eventHref, money, StatusLine } from './eventParts'
+import { eventHref, money, StatusLine, SubjectFlag } from './eventParts'
 import { useServerNow, type Clock } from './useRoom'
 
 export function EventList({ room, clock }: { room: SavedRoom; clock: Clock | null }) {
@@ -54,6 +54,7 @@ function Group({ title, room, events, now }: { title: string; room: SavedRoom; e
                   {awaitsMyVote(e.outcome, room.memberId, now) && <span className="badge court-badge">вы в суде</span>}
                 </span>
                 <StatusLine event={e} now={now} />
+                <SubjectFlag room={room} event={e} />
                 <span className="hint">{bank > 0 ? `банк ${money(bank, room.currency)}, ставок: ${e.bets.length}` : 'ставок нет'}</span>
               </a>
             </li>

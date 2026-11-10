@@ -3,12 +3,13 @@
 // ставка — с окном подтверждения и честной прикидкой выигрыша; «Лента ставок» и «Ваша позиция».
 // Автору — «Уточнить» и, пока приём идёт, «Отменить событие»; ведущему после закрытия — «Отменить»
 // с причиной. Состояние — с сервера раз в 5 с (useRoom); нет связи — последнее известное, ставить
-// нельзя. Деньги считает pool.ts — здесь не считаем заново. Исход (EventView.outcome) — EventOutcome
+// нельзя. Деньги считает pool.ts — здесь не считаем заново. Исход (EventView.outcome) — EventOutcome.
+// Предмет спора (Р-26): ему — только доступные исходы (betOutcomes); его ставка — пометкой для всех
 import { useCallback, useEffect, useRef, useState, type FormEvent, type MutableRefObject } from 'react'
 import { cancelEvent, clarifyEvent, placeBet } from '../api'
 import { currency as currencyOf, isCurrencyCode, parseAmount } from '../rules/currency'
 import { formatDateTime } from '../rules/date'
-import { checkClarification, checkReason, eventStatus, MAX_EVENT_TEXT, NEED_REASON } from '../rules/event'
+import { betOutcomes, checkClarification, checkReason, eventStatus, MAX_EVENT_TEXT, NEED_REASON, SUBJECT_NO_BETS, subjectStake } from '../rules/event'
 import { chancePercents, formatChance, formatOdds, payoutIfWins, poolOdds, settlePool } from '../rules/pool'
 import type { EventStatus, EventView } from '../rules/protocol'
 import { formKey, requestFor, type PendingRequest } from '../rules/request'
@@ -16,7 +17,7 @@ import { ulid } from '../rules/ulid'
 import { savedEvents, type SavedRoom } from '../store/db'
 import { BackLink, useEscape } from './BackLink'
 import { ChanceChart } from './ChanceChart'
-import { money, nameOf, StatusLine } from './eventParts'
+import { money, nameOf, StatusLine, SubjectFlag } from './eventParts'
 import { EventOutcome } from './EventOutcome'
 import { useRoom, useServerNow, type Sync } from './useRoom'
 
@@ -87,6 +88,11 @@ export function EventScreen({ room, eventId, onUpdate }: { room: SavedRoom; even
         <p>
           <StatusLine event={event} now={now} />
         </p>
+        {subjectStake(event) && (
+          <p>
+            <SubjectFlag room={room} event={event} />
+          </p>
+        )}
         {event.cancelled && (
           <p className="hint">
             Отмена: {nameOf(room, event.cancelled.by)}
@@ -197,7 +203,9 @@ function BetForm({
   onAsk: (ask: Ask) => void
   placed: Placed | null
 }) {
-  const [outcome, setOutcome] = useState(event.outcomes[0].id)
+  // Предмет спора (Р-26) видит только доступные ему исходы; в событии со своими исходами — не ставит
+  const allowed = betOutcomes(event, room.memberId)
+  const [outcome, setOutcome] = useState(allowed[0]?.id ?? '')
   const [amount, setAmount] = useState('')
   const [error, setError] = useState('')
   // Ставка принята — сумма стирается: следующая вводится заново и снова с подтверждением
@@ -219,19 +227,31 @@ function BetForm({
     onAsk({ outcome, units: parsed.units })
   }
 
+  if (allowed.length === 0) {
+    return (
+      <section className="bet-form" aria-label="Ставка">
+        <h3>Поставить</h3>
+        <p className="hint">{SUBJECT_NO_BETS}.</p>
+      </section>
+    )
+  }
+
   return (
     <form className="form bet-form" onSubmit={submit} aria-label="Ставка">
       <h3>Поставить</h3>
       <fieldset className="field">
         <legend>На исход</legend>
         <div className="chips">
-          {event.outcomes.map((o) => (
+          {allowed.map((o) => (
             <label key={o.id} className="chip">
               <input type="radio" name="bet-outcome" checked={outcome === o.id} onChange={() => setOutcome(o.id)} />
               <span>{o.title}</span>
             </label>
           ))}
         </div>
+        {allowed.length < event.outcomes.length && (
+          <span className="hint">Вы — предмет спора: ставить можно только на „{allowed[0].title}“ — остальные видят вашу ставку пометкой.</span>
+        )}
       </fieldset>
       <label className="field">
         <span>Сумма, {sign}</span>

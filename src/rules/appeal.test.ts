@@ -629,6 +629,7 @@ function offerRecords(author = 'a', guarantor = 'h'): OfferRecord[] {
       expectedAt: EXPECT,
       guarantor,
       counterTo: null,
+      subject: null,
     },
     { type: 'offer.accepted', id: 'r1', at: T + 10, memberId: 'b', offer: 'o1' },
     { type: 'offer.marked', id: 'r2', at: T + 20, memberId: author, offer: 'o1', winner: 'author' },

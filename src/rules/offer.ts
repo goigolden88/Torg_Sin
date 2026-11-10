@@ -30,6 +30,13 @@ export const EXPECTED_EARLY = '«Исход к» не может быть ран
 export const BAD_ADDRESSEE = 'Адресат — другой участник комнаты'
 export const BAD_GUARANTOR = 'Гарант — участник комнаты, не автор и не адресат'
 export const NEED_GUARANTOR = 'Ведущий — сторона пари: выберите гаранта'
+// О ком спор (Р-26): предмет — только на стороне «сбудется», не гарант
+export const BAD_SUBJECT = 'О ком спор — участник комнаты'
+export const SUBJECT_GUARANTOR = 'Предмет спора не бывает гарантом — выберите другого'
+export const NEED_GUARANTOR_SUBJECT = 'Ведущий — предмет спора: выберите гаранта'
+export const SUBJECT_AUTHOR_YES = 'Вы — предмет спора: ваша сторона — только «сбудется»'
+export const SUBJECT_ADDRESSEE_NO = 'Предмет спора примет пари, только если ваша сторона — «не сбудется»'
+export const SUBJECT_TAKES = 'Вы — предмет спора: принять можно, только если автор — за «не сбудется»'
 // Принять, отозвать, встречное
 export const NO_OFFER = 'Нет такого пари'
 export const WITHDRAWN = 'Пари отозвано'
@@ -99,7 +106,8 @@ function text(x: unknown, need: string, long: string): Checked<string> {
   return { ok: true, value: s }
 }
 
-// Проверенная форма пари. to — адресат (null — открытое), guarantor — выбранный (null — ведущий)
+// Проверенная форма пари. to — адресат (null — открытое), guarantor — выбранный (null — ведущий),
+// subject — о ком спор (null — ни о ком; Р-26)
 export type OfferInput = {
   condition: string
   check: string
@@ -110,10 +118,11 @@ export type OfferInput = {
   closesAt: number
   expectedAt: number
   guarantor: string | null
+  subject: string | null
 }
 
-// Проверка формы без времени сервера и участников (их — checkOfferTimes, offerGuarantor).
-// Сторона не задана — «сбудется»
+// Проверка формы без времени сервера и участников (их — checkOfferTimes, offerGuarantor,
+// checkOfferSubject). Сторона не задана — «сбудется»
 export function checkOfferInput(x: {
   condition: unknown
   check: unknown
@@ -124,6 +133,7 @@ export function checkOfferInput(x: {
   closesAt: unknown
   expectedAt: unknown
   guarantor?: unknown
+  subject?: unknown
 }): Checked<OfferInput> {
   const condition = text(x.condition, NEED_CONDITION, LONG_CONDITION)
   if (!condition.ok) return condition
@@ -142,6 +152,7 @@ export function checkOfferInput(x: {
   const member = (v: unknown) => v === undefined || v === null || (typeof v === 'string' && v !== '')
   if (!member(x.to)) return { ok: false, error: BAD_ADDRESSEE }
   if (!member(x.guarantor)) return { ok: false, error: BAD_GUARANTOR }
+  if (!member(x.subject)) return { ok: false, error: BAD_SUBJECT }
   return {
     ok: true,
     value: {
@@ -154,6 +165,7 @@ export function checkOfferInput(x: {
       closesAt: x.closesAt as number,
       expectedAt: x.expectedAt as number,
       guarantor: typeof x.guarantor === 'string' ? x.guarantor : null,
+      subject: typeof x.subject === 'string' ? x.subject : null,
     },
   }
 }
@@ -168,23 +180,42 @@ export function checkOfferTimes(input: { closesAt: number; expectedAt: number },
 export type RoomRoles = { hostId: string; members: readonly string[] }
 
 // Гарант пари: выбран — участник, не автор и не адресат; не выбран — ведущий, а ведущий сам автор
-// или адресат — отказ (гаранта надо выбрать). Заодно проверяет адресата: другой участник
+// или адресат — отказ (гаранта надо выбрать). Заодно проверяет адресата: другой участник. Предмет
+// спора (Р-26; нет — null) гарантом не бывает: ведущий — предмет — гаранта тоже надо выбрать
 export function offerGuarantor(
-  input: { to: string | null; guarantor: string | null },
+  input: { to: string | null; guarantor: string | null; subject?: string | null },
   authorId: string,
   room: RoomRoles,
 ): Checked<string> {
   if (input.to !== null && (input.to === authorId || !room.members.includes(input.to))) {
     return { ok: false, error: BAD_ADDRESSEE }
   }
+  const subject = input.subject ?? null
   const g = input.guarantor
   if (g === null) {
-    return room.hostId === authorId || room.hostId === input.to
-      ? { ok: false, error: NEED_GUARANTOR }
-      : { ok: true, value: room.hostId }
+    if (room.hostId === authorId || room.hostId === input.to) return { ok: false, error: NEED_GUARANTOR }
+    return room.hostId === subject ? { ok: false, error: NEED_GUARANTOR_SUBJECT } : { ok: true, value: room.hostId }
   }
   if (g === authorId || g === input.to || !room.members.includes(g)) return { ok: false, error: BAD_GUARANTOR }
+  if (g === subject) return { ok: false, error: SUBJECT_GUARANTOR }
   return { ok: true, value: g }
+}
+
+// О ком спор (Р-26): участник комнаты; предмет — автор — сторона автора только «сбудется»; предмет —
+// адресат — сторона автора только «не сбудется» (иначе он не сможет принять). Ни о ком — null
+export function checkOfferSubject(input: { subject: string | null; side: AuthorSide; to: string | null }, authorId: string, room: RoomRoles): string | null {
+  const s = input.subject
+  if (s === null) return null
+  if (!room.members.includes(s)) return BAD_SUBJECT
+  if (s === authorId && input.side !== 'yes') return SUBJECT_AUTHOR_YES
+  if (s === input.to && input.side !== 'no') return SUBJECT_ADDRESSEE_NO
+  return null
+}
+
+// Пометка для всех (Р-26): предмет спора — сторона пари (автор или принявший); по правилу он всегда
+// на «сбудется». Ни о ком или предмет не сторона — false
+export function subjectIsSide(o: { subjectId: string | null; authorId: string; accepted: { by: string } | null }): boolean {
+  return o.subjectId !== null && (o.subjectId === o.authorId || o.subjectId === o.accepted?.by)
 }
 
 // Записи пари — как будут в журнале комнаты: memberId — автор записи, at — время сервера.
@@ -204,6 +235,7 @@ export type OfferCreated = {
   expectedAt: number
   guarantor: string
   counterTo: string | null // встречное к какому пари
+  subject: string | null // о ком спор (Р-26); у пари до выкатки — null
 }
 type OfferAct<T extends string, X = object> = { type: T; id: string; at: number; memberId: string; offer: string } & X
 export type OfferRecord =
@@ -243,7 +275,8 @@ export function offerStatus(o: OfferState, now: number): OfferStatus {
   return now >= o.closesAt ? 'expired' : 'open'
 }
 
-// Принять: адресное — только адресат; открытое — любой участник, кроме автора и гаранта; до «приём до»
+// Принять: адресное — только адресат; открытое — любой участник, кроме автора и гаранта; до «приём до».
+// Предмет спора (Р-26) принимает, только если автор — за «не сбудется»: сам он тогда — за «сбудется»
 export function checkAccept(o: OfferState, memberId: string, room: RoomRoles, now: number): string | null {
   const status = offerStatus(o, now)
   if (status === 'withdrawn') return WITHDRAWN
@@ -253,6 +286,7 @@ export function checkAccept(o: OfferState, memberId: string, room: RoomRoles, no
   if (memberId === o.authorId) return OWN_OFFER
   if (memberId === o.guarantorId) return GUARANTOR_TAKES
   if (o.to !== null && memberId !== o.to) return NOT_ADDRESSEE
+  if (memberId === o.subject && o.side !== 'no') return SUBJECT_TAKES
   if (!room.members.includes(memberId)) return NOT_MEMBER
   return null
 }
@@ -277,7 +311,8 @@ export function checkCounter(o: OfferState, memberId: string, room: RoomRoles, n
 }
 
 // Форма встречного: своё — кэф, сумма и «приём до»; условие, «как проверяем», «исход к» — исходного;
-// сторона — обратная, адресат — автор исходного, гарант — тот же (он не автор и не принимает пари)
+// сторона — обратная, адресат — автор исходного, гарант — тот же (он не автор и не принимает пари);
+// о ком спор — тот же (Р-26): правило предмета то же
 export function counterInput(o: OfferState, x: { odds: Odds; amount: number; closesAt: number }): OfferInput {
   return {
     condition: o.condition,
@@ -289,6 +324,7 @@ export function counterInput(o: OfferState, x: { odds: Odds; amount: number; clo
     closesAt: x.closesAt,
     expectedAt: o.expectedAt,
     guarantor: o.guarantorId,
+    subject: o.subject,
   }
 }
 
@@ -393,8 +429,8 @@ export function roomOffers(records: readonly OfferRecord[], room: RoomRoles): Of
         const original = offers.get(r.counterTo)
         if (!original || r.to !== original.authorId || checkCounter(original, r.memberId, room, r.at)) continue
       }
-      const g = offerGuarantor({ to: r.to, guarantor: r.guarantor }, r.memberId, room)
-      if (!g.ok || g.value !== r.guarantor || checkOfferTimes(r, r.at)) continue
+      const g = offerGuarantor({ to: r.to, guarantor: r.guarantor, subject: r.subject }, r.memberId, room)
+      if (!g.ok || g.value !== r.guarantor || checkOfferTimes(r, r.at) || checkOfferSubject(r, r.memberId, room)) continue
       offers.set(r.id, {
         id: r.id,
         at: r.at,
@@ -408,6 +444,7 @@ export function roomOffers(records: readonly OfferRecord[], room: RoomRoles): Of
         closesAt: r.closesAt,
         expectedAt: r.expectedAt,
         counterTo: r.counterTo,
+        subject: r.subject,
         guarantorId: r.guarantor,
         guarantorSince: null,
         accepted: null,
@@ -586,6 +623,7 @@ export function offerRecord(e: OfferEntry): OfferRecord {
         expectedAt: e.expectedAt,
         guarantor: e.guarantor,
         counterTo: e.counterTo,
+        subject: e.subject ?? null,
       }
   }
 }
@@ -619,6 +657,7 @@ export function offerInfo(o: OfferState): OfferInfo {
     expectedAt: o.expectedAt,
     guarantorId: o.guarantorId,
     counterTo: o.counterTo,
+    subjectId: o.subject,
   }
 }
 

@@ -4,12 +4,13 @@
 // обеих сторон, кому, статус (у принятого — фаза исхода: «ждём отметок», «решает гарант»,
 // «окончательно: +100 ₽ Аня»). Пари — последнее известное с сервера (у комнаты на устройстве),
 // статус и отсчёт — по времени сервера. На экране пари — тот же список рядом, открытое отмечено.
-// Участник — член суда по пари и ещё не голосовал — значок «вы в суде» (Р-24)
+// Участник — член суда по пари и ещё не голосовал — значок «вы в суде» (Р-24). Предмет спора —
+// сторона пари — пометка (Р-26)
 import { offerStatus } from '../rules/offer'
 import type { OfferView } from '../rules/protocol'
 import { savedOffers, type SavedRoom } from '../store/db'
 import { awaitsMyVote } from './courtParts'
-import { offerHref, offerState, OfferStatusLine, stakesLine, toLabel, who } from './offerParts'
+import { offerHref, offerState, OfferStatusLine, OfferSubjectFlag, stakesLine, toLabel, who } from './offerParts'
 import { useServerNow, type Clock } from './useRoom'
 
 export function OfferList({ room, clock, current }: { room: SavedRoom; clock: Clock | null; current?: string }) {
@@ -75,6 +76,7 @@ function Group({
                 </span>
                 <span className="hint">{stakesLine(room, o)}</span>
                 <OfferStatusLine room={room} offer={o} now={now} />
+                <OfferSubjectFlag room={room} offer={o} />
                 {waiting && <span className="hint">встречное ждёт ответа автора</span>}
               </a>
             </li>

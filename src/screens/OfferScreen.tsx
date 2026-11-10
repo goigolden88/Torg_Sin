@@ -5,7 +5,8 @@
 // кнопок, которых правила не позволяют, нет. Каждое — с окном подтверждения, синхронным замком и
 // номером запроса (Р-13). У принятого — блок «Исход» (OfferOutcome): отметки сторон, решение гаранта,
 // новый гарант, итог. Состояние — с сервера раз в 5 с (useRoom); нет связи — последнее известное,
-// действия закрыты. Рядом (от 1280 px) или ниже — список пари комнаты (OfferList)
+// действия закрыты. Рядом (от 1280 px) или ниже — список пари комнаты (OfferList). О ком спор (Р-26):
+// строкой в условиях; предмет — сторона — пометка; предмету «Принять» нет, пока автор за «сбудется»
 import { useCallback, useRef, useState, type FormEvent, type MutableRefObject } from 'react'
 import { acceptOffer, counterOffer, revokeOffer } from '../api'
 import { currency as currencyOf, isCurrencyCode, parseAmount, type CurrencyCode } from '../rules/currency'
@@ -21,6 +22,8 @@ import {
   NEED_TIMES,
   offerStakes,
   offerStatus,
+  SUBJECT_TAKES,
+  subjectIsSide,
   type OfferInput,
 } from '../rules/offer'
 import type { OfferView } from '../rules/protocol'
@@ -38,6 +41,7 @@ import {
   offerHref,
   offerState,
   OfferStatusLine,
+  OfferSubjectFlag,
   roomRolesOf,
   sideLabel,
   stakesLine,
@@ -86,7 +90,8 @@ export function OfferScreen({ room, offerId, onUpdate }: { room: SavedRoom; offe
   const me = room.memberId
   const status = offerStatus(state, now)
   const online = sync.state === 'ok'
-  const mayAccept = checkAccept(state, me, roles, now) === null
+  const acceptRefusal = checkAccept(state, me, roles, now)
+  const mayAccept = acceptRefusal === null
   const mayRevoke = checkWithdraw(state, me) === null
   const mayCounter = checkCounter(state, me, roles, now) === null
   const stakes = stakesOf(offer)
@@ -175,6 +180,12 @@ export function OfferScreen({ room, offerId, onUpdate }: { room: SavedRoom; offe
             <span className="hint">Гарант</span>
             <span>{who(room, offer.guarantorId)}</span>
           </li>
+          {offer.subjectId !== null && (
+            <li>
+              <span className="hint">О ком спор</span>
+              <span>{who(room, offer.subjectId)} — только на стороне „{sideLabel('yes')}“</span>
+            </li>
+          )}
           <li>
             <span className="hint">Приём до</span>
             <span>{formatDateTime(offer.closesAt)}</span>
@@ -187,6 +198,12 @@ export function OfferScreen({ room, offerId, onUpdate }: { room: SavedRoom; offe
         <p>
           <OfferStatusLine room={room} offer={offer} now={now} />
         </p>
+        {subjectIsSide(offer) && (
+          <p>
+            <OfferSubjectFlag room={room} offer={offer} />
+          </p>
+        )}
+        {acceptRefusal === SUBJECT_TAKES && <p className="hint">{SUBJECT_TAKES}.</p>}
         {offer.withdrawnAt !== null && <p className="hint">Автор отозвал пари {formatDateTime(offer.withdrawnAt)}.</p>}
         {offer.closedBy && (
           <p className="hint">
