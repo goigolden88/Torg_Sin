@@ -12,7 +12,12 @@ import {
   checkOutcomes,
   checkReason,
   CLOSE_PASSED,
+  closingAt,
+  earlyProposal,
   eventOutcome,
+  eventRefunds,
+  NOT_YET,
+  withdrawnAt,
   eventStatus,
   eventView,
   eventVoters,
@@ -634,6 +639,113 @@ describe('исход события', () => {
     expect(outcomeAt(nobody, P)).toMatchObject({ status: 'final', finalAt: P, payouts: [] })
     // Событие отменено — «отменено», как раньше
     expect(outcomeAt([...alone, cancel(P + 1)], P + 2)).toMatchObject({ status: 'cancelled', finalAt: null, payouts: [] })
+  })
+
+  describe('«Исход уже известен» (Р-27)', () => {
+    const E = 1_800 // досрочно: ставки в 1 500, «приём до» — 2 000
+    const early = (who: string, outcome: string, at = E, n = ''): LogEntry => ({
+      id: 'P' + who + n,
+      at,
+      memberId: who,
+      type: 'outcome.proposed',
+      event: 'E1',
+      outcome,
+      requestId: 'QP' + who + n,
+    })
+    const lateBet = (who: string, at: number): LogEntry => ({ id: 'BL' + who + at, at, memberId: who, type: 'bet.placed', event: 'E1', outcome: '2', amount: 50, requestId: 'QBL' + who + at })
+
+    it('предложить можно и до «приём до»: те же, кто после', () => {
+      const e = roomEvents([...base])[0]
+      expect(eventStatus(e, E)).toBe('open')
+      expect(mayPropose(e, 'A', E)).toBe(true)
+      expect(mayPropose(e, 'B', E)).toBe(false)
+      expect(mayPropose(e, 'H', E)).toBe(false)
+    })
+
+    it('досрочное предложение закрывает приём навсегда: статус «закрыт», ставка после не действует', () => {
+      const log = [...base, early('A', '1'), lateBet('C', E + 1), lateBet('B', 2_500)]
+      const e = roomEvents(log)[0]
+      expect(e.closedAt).toBe(E)
+      expect(e.bets.map((b) => b.memberId)).toEqual(['A', 'B'])
+      expect(eventStatus(e, E - 1)).toBe('open')
+      expect(eventStatus(e, E)).toBe('closed')
+      expect(closingAt(e)).toBe(E)
+      const view = eventView(e, E + 1)
+      expect(view).toMatchObject({ status: 'closed', closedAt: E, outcome: { status: 'proposed', objectionUntil: E + DAY } })
+      // Сайт считает статус по ответу так же
+      expect(eventStatus(view, E + 1)).toBe('closed')
+    })
+
+    it('старое событие — без closedAt в ответе: предложено после «приём до»', () => {
+      const e = roomEvents([...base, propose('A', '1')])[0]
+      expect(e.closedAt).toBeNull()
+      expect('closedAt' in eventView(e, P)).toBe(false)
+      expect(closingAt(eventView(e, P))).toBe(2_000)
+      expect(earlyProposal(e)).toBe(false)
+    })
+
+    it('дальше — как обычно: согласие всех — окончательный сразу; сутки без возражения — утверждён', () => {
+      const agreed = [...base, early('A', '1'), agree('B', E + HOUR)]
+      expect(outcomeAt(agreed, E + HOUR)).toMatchObject({ status: 'final', approved: { outcome: '1', how: 'agreed', at: E + HOUR } })
+      expect(outcomeAt([...base, early('A', '1')], E + DAY)).toMatchObject({ status: 'approved', approved: { how: 'unopposed' } })
+    })
+
+    it('возражение, ведущий решает «ещё не известно» — предложение снято, выплат нет, приём закрыт', () => {
+      const log = [...base, early('A', '1'), object('B', E + HOUR), decide('H', NOT_YET, E + 2 * HOUR)]
+      const e = roomEvents(log)[0]
+      expect(withdrawnAt(e, E + 2 * HOUR)).toBe(E + 2 * HOUR)
+      expect(outcomeAt(log, E + 2 * HOUR)).toMatchObject({ status: 'withdrawn', decision: { outcome: NOT_YET }, approved: null, finalAt: null, payouts: [] })
+      expect(eventStatus(e, E + 3 * HOUR)).toBe('closed')
+      expect(eventRefunds(e, eventOutcome(e, E + 3 * HOUR))).toEqual([])
+    })
+
+    it('после снятия — новое предложение: свой ход исхода; снятое — в истории; второе до снятия не действует', () => {
+      const log = [
+        ...base,
+        early('A', '1'),
+        early('A', '2', E + 10, 'x'), // до снятия — не действует
+        object('B', E + HOUR),
+        decide('H', NOT_YET, E + 2 * HOUR),
+        lateBet('C', E + 3 * HOUR),
+        early('A', '2', P, '2'),
+      ]
+      const e = roomEvents(log)[0]
+      expect(e.proposal).toMatchObject({ id: 'PA2', at: P, outcome: '2' })
+      expect(e.objections).toEqual([])
+      expect(e.decision).toBeNull()
+      expect(e.withdrawn.map((r) => r.proposal?.id)).toEqual(['PA'])
+      expect(e.withdrawn[0].decision?.outcome).toBe(NOT_YET)
+      expect(e.closedAt).toBe(E)
+      expect(e.bets.length).toBe(2)
+      expect(outcomeAt(log, P)).toMatchObject({ status: 'proposed', proposal: { outcome: '2' }, objections: [], decision: null })
+      // Второе — после «приём до»: «ещё не известно» уже не действует, решение ведущего — обычное
+      expect(earlyProposal(e)).toBe(false)
+      const decided = [...log, object('B', P + HOUR), decide('H', NOT_YET, P + 2 * HOUR), decide('H', '2', P + 3 * HOUR)]
+      expect(outcomeAt(decided, P + 3 * HOUR)).toMatchObject({ status: 'approved', approved: { outcome: '2', how: 'host' } })
+    })
+
+    it('«ещё не известно» у предложения после «приём до» не действует', () => {
+      const log = [...base, propose('A', '1'), object('B', P + HOUR), decide('H', NOT_YET, P + 2 * HOUR)]
+      expect(outcomeAt(log, P + 2 * HOUR)).toMatchObject({ status: 'disputed', decision: null })
+      expect(withdrawnAt(roomEvents(log)[0], P + 2 * HOUR)).toBeNull()
+    })
+
+    it('голосование: большинство за «ещё не известно» — снято; ничья — ждёт суда; за исход — утверждён', () => {
+      // Ведущий ставил — голосуют C и D
+      const voting = [...base, bet('H', '1', 10), early('A', '1'), object('B', E + HOUR)]
+      const withdrawn = [...voting, vote('C', NOT_YET, E + 2 * HOUR), vote('D', NOT_YET, E + 3 * HOUR)]
+      expect(outcomeAt(withdrawn, E + 3 * HOUR)).toMatchObject({ status: 'withdrawn', approved: null, votes: [{ outcome: NOT_YET }, { outcome: NOT_YET }] })
+      expect(withdrawnAt(roomEvents(withdrawn)[0], E + 3 * HOUR)).toBe(E + 3 * HOUR)
+      const tie = [...voting, vote('C', NOT_YET, E + 2 * HOUR), vote('D', '1', E + 3 * HOUR)]
+      expect(outcomeAt(tie, E + 3 * HOUR)?.status).toBe('court')
+      const one = [...voting, vote('C', NOT_YET, E + 2 * HOUR)]
+      expect(outcomeAt(one, E + 2 * HOUR)?.status).toBe('voting')
+      // 72 часа: один голос «ещё не известно» — большинство поданных
+      expect(outcomeAt(one, E + HOUR + VOTING_TIME)?.status).toBe('withdrawn')
+      expect(withdrawnAt(roomEvents(one)[0], E + HOUR + VOTING_TIME)).toBe(E + HOUR + VOTING_TIME)
+      const yes = [...voting, vote('C', '1', E + 2 * HOUR), vote('D', '1', E + 3 * HOUR)]
+      expect(outcomeAt(yes, E + 3 * HOUR)).toMatchObject({ status: 'approved', approved: { outcome: '1', how: 'vote' } })
+    })
   })
 
   it('причина возражения — не пустая, до 300 знаков', () => {

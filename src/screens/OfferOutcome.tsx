@@ -1,12 +1,23 @@
 // Исход пари на экране пари (Р-05, Р-06, Р-23): отметки сторон, решение гаранта, новый гарант, итог.
 // Фаза и сроки — offerOutcome на часах сервера по ходу исхода из ответа (offerState); кто какие кнопки
 // видит — правила (sideOf, checkMark, checkDecide, checkDecline, checkNominate), без своих проверок;
-// итог сторон — offerNets. Блок — у принятого, когда «исход к» настал или исход уже пошёл. Каждое
+// итог сторон — offerNets. Блок — у принятого, когда «исход к» настал или исход уже пошёл; до «исход
+// к» сторонам — «Исход уже известен?»: отметить можно в любой миг после принятия (Р-27). Каждое
 // действие — окном подтверждения экрана пари (номер запроса по пари, действию и выбору — Р-13)
 import { useState, type FormEvent } from 'react'
 import { declineOffer, decideOffer, markOffer, nominateGuarantor } from '../api'
 import { formatDateTime } from '../rules/date'
-import { checkDecide, checkDecline, checkMark, checkNominate, offerOutcome, sideOf, type OfferOutcome as Outcome, type OfferSide } from '../rules/offer'
+import {
+  checkDecide,
+  checkDecline,
+  checkMark,
+  checkNominate,
+  offerOutcome,
+  SIDE_SILENCE,
+  sideOf,
+  type OfferOutcome as Outcome,
+  type OfferSide,
+} from '../rules/offer'
 import type { CourtVerdict, OfferView } from '../rules/protocol'
 import { formKey } from '../rules/request'
 import type { SavedRoom } from '../store/db'
@@ -30,17 +41,35 @@ export function OfferOutcome({
   online: boolean
   onAsk: (ask: OfferAsk) => void
 }) {
+  const [known, setKnown] = useState(false) // сторона нажала «Исход уже известен?» до «исход к»
   const state = offerState(offer)
   // С судом (Р-24) — как у сервера: апелляция, решение суда, отмена; без суда — решение до суда
   const court = offerCourt(room, offer)
   const out = offerOutcome(state, now, court)
   const before = offerOutcome(state, now)?.approved?.winner ?? null
-  if (!out || !offer.accepted) return null
-  const started = now >= offer.expectedAt || out.marks.author !== null || out.marks.taker !== null || out.phase !== 'marking'
-  if (!started) return null
-
   const me = room.memberId
   const mySide = sideOf(state, me)
+  if (!out || !offer.accepted) return null
+  const started = now >= offer.expectedAt || out.marks.author !== null || out.marks.taker !== null || out.phase !== 'marking'
+  // До «исход к» не начато: сторонам — «Исход уже известен?» (Р-27), остальным — ничего
+  if (!started && !mySide) return null
+  if (!started && !known) {
+    return (
+      <section className="outcome" aria-label="Исход">
+        <h3>Исход</h3>
+        <p className="hint">
+          Исход к {formatDateTime(offer.expectedAt)}. Стал известен раньше — отметьте его сейчас: совпадут отметки — исход окончательный сразу.
+        </p>
+        {!online && <p className="hint">Действовать можно, когда есть связь с сервером.</p>}
+        <div className="row">
+          <button className="button" type="button" onClick={() => setKnown(true)} disabled={!online}>
+            Исход уже известен?
+          </button>
+        </div>
+      </section>
+    )
+  }
+
   const mayMark = mySide !== null && checkMark(state, me, 'author') === null
   const mayDecide = checkDecide(state, me, 'author', now) === null
   const mayDecline = checkDecline(state, me, now) === null
@@ -71,9 +100,17 @@ export function OfferOutcome({
         : theirs === null
           ? `Если ${ROLE[other]} отметит так же, исход окончательный сразу и не обжалуется.`
           : `${cap(ROLE[other])} отметил иначе — решает гарант ${nameOf(room, offer.guarantorId)}; пока он не решил, отметку можно поменять.`
+    // Первая отметка раньше «исход к» (Р-27): молчание второй стороны — 3 дня с неё
+    const first = out?.marks.author === null && out?.marks.taker === null
+    const silence =
+      first && now < offer.expectedAt
+        ? [
+            `Отмечаете раньше срока «исход к» (${formatDateTime(offer.expectedAt)}). Если ${ROLE[other]} не отметит до ${formatDateTime(now + SIDE_SILENCE)}, решит гарант ${nameOf(room, offer.guarantorId)}.`,
+          ]
+        : []
     onAsk({
       question: `Отметить: ${winnerLabel(winner)}?`,
-      body: [`Вы отмечаете: ${result(winner)}.`, next],
+      body: [`Вы отмечаете: ${result(winner)}.`, next, ...silence],
       button: 'Отметить',
       busyLabel: 'Отмечаю…',
       form: formKey(room.id, offer.id, 'mark', winner),

@@ -2,7 +2,7 @@
 // отменено» с отсчётом по времени сервера, пометка «предмет спора сам ставит». Считают правила (pool.ts, event.ts), здесь — только показ
 import { formatAmount, isCurrencyCode } from '../rules/currency'
 import { formatCountdown, formatDateTime } from '../rules/date'
-import { eventStatus, subjectStake } from '../rules/event'
+import { closingAt, eventStatus, subjectStake } from '../rules/event'
 import type { EventView } from '../rules/protocol'
 import type { SavedRoom } from '../store/db'
 
@@ -41,11 +41,20 @@ export function SubjectFlag({ room, event }: { room: SavedRoom; event: EventView
   )
 }
 
-// Статус — на время сервера now (eventStatus): приём закрывается в срок и между опросами
+// Статус — на время сервера now (eventStatus): приём закрывается в срок и между опросами, а
+// досрочным предложением исхода — раньше срока (closingAt, Р-27)
 export function StatusLine({ event, now }: { event: EventView; now: number }) {
   const status = eventStatus(event, now)
   if (status === 'cancelled') return <span className="status cancelled">отменено — ставки возвращены</span>
-  if (status === 'closed') return <span className="status closed">Приём ставок закрыт {formatDateTime(event.closesAt)}</span>
+  if (status === 'closed') {
+    const at = closingAt(event)
+    return (
+      <span className="status closed">
+        Приём ставок закрыт {formatDateTime(at)}
+        {at < event.closesAt ? ' — исход предложен досрочно' : ''}
+      </span>
+    )
+  }
   return (
     <span className="status open">
       Приём ставок до {formatDateTime(event.closesAt)} — осталось {formatCountdown(event.closesAt - now)}

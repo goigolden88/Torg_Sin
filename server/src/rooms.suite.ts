@@ -20,6 +20,7 @@ import {
   NEED_OUTCOME,
   NEED_REASON,
   NEED_TIMES,
+  NOT_YET,
   OTHER,
   SAME_OUTCOMES,
   SUBJECT_NO_BETS,
@@ -143,7 +144,7 @@ import {
   BANK_FULL,
   BET_TAKEN,
   BETS_CLOSED,
-  BETS_OPEN,
+  BETS_CLOSED_PROPOSED,
   BETTORS_ONLY,
   DEVICE_LINK_TTL,
   EVENT_CANCELLED,
@@ -165,6 +166,7 @@ import {
   OBJECTION_OVER,
   OWN_AGREEMENT,
   OWN_PROPOSAL,
+  PROPOSAL_WITHDRAWN,
   PROPOSER_ONLY,
   readLog,
   REJECTED,
@@ -1072,7 +1074,8 @@ export function roomsSuite(storageName: string, start: (password: string | undef
           const { room, borya, vera } = await room3(s)
           const event = await closedEvent(s, room.roomId, borya, vera)
           const propose = (key: string, outcome: string, requestId?: string) => act(s, room.roomId, key, event.id, 'propose', { outcome, requestId })
-          await refused(propose(borya.key, '1'), 409, BETS_OPEN)
+          // До закрытия приёма — досрочно («Исход уже известен», Р-27): тесты ниже; не автор — нельзя и тогда
+          await refused(propose(vera.key, '1'), 403, PROPOSER_ONLY)
           s.clock.now = event.closesAt
           await refused(propose(vera.key, '1'), 403, PROPOSER_ONLY)
           await refused(propose(room.key, '1'), 403, PROPOSER_ONLY)
@@ -1348,7 +1351,6 @@ export function roomsSuite(storageName: string, start: (password: string | undef
           const { event } = await newEvent(s, room.roomId, room.key, eventForm(s, { subject: room.memberId }))
           await ok(bet(s, room.roomId, borya.key, event.id, { outcome: '1', amount: 300 }))
           await ok(bet(s, room.roomId, vera.key, event.id, { outcome: '2', amount: 100 }))
-          await refused(act(s, room.roomId, gosha.key, event.id, 'propose', { outcome: '1' }), 409, BETS_OPEN)
           s.clock.now = event.closesAt
           await refused(act(s, room.roomId, room.key, event.id, 'propose', { outcome: '1' }), 403, SUBJECT_SILENT)
           expect(await ok<ProposeOutcomeResponse>(act(s, room.roomId, gosha.key, event.id, 'propose', { outcome: '1' }))).toMatchObject({
@@ -1362,6 +1364,105 @@ export function roomsSuite(storageName: string, start: (password: string | undef
           await ok(act(s, room.roomId, gosha.key, event.id, 'vote', { outcome: '2' }))
           await ok(act(s, room.roomId, dasha.key, event.id, 'vote', { outcome: '2' }))
           expect(await outcomeOf(s, room.roomId, vera.key, event.id)).toMatchObject({ status: 'approved', approved: { outcome: '2', how: 'vote' } })
+        })
+
+        it('«Исход уже известен» (Р-27): автор предлагает до «приём до» — приём закрыт навсегда; согласие всех — окончательный сразу', async () => {
+          const s = await server()
+          const { room, borya, vera } = await room3(s)
+          const event = await closedEvent(s, room.roomId, borya, vera)
+          s.clock.now += 1000
+          const proposedAt = s.clock.now
+          expect(proposedAt).toBeLessThan(event.closesAt)
+          const first = await ok<ProposeOutcomeResponse>(act(s, room.roomId, borya.key, event.id, 'propose', { outcome: '1' }))
+          expect(first.proposal).toMatchObject({ at: proposedAt, by: borya.memberId, outcome: '1' })
+          // С этого мига ставок нет — и после «приём до»
+          await refused(bet(s, room.roomId, vera.key, event.id, { outcome: '2', amount: 50 }), 409, BETS_CLOSED_PROPOSED)
+          await refused(bet(s, room.roomId, room.key, event.id, { outcome: '1', amount: 50 }), 409, BETS_CLOSED_PROPOSED)
+          const [view] = await eventsOf(s, room.roomId, vera.key)
+          expect(view).toMatchObject({ status: 'closed', closedAt: proposedAt, outcome: { status: 'proposed', awaiting: [vera.memberId] } })
+          expect(view.bets.length).toBe(2)
+          // Ведущий отменить может только с причиной: приём закрыт
+          await refused(send(s, room.roomId, `events/${event.id}/cancel`, {}, borya.key), 403, HOST_ONLY)
+          await refused(act(s, room.roomId, borya.key, event.id, 'propose', { outcome: '2' }), 409, ALREADY_PROPOSED)
+          s.clock.now = event.closesAt + 1000
+          await refused(bet(s, room.roomId, vera.key, event.id, { outcome: '2', amount: 50 }), 409, BETS_CLOSED_PROPOSED)
+          // Вера согласна — окончательный сразу (Р-21)
+          await ok(act(s, room.roomId, vera.key, event.id, 'agree', {}))
+          expect(await outcomeOf(s, room.roomId, vera.key, event.id)).toMatchObject({ status: 'final', approved: { outcome: '1', how: 'agreed' } })
+          expect(await eventEntries(s, room.roomId)).toEqual(['event.created', 'bet.placed', 'bet.placed', 'outcome.proposed', 'outcome.agreed'])
+        })
+
+        it('возражение на досрочный исход — ведущий решает «ещё не известно»: предложение снято, приём закрыт, исход предлагают снова', async () => {
+          const s = await server()
+          const { room, borya, vera } = await room3(s)
+          const gosha = await member(s, room, 'Гоша')
+          const event = await closedEvent(s, room.roomId, borya, vera)
+          await ok(bet(s, room.roomId, gosha.key, event.id, { outcome: '2', amount: 100 }))
+          s.clock.now += 1000
+          const proposedAt = s.clock.now
+          const requestId = ulid(s.clock.now)
+          const first = await ok<ProposeOutcomeResponse>(act(s, room.roomId, borya.key, event.id, 'propose', { outcome: '1', requestId }))
+          await ok(act(s, room.roomId, vera.key, event.id, 'object', { reason: 'Ещё не взяли на работу' }))
+          await refused(act(s, room.roomId, room.key, event.id, 'decide', { outcome: 'что-то' }), 400, NO_OUTCOME)
+          const decided = await ok<DecideOutcomeResponse>(act(s, room.roomId, room.key, event.id, 'decide', { outcome: NOT_YET }))
+          expect(decided.decision).toMatchObject({ by: room.memberId, outcome: NOT_YET })
+          expect(await outcomeOf(s, room.roomId, vera.key, event.id)).toMatchObject({
+            status: 'withdrawn',
+            decision: { outcome: NOT_YET },
+            approved: null,
+            finalAt: null,
+            payouts: [],
+          })
+          // Снято: решать, возражать и ставить нельзя; приём закрыт и после «приём до»
+          await refused(act(s, room.roomId, room.key, event.id, 'decide', { outcome: '2' }), 409, ALREADY_DECIDED)
+          await refused(act(s, room.roomId, gosha.key, event.id, 'object', { reason: 'И я' }), 409, PROPOSAL_WITHDRAWN)
+          await refused(bet(s, room.roomId, gosha.key, event.id, { outcome: '1', amount: 50 }), 409, BETS_CLOSED_PROPOSED)
+          s.clock.now = event.closesAt + HOUR
+          const [view] = await eventsOf(s, room.roomId, vera.key)
+          expect(view).toMatchObject({ status: 'closed', closedAt: proposedAt, outcome: { status: 'withdrawn' } })
+          // Повтор первого предложения — тот же ответ; новое предложение — можно
+          expect(await ok(act(s, room.roomId, borya.key, event.id, 'propose', { outcome: '1', requestId }))).toEqual(first)
+          await refused(act(s, room.roomId, vera.key, event.id, 'propose', { outcome: '2' }), 403, PROPOSER_ONLY)
+          const second = await ok<ProposeOutcomeResponse>(act(s, room.roomId, borya.key, event.id, 'propose', { outcome: '2' }))
+          expect(second.proposal).toMatchObject({ at: s.clock.now, outcome: '2' })
+          await refused(act(s, room.roomId, borya.key, event.id, 'propose', { outcome: '1' }), 409, ALREADY_PROPOSED)
+          expect(await outcomeOf(s, room.roomId, vera.key, event.id)).toMatchObject({ status: 'proposed', proposal: second.proposal, objections: [], decision: null })
+          // Второе предложение — после «приём до»: «ещё не известно» уже нельзя, решает ведущий как обычно
+          await ok(act(s, room.roomId, gosha.key, event.id, 'object', { reason: 'Не так' }))
+          await refused(act(s, room.roomId, room.key, event.id, 'decide', { outcome: NOT_YET }), 400, NO_OUTCOME)
+          await ok(act(s, room.roomId, room.key, event.id, 'decide', { outcome: '2' }))
+          expect(await outcomeOf(s, room.roomId, vera.key, event.id)).toMatchObject({ status: 'approved', approved: { outcome: '2', how: 'host' } })
+          expect(await eventEntries(s, room.roomId)).toEqual([
+            'event.created',
+            'bet.placed',
+            'bet.placed',
+            'bet.placed',
+            'outcome.proposed',
+            'outcome.objected',
+            'outcome.decided',
+            'outcome.proposed',
+            'outcome.objected',
+            'outcome.decided',
+          ])
+        })
+
+        it('голосование по досрочному исходу: большинство за «ещё не известно» — предложение снято', async () => {
+          const s = await server()
+          const { room, borya, vera } = await room3(s)
+          const gosha = await member(s, room, 'Гоша')
+          const dasha = await member(s, room, 'Даша')
+          const event = await closedEvent(s, room.roomId, borya, vera)
+          await ok(bet(s, room.roomId, room.key, event.id, { outcome: '1', amount: 100 })) // ведущий ставил — голосуют
+          s.clock.now += 1000
+          await ok(act(s, room.roomId, borya.key, event.id, 'propose', { outcome: '1' }))
+          await ok(act(s, room.roomId, vera.key, event.id, 'object', { reason: 'Рано' }))
+          expect(await outcomeOf(s, room.roomId, vera.key, event.id)).toMatchObject({ status: 'voting', voters: [gosha.memberId, dasha.memberId] })
+          await ok(act(s, room.roomId, gosha.key, event.id, 'vote', { outcome: NOT_YET }))
+          await ok(act(s, room.roomId, dasha.key, event.id, 'vote', { outcome: NOT_YET }))
+          expect(await outcomeOf(s, room.roomId, vera.key, event.id)).toMatchObject({ status: 'withdrawn', approved: null })
+          await refused(act(s, room.roomId, dasha.key, event.id, 'vote', { outcome: '1' }), 409, ALREADY_VOTED)
+          await ok(act(s, room.roomId, borya.key, event.id, 'propose', { outcome: '2' }))
+          expect(await outcomeOf(s, room.roomId, vera.key, event.id)).toMatchObject({ status: 'proposed', proposal: { outcome: '2' }, voters: [], votes: [] })
         })
 
         it('отменено после утверждения — «отменено»: без выплат и finalAt, окончательным не станет; только возврат', async () => {
@@ -1899,6 +2000,7 @@ export function roomsSuite(storageName: string, start: (password: string | undef
               ...before,
               phase: 'final',
               marks: { author: 'taker', taker: 'taker' },
+              turnAt: first.marked.at + SIDE_SILENCE, // отметили раньше «исход к» — отсчёт с первой отметки (Р-27)
               guarantorUntil: null,
               approved: { winner: 'taker', at, how: 'agreement', by: null },
               finalAt: at,
@@ -1988,11 +2090,12 @@ export function roomsSuite(storageName: string, start: (password: string | undef
           await refused(decide(s, room.roomId, room.key, offer.id, 'author'), 409, AGREED)
         })
 
-        it('сторона молчит 3 дня после «исход к» — решает гарант; гарант молчит 3 дня — нужен другой', async () => {
+        it('сторона отметила раньше «исход к», вторая молчит 3 дня с отметки — решает гарант (Р-27); гарант молчит 3 дня — нужен другой', async () => {
           const s = await server()
           const { room, borya, gosha, offer } = await acceptedOffer(s)
+          expect(s.clock.now).toBeLessThan(offer.expectedAt)
           await ok(mark(s, room.roomId, borya.key, offer.id, 'author'))
-          const turnAt = offer.expectedAt + SIDE_SILENCE
+          const turnAt = s.clock.now + SIDE_SILENCE
           s.clock.now = turnAt - 1
           await refused(decide(s, room.roomId, room.key, offer.id, 'author'), 409, NOT_TURN)
           expect((await outcomeOf(s, room.roomId, gosha.key, offer.id))?.phase).toBe('marking')
