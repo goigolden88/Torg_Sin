@@ -13,6 +13,7 @@ import {
   offerStakes,
   offerStatus,
   SIDE_SILENCE,
+  subjectIsSide,
   type OfferOutcome,
   type OfferSide,
   type OfferState,
@@ -85,6 +86,7 @@ export function offerState(o: OfferView): OfferState {
     closesAt: o.closesAt,
     expectedAt: o.expectedAt,
     counterTo: o.counterTo,
+    subject: o.subjectId,
     guarantorId: o.guarantorId,
     accepted: o.accepted,
     withdrawnAt: o.withdrawnAt,
@@ -192,6 +194,12 @@ export function stakesLine(room: SavedRoom, o: OfferView): string {
   const author = o.authorId === room.memberId ? 'вы ставите' : `${nameOf(room, o.authorId)} ставит`
   const taker = o.accepted ? (o.accepted.by === room.memberId ? 'вы' : nameOf(room, o.accepted.by)) : 'соперник'
   return `${author} ${sum(s.author)} на „${sideLabel(o.side)}“, ${taker} — ${sum(s.taker)} (кэф ${oddsLabel(o.odds)}), банк ${sum(s.bank)}`
+}
+
+// Пометка-предупреждение (Р-26): предмет спора — сторона пари, он на «сбудется»; иначе ничего
+export function OfferSubjectFlag({ room, offer }: { room: SavedRoom; offer: OfferView }) {
+  if (!subjectIsSide(offer) || offer.subjectId === null) return null
+  return <span className="subject-flag">⚑ {who(room, offer.subjectId)} — предмет спора — сам на стороне „{sideLabel('yes')}“</span>
 }
 
 // Кому: адресат или «открытое — любой»

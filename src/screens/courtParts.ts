@@ -26,6 +26,7 @@ export function eventState(e: EventView, hostId: string): EventState {
     closesAt: e.closesAt,
     expectedAt: e.expectedAt,
     subjectId: e.subjectId,
+    subjectRule: e.subjectRule,
     requestId: '',
     clarifications: e.clarifications,
     bets: e.bets.map((b) => ({ ...b, event: e.id, requestId: '' })),

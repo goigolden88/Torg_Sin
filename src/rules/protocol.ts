@@ -1,6 +1,7 @@
 // Протокол сайта и сервера (Р-01): версия — в каждом ответе и сообщении. Чистые
 // функции и типы — ими пользуются и экран, и сервер; ни DOM, ни Cloudflare здесь нет
-export const PROTOCOL_VERSION = 3
+// 4 — предмет спора (Р-26): subjectRule у события, subjectId у пари, subject в «Предложить пари»
+export const PROTOCOL_VERSION = 4
 
 // Ответ GET /health: сервер жив, его протокол и время (UTC, мс) — по нему закрываются сроки
 export type Health = { v: number; ok: true; time: number }
@@ -56,6 +57,7 @@ export type OfferInfo = {
   expectedAt: number // исход к
   guarantorId: string
   counterTo: string | null
+  subjectId: string | null // о ком спор (Р-26): только на стороне «сбудется», не гарант; null — ни о ком
 }
 
 // «открыто» / «истекло» (приём до прошёл, по времени сервера) / «отозвано» / «закрыто встречным» /
@@ -165,6 +167,7 @@ export type CreateOfferRequest = {
   closesAt: number
   expectedAt: number
   guarantor?: string
+  subject?: string // о ком спор (Р-26); не задан — ни о ком
   requestId?: string
 }
 export type CreateOfferResponse = { v: number; offer: OfferInfo }
@@ -197,6 +200,9 @@ export type EventInfo = {
   closesAt: number // приём ставок до (не включая)
   expectedAt: number // исход ожидается к
   subjectId: string | null // предмет спора — участник комнаты, если спор о нём
+  // Правило предмета (Р-26): предмет ставит только на «Да», в событии со своими исходами — не ставит.
+  // Есть у событий с предметом, заведённых после выкатки; у старых — false: ставки как были
+  subjectRule: boolean
 }
 
 export type BetInfo = { id: string; event: string; memberId: string; outcome: string; amount: number; at: number }
@@ -443,6 +449,7 @@ function isEventInfo(r: Record<string, unknown>): boolean {
     strings(r, 'id', 'authorId', 'condition', 'check') &&
     numbers(r, 'at', 'closesAt', 'expectedAt') &&
     (r.subjectId === null || typeof r.subjectId === 'string') &&
+    typeof r.subjectRule === 'boolean' &&
     list(r.outcomes, (o) => strings(o, 'id', 'title')) &&
     (r.outcomes as unknown[]).length >= 2
   )
@@ -629,7 +636,8 @@ function isOfferInfo(r: Record<string, unknown>): boolean {
     !!odds &&
     numbers(odds, 'a', 'b') &&
     orNull(r.to, 'string') &&
-    orNull(r.counterTo, 'string')
+    orNull(r.counterTo, 'string') &&
+    orNull(r.subjectId, 'string')
   )
 }
 

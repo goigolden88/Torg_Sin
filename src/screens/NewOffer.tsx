@@ -1,6 +1,7 @@
 // «Предложить пари» (Р-04): условие, «как проверяем», своя сторона («сбудется» / «не сбудется»), кэф
 // «a к b», своя сумма, кому (участник или «открытое — любой»), «приём до», «исход к», гарант (по
-// умолчанию ведущий; ведущий — сторона — выбрать обязательно). Под формой по ходу ввода — «вы ставите
+// умолчанию ведущий; ведущий — сторона — выбрать обязательно), о ком спор (по желанию, Р-26: предмет —
+// только на «сбудется» и не гарант; сторона тогда — одна). Под формой по ходу ввода — «вы ставите
 // …, соперник — …, банк …» (offerStakes). «Предложить» — окно подтверждения; повтор той же формы —
 // тот же номер запроса: двойное нажатие и повтор после «нет связи» дают одно пари (Р-13). Отказ
 // сервера — текстом под формой, введённое остаётся. Проверка до отправки — правила (offer.ts)
@@ -9,7 +10,18 @@ import { createOffer } from '../api'
 import { currency as currencyOf, isCurrencyCode, parseAmount, type CurrencyCode } from '../rules/currency'
 import { formatDateTime, fromLocalInput, toLocalInput } from '../rules/date'
 import { MAX_EVENT_TEXT } from '../rules/event'
-import { BAD_ODDS, checkOfferInput, checkOfferTimes, NEED_GUARANTOR, NEED_TIMES, offerGuarantor, offerStakes, type OfferInput } from '../rules/offer'
+import {
+  BAD_ODDS,
+  checkOfferInput,
+  checkOfferSubject,
+  checkOfferTimes,
+  NEED_GUARANTOR,
+  NEED_GUARANTOR_SUBJECT,
+  NEED_TIMES,
+  offerGuarantor,
+  offerStakes,
+  type OfferInput,
+} from '../rules/offer'
 import { formKey, requestFor, type PendingRequest } from '../rules/request'
 import { ulid } from '../rules/ulid'
 import type { SavedRoom } from '../store/db'
@@ -45,6 +57,7 @@ export function NewOffer({ room, onUpdate }: { room: SavedRoom; onUpdate: (room:
   const [closes, setCloses] = useState(times.closes)
   const [expected, setExpected] = useState(times.expected)
   const [guarantor, setGuarantor] = useState('') // пусто — ведущий
+  const [subject, setSubject] = useState('') // о ком спор (Р-26); пусто — ни о ком
   const [error, setError] = useState('')
   const [ask, setAsk] = useState<Ask | null>(null)
   const [busy, setBusy] = useState(false)
@@ -64,13 +77,24 @@ export function NewOffer({ room, onUpdate }: { room: SavedRoom; onUpdate: (room:
   const code = isCurrencyCode(room.currency) ? room.currency : null
   const sign = code ? currencyOf(code).sign || code : room.currency
   const others = room.members.filter((m) => m.id !== room.memberId)
-  // Ведущий — автор или адресат: гаранта по умолчанию нет, выбрать обязательно
+  // Ведущий — автор, адресат или предмет спора: гаранта по умолчанию нет, выбрать обязательно
   const hostIsSide = room.hostId === room.memberId || room.hostId === to
-  const candidates = others.filter((m) => m.id !== to && m.id !== room.hostId)
+  const hostNoDefault = hostIsSide || room.hostId === subject
+  const candidates = others.filter((m) => m.id !== to && m.id !== room.hostId && m.id !== subject)
+  // Предмет спора (Р-26) — только на «сбудется»: предмет — вы — ваша сторона «сбудется»; предмет —
+  // адресат — ваша «не сбудется». Иначе сторону выбираете сами
+  const fixedSide: 'yes' | 'no' | null = subject === '' ? null : subject === room.memberId ? 'yes' : subject === to ? 'no' : null
+  const mySide = fixedSide ?? side
 
   function chooseTo(id: string) {
     setTo(id)
     // Адресат не бывает гарантом; ведущий стал стороной — его по умолчанию больше нет
+    if (guarantor === id) setGuarantor('')
+  }
+
+  function chooseSubject(id: string) {
+    setSubject(id)
+    // Предмет спора не бывает гарантом
     if (guarantor === id) setGuarantor('')
   }
 
@@ -92,17 +116,20 @@ export function NewOffer({ room, onUpdate }: { room: SavedRoom; onUpdate: (room:
     const checked = checkOfferInput({
       condition,
       check,
-      side,
+      side: mySide,
       odds: { a: oddsNumber(a), b: oddsNumber(b) },
       amount: sum.value,
       to: to || null,
       closesAt,
       expectedAt,
       guarantor: guarantor || null,
+      subject: subject || null,
     })
     if (!checked.ok) return setError(checked.error)
     const g = offerGuarantor(checked.value, room.memberId, roomRolesOf(room))
     if (!g.ok) return setError(g.error)
+    const about = checkOfferSubject(checked.value, room.memberId, roomRolesOf(room))
+    if (about) return setError(about)
     const late = checkOfferTimes(checked.value, serverTime(clock))
     if (late) return setError(late)
     setError('')
@@ -112,7 +139,7 @@ export function NewOffer({ room, onUpdate }: { room: SavedRoom; onUpdate: (room:
   async function confirm() {
     if (!ask || sending.current) return
     const x = ask.input
-    const form = formKey(room.id, x.condition, x.check, x.side, String(x.odds.a), String(x.odds.b), String(x.amount), x.to ?? '', String(x.closesAt), String(x.expectedAt), x.guarantor ?? '')
+    const form = formKey(room.id, x.condition, x.check, x.side, String(x.odds.a), String(x.odds.b), String(x.amount), x.to ?? '', String(x.closesAt), String(x.expectedAt), x.guarantor ?? '', x.subject ?? '')
     const request = requestFor(pending.current, form, ulid)
     pending.current = request
     sending.current = true
@@ -128,6 +155,7 @@ export function NewOffer({ room, onUpdate }: { room: SavedRoom; onUpdate: (room:
         closesAt: x.closesAt,
         expectedAt: x.expectedAt,
         ...(x.guarantor ? { guarantor: x.guarantor } : {}),
+        ...(x.subject ? { subject: x.subject } : {}),
         requestId: request.requestId,
       })
       if (!res.ok) {
@@ -176,15 +204,45 @@ export function NewOffer({ room, onUpdate }: { room: SavedRoom; onUpdate: (room:
           <fieldset className="field">
             <legend>Ваша сторона</legend>
             <div className="chips">
-              <label className="chip">
-                <input type="radio" name="offer-side" checked={side === 'yes'} onChange={() => setSide('yes')} />
-                <span>Сбудется</span>
-              </label>
-              <label className="chip">
-                <input type="radio" name="offer-side" checked={side === 'no'} onChange={() => setSide('no')} />
-                <span>Не сбудется</span>
-              </label>
+              {fixedSide !== 'no' && (
+                <label className="chip">
+                  <input type="radio" name="offer-side" checked={mySide === 'yes'} onChange={() => setSide('yes')} />
+                  <span>Сбудется</span>
+                </label>
+              )}
+              {fixedSide !== 'yes' && (
+                <label className="chip">
+                  <input type="radio" name="offer-side" checked={mySide === 'no'} onChange={() => setSide('no')} />
+                  <span>Не сбудется</span>
+                </label>
+              )}
             </div>
+            {fixedSide && (
+              <span className="hint">
+                {fixedSide === 'yes'
+                  ? 'Спор о вас: предмет спора — только на стороне «сбудется».'
+                  : `Предмет спора — ${nameOf(room, subject)}, кому вы предлагаете: он бывает только на «сбудется», поэтому ваша сторона — «не сбудется».`}
+              </span>
+            )}
+          </fieldset>
+          <fieldset className="field">
+            <legend>О ком спор</legend>
+            <div className="chips">
+              <label className="chip">
+                <input type="radio" name="offer-subject" value="" checked={subject === ''} onChange={() => chooseSubject('')} />
+                <span>Ни о ком</span>
+              </label>
+              {room.members.map((m) => (
+                <label key={m.id} className="chip">
+                  <input type="radio" name="offer-subject" value={m.id} checked={subject === m.id} onChange={() => chooseSubject(m.id)} />
+                  <span>
+                    {m.name}
+                    {m.id === room.memberId ? ' (вы)' : ''}
+                  </span>
+                </label>
+              ))}
+            </div>
+            <span className="hint">По желанию. Предмет спора бывает только на стороне «сбудется» и не бывает гарантом.</span>
           </fieldset>
           <OddsField a={a} b={b} onA={setA} onB={setB} mine="Вы рискуете" theirs="Соперник" />
           <label className="field">
@@ -226,7 +284,7 @@ export function NewOffer({ room, onUpdate }: { room: SavedRoom; onUpdate: (room:
           <fieldset className="field">
             <legend>Гарант</legend>
             <div className="chips">
-              {!hostIsSide && (
+              {!hostNoDefault && (
                 <label className="chip">
                   <input type="radio" name="offer-guarantor" value="" checked={guarantor === ''} onChange={() => setGuarantor('')} />
                   <span>Ведущий — {nameOf(room, room.hostId)}</span>
@@ -240,15 +298,15 @@ export function NewOffer({ room, onUpdate }: { room: SavedRoom; onUpdate: (room:
               ))}
             </div>
             <span className="hint">
-              {hostIsSide && guarantor === ''
-                ? NEED_GUARANTOR + '.'
+              {hostNoDefault && guarantor === ''
+                ? (hostIsSide ? NEED_GUARANTOR : NEED_GUARANTOR_SUBJECT) + '.'
                 : 'Гарант решает исход, если вы с соперником разойдётесь или кто-то промолчит 3 дня. Он не принимает пари.'}
             </span>
           </fieldset>
           {room.members.length < SMALL_ROOM && <p className="hint">{SMALL_ROOM_NOTE}</p>}
         </div>
 
-        <Summary side={side} a={a} b={b} amount={amount} code={code} currency={room.currency} />
+        <Summary side={mySide} a={a} b={b} amount={amount} code={code} currency={room.currency} />
         {error && (
           <p className="error" role="alert">
             {error}
@@ -327,7 +385,8 @@ function ConfirmOffer({ room, ask, busy, onConfirm, onClose }: { room: SavedRoom
           </p>
         )}
         <p className="hint">
-          Кому: {x.to ? nameOf(room, x.to) : 'открытое — любой'} · гарант — {nameOf(room, ask.guarantorId)} · приём до {formatDateTime(x.closesAt)} · исход к{' '}
+          Кому: {x.to ? nameOf(room, x.to) : 'открытое — любой'} · гарант — {nameOf(room, ask.guarantorId)}
+          {x.subject ? ` · о ком спор — ${nameOf(room, x.subject)}` : ''} · приём до {formatDateTime(x.closesAt)} · исход к{' '}
           {formatDateTime(x.expectedAt)}
         </p>
         <p className="hint">Пока пари не приняли, его можно отозвать.</p>

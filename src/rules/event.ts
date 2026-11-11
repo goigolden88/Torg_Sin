@@ -55,6 +55,9 @@ export const NEED_REASON = 'Нужна причина отмены'
 export const LONG_REASON = `Причина — не длиннее ${MAX_EVENT_TEXT} знаков`
 export const NEED_OBJECTION = 'Нужна причина возражения'
 export const LONG_OBJECTION = `Причина возражения — не длиннее ${MAX_EVENT_TEXT} знаков`
+// Предмет спора ставит только на «сбудется» (Р-26)
+export const SUBJECT_YES_ONLY = `Вы — предмет спора: ставить можно только на „${YES}“`
+export const SUBJECT_NO_BETS = 'Вы — предмет спора: в событии со своими исходами вы не ставите'
 
 export type EventOutcome = EventInfo['outcomes'][number]
 
@@ -230,7 +233,8 @@ export function roomEvents(log: readonly LogEntry[]): EventState[] {
     if (!ev) continue
     switch (e.type) {
       case 'bet.placed':
-        ev.bets.push({ ...betOf(e), requestId: e.requestId })
+        // Правило предмета (Р-26) — только у событий с признаком; у старых ставка действует, как была
+        if (!subjectBetError(ev, e.memberId, e.outcome)) ev.bets.push({ ...betOf(e), requestId: e.requestId })
         break
       case 'event.clarified':
         ev.clarifications.push({ id: e.id, at: e.at, text: e.text })
@@ -274,7 +278,44 @@ export function eventInfo(e: CreatedEntry): EventInfo {
     closesAt: e.closesAt,
     expectedAt: e.expectedAt,
     subjectId: e.subject,
+    subjectRule: e.subjectRule === 1,
   }
+}
+
+// Исходы события — «Да» и «Нет» (не заданы при создании); свои кончаются «Другое»
+export function yesNoOutcomes(outcomes: readonly EventOutcome[]): boolean {
+  return outcomes.length === 2 && outcomes[0].title === YES && outcomes[1].title === NO
+}
+
+type SubjectRoles = { subjectId: string | null; subjectRule: boolean; outcomes: readonly EventOutcome[] }
+
+// Может ли участник поставить на исход по правилу предмета (Р-26): правило есть (subjectRule) и он
+// предмет спора — только на «Да»; в событии со своими исходами — никак. Остальным и событиям без
+// признака — без ограничений. Можно — null, иначе отказ
+export function subjectBetError(e: SubjectRoles, memberId: string, outcome: string): string | null {
+  if (!e.subjectRule || e.subjectId === null || memberId !== e.subjectId) return null
+  if (!yesNoOutcomes(e.outcomes)) return SUBJECT_NO_BETS
+  return outcome === e.outcomes[0].id ? null : SUBJECT_YES_ONLY
+}
+
+// Исходы, на которые участник может поставить (экран ставки показывает только их)
+export function betOutcomes(e: SubjectRoles, memberId: string): EventOutcome[] {
+  return e.outcomes.filter((o) => !subjectBetError(e, memberId, o.id))
+}
+
+// Пометка для всех (Р-26): предмет спора сам поставил — сколько и на что, по порядку исходов;
+// «против себя» — в событии «Да / Нет» есть его ставка на «Нет» (так бывает только у старых событий,
+// без признака правила). Предмета нет или он не ставил — null
+export type SubjectStake = { stakes: { outcome: string; title: string; amount: number }[]; against: boolean }
+
+export function subjectStake(e: { subjectId: string | null; outcomes: readonly EventOutcome[]; bets: readonly { memberId: string; outcome: string; amount: number }[] }): SubjectStake | null {
+  const own = e.bets.filter((b) => e.subjectId !== null && b.memberId === e.subjectId)
+  if (own.length === 0) return null
+  const stakes = e.outcomes
+    .map((o) => ({ outcome: o.id, title: o.title, amount: own.filter((b) => b.outcome === o.id).reduce((s, b) => s + b.amount, 0) }))
+    .filter((s) => s.amount > 0)
+  const against = yesNoOutcomes(e.outcomes) && stakes.some((s) => s.outcome === e.outcomes[1].id)
+  return { stakes, against }
 }
 
 // Статус по времени сервера: приём закрывается в срок, даже если сервер в этот миг лежал
@@ -454,6 +495,7 @@ export function infoOf(e: EventInfo): EventInfo {
     closesAt: e.closesAt,
     expectedAt: e.expectedAt,
     subjectId: e.subjectId,
+    subjectRule: e.subjectRule,
   }
 }
 

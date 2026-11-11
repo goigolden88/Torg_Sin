@@ -37,6 +37,7 @@ import {
   objectionOut,
   roomEvents,
   sameEvent,
+  subjectBetError,
   type EventInput,
   type EventState,
 } from '../../src/rules/event'
@@ -50,6 +51,7 @@ import {
   checkMark,
   checkNominate,
   checkOfferInput,
+  checkOfferSubject,
   checkOfferTimes,
   checkWithdraw,
   CLOSE_PASSED,
@@ -73,6 +75,8 @@ import {
   OWN_OFFER,
   roomRoles,
   sideOf,
+  SUBJECT_GUARANTOR,
+  SUBJECT_TAKES,
   type OfferEntry,
   type OfferInput,
   type OfferSide,
@@ -664,6 +668,8 @@ async function createEvent(
   const late = checkEventTimes(input, now)
   if (late) return fail(400, late)
   const id = ulid(now)
+  // Событие с предметом — с признаком правила предмета (Р-26); без предмета признак не нужен
+  const rule = input.subject !== null
   await append(storage, [
     {
       id,
@@ -676,6 +682,7 @@ async function createEvent(
       closesAt: input.closesAt,
       expectedAt: input.expectedAt,
       subject: input.subject,
+      ...(rule && { subjectRule: 1 as const }),
       requestId: a.requestId,
     },
   ])
@@ -690,6 +697,7 @@ async function createEvent(
       closesAt: input.closesAt,
       expectedAt: input.expectedAt,
       subjectId: input.subject,
+      subjectRule: rule,
     },
   })
 }
@@ -729,6 +737,9 @@ async function placeBet(
   if (status === 'cancelled') return fail(409, EVENT_CANCELLED)
   if (status === 'closed') return fail(409, BETS_CLOSED)
   if (!event.outcomes.some((o) => o.id === a.outcome)) return fail(400, NO_OUTCOME)
+  // Предмет спора — только на «Да», в событии со своими исходами — никак (Р-26; у старых событий — без правила)
+  const subject = subjectBetError(event, c.me, a.outcome)
+  if (subject) return fail(403, subject)
   if (eventBank(event) + a.amount > Number.MAX_SAFE_INTEGER) return fail(400, BANK_FULL)
   const bet: BetInfo = { id: ulid(now), event: event.id, memberId: c.me, outcome: a.outcome, amount: a.amount, at: now }
   await append(storage, [{ ...bet, type: 'bet.placed', requestId: a.requestId }])
@@ -948,8 +959,9 @@ const OFFER_FORBIDDEN: readonly string[] = [
   GUARANTOR_MARKS,
   NOT_SIDE,
   ONLY_GUARANTOR,
+  SUBJECT_TAKES,
 ]
-const OFFER_BAD_BODY: readonly string[] = [BAD_MARK, BAD_GUARANTOR]
+const OFFER_BAD_BODY: readonly string[] = [BAD_MARK, BAD_GUARANTOR, SUBJECT_GUARANTOR]
 
 function offerRefusal(error: string): Failure {
   if (error === EXPIRED) return fail(409, OFFER_CLOSED)
@@ -979,6 +991,8 @@ async function writeOffer(
 ): Promise<ActionResult<'createOffer'>> {
   const guarantor = offerGuarantor(input, c.me, c.roles)
   if (!guarantor.ok) return fail(400, guarantor.error)
+  const subject = checkOfferSubject(input, c.me, c.roles)
+  if (subject) return fail(400, subject)
   const late = checkOfferTimes(input, now)
   if (late) return fail(late === CLOSE_PASSED ? 409 : 400, late)
   const entry: LogEntry = {
@@ -996,6 +1010,8 @@ async function writeOffer(
     expectedAt: input.expectedAt,
     guarantor: guarantor.value,
     counterTo,
+    // О ком спор (Р-26) — только если задан: у пари ни о ком поля нет, как до выкатки
+    ...(input.subject !== null && { subject: input.subject }),
     requestId,
   }
   await append(storage, [entry])
@@ -1024,6 +1040,7 @@ async function createOffer(
         e.side === input.side &&
         e.to === input.to &&
         e.expectedAt === input.expectedAt &&
+        (e.subject ?? null) === input.subject &&
         e.guarantor === (input.guarantor ?? c.state.hostId),
     )
   }
