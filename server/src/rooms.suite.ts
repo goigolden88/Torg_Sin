@@ -2073,6 +2073,37 @@ export function roomsSuite(storageName: string, start: (password: string | undef
           ])
         })
 
+        it('новый гарант вместо отказавшегося — не предмет спора (Р-26); пари без предмета — как раньше', async () => {
+          const s = await server()
+          const { room, borya, vera, gosha } = await room4(s)
+          // Пари о Гоше: Боря за «сбудется», Вера приняла, гарант — Аня (ведущая)
+          const about = await newOffer(s, room.roomId, borya.key, offerForm(s, { subject: gosha.memberId }))
+          const plain = await newOffer(s, room.roomId, borya.key, offerForm(s))
+          s.clock.now += 1000
+          for (const o of [about, plain]) await ok(offerAct(s, room.roomId, vera.key, o.offer.id, 'accept'))
+          s.clock.now += 1000
+          for (const o of [about, plain]) await ok(offerAct(s, room.roomId, room.key, o.offer.id, 'decline'))
+          const nominate = (key: string, offer: string, guarantor: string) => offerAct(s, room.roomId, key, offer, 'nominate', { guarantor })
+          await refused(nominate(borya.key, about.offer.id, gosha.memberId), 400, SUBJECT_GUARANTOR)
+          await refused(nominate(vera.key, about.offer.id, gosha.memberId), 400, SUBJECT_GUARANTOR)
+          // Пари без предмета: Гоша — кандидат, как раньше
+          await ok(nominate(borya.key, plain.offer.id, gosha.memberId))
+          await ok(nominate(vera.key, plain.offer.id, gosha.memberId))
+          const views = await offersOf(s, room.roomId, borya.key)
+          expect(views.find((o) => o.id === about.offer.id)?.outcome).toMatchObject({ phase: 'need-guarantor', guarantorId: room.memberId, nominations: {} })
+          expect(views.find((o) => o.id === plain.offer.id)?.guarantorId).toBe(gosha.memberId)
+          expect(await offerEntries(s, room.roomId)).toEqual([
+            'offer.created',
+            'offer.created',
+            'offer.accepted',
+            'offer.accepted',
+            'offer.declined',
+            'offer.declined',
+            'offer.nominated',
+            'offer.nominated',
+          ])
+        })
+
         it('повтор с тем же requestId — тот же ответ без второй записи (и после утверждения); чужое — 409', async () => {
           const s = await server()
           const { room, borya, vera, gosha, offer } = await acceptedOffer(s)

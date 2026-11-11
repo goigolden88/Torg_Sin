@@ -2143,6 +2143,28 @@ async function subjects(cdp: Cdp, size: Size, startServer: ServerModule['startSe
     if (visible.includes('Принять') || visible.includes('Встречное')) throw new Error('Предмету спора видны «Принять» или «Встречное»: ' + visible.join(', '))
     await anya.shot('96-predmet-ne-prinimaet')
 
+    // Пари о Ане: Вера за «сбудется», Боря принял, гарант Гена отказался — Ани среди кандидатов нет
+    const gena = await join('Гена')
+    const aboutAnya2 = await api<{ offer: { id: string } }>(server, `${rooms}/offers`, vera.key, {
+      condition: 'Аня пробежит 10 км быстрее часа',
+      check: 'Трек из приложения',
+      odds: { a: 1, b: 1 },
+      amount: 10000,
+      closesAt,
+      expectedAt: closesAt + 30 * 24 * HOUR,
+      guarantor: gena.memberId,
+      subject: room.memberId,
+    })
+    await api(server, `${rooms}/offers/${aboutAnya2.offer.id}/accept`, borya.key, {})
+    await api(server, `${rooms}/offers/${aboutAnya2.offer.id}/decline`, gena.key, {})
+    await boryaPhone.goto(offerHref(aboutAnya2.offer.id))
+    await boryaPhone.waitText('Назовите нового гаранта')
+    const nominees = await boryaPhone.eval<string[]>(`[...document.querySelectorAll('input[name="offer-nominee"]')].map((i) => i.value)`)
+    if (nominees.includes(room.memberId)) throw new Error('Предмет спора — среди кандидатов в новые гаранты')
+    if (!nominees.includes(gena.memberId)) throw new Error('Нет кандидата Гены в новые гаранты: ' + nominees.join(', '))
+    await noScroll(boryaPhone, 'Новый гарант в пари о ком-то')
+    await boryaPhone.shot('98-predmet-ne-novyi-garant')
+
     // Комната у Бори: пометки в списках событий и пари
     await boryaPhone.goto(`${SITE}#/room/${room.roomId}`)
     await boryaPhone.waitIn('section[aria-label="События"]', '⚑ Аня — предмет спора — сам ставит: 300 ₽ на „Да“')

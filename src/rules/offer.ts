@@ -406,7 +406,8 @@ export function checkDecline(o: OfferState, memberId: string, now: number): stri
   return null
 }
 
-// Новый гарант: называет сторона, когда нужен другой; кандидат — участник, не сторона
+// Новый гарант: называет сторона, когда нужен другой; кандидат — участник, не сторона и не предмет
+// спора (Р-26; у пари до выкатки предмета нет — как раньше)
 export function checkNominate(o: OfferState, memberId: string, guarantor: unknown, room: RoomRoles, now: number): string | null {
   const settled = settledError(o)
   if (settled) return settled
@@ -415,6 +416,7 @@ export function checkNominate(o: OfferState, memberId: string, guarantor: unknow
   if (typeof guarantor !== 'string' || !room.members.includes(guarantor) || sideOf(o, guarantor)) {
     return BAD_GUARANTOR
   }
+  if (o.subject !== null && guarantor === o.subject) return SUBJECT_GUARANTOR
   return null
 }
 

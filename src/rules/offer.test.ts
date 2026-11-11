@@ -548,6 +548,27 @@ describe('о ком спор у пари (Р-26)', () => {
     expect(offerGuarantor({ to: null, guarantor: null, subject: 'c' }, 'a', room)).toEqual({ ok: true, value: 'h' })
   })
 
+  it('новый гарант вместо отказавшегося — не предмет; пари без предмета — как раньше', () => {
+    const recs = (subject: string | null) => [
+      created({ subject }),
+      act('offer.accepted', 'b', T + 10),
+      mark('a', 'author', T + 20),
+      mark('b', 'taker', T + 30),
+      act('offer.declined', 'h', T + 40),
+    ]
+    const o = one(recs('c'))
+    expect(checkNominate(o, 'a', 'c', room, T + 41)).toBe(SUBJECT_GUARANTOR)
+    expect(checkNominate(o, 'a', 'g', room, T + 41)).toBeNull()
+    // Свёртка: обе стороны назвали предмет — гарант не меняется
+    const both = one([...recs('c'), nominate('a', 'c', T + 41), nominate('b', 'c', T + 42)])
+    expect(both.guarantorId).toBe('h')
+    expect(both.nominations).toEqual({})
+    expect(offerOutcome(both, T + 42)?.phase).toBe('need-guarantor')
+    // Старое пари без предмета: c — по-прежнему кандидат
+    const old = one([...recs(null), nominate('a', 'c', T + 41), nominate('b', 'c', T + 42)])
+    expect(old.guarantorId).toBe('c')
+  })
+
   it('принять: предмет — только если автор за «не сбудется»; остальные — как раньше', () => {
     const yes = one([created({ subject: 'b' })])
     expect(checkAccept(yes, 'b', room, T)).toBe(SUBJECT_TAKES)

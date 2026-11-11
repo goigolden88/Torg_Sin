@@ -75,6 +75,7 @@ import {
   OWN_OFFER,
   roomRoles,
   sideOf,
+  SUBJECT_GUARANTOR,
   SUBJECT_TAKES,
   type OfferEntry,
   type OfferInput,
@@ -960,7 +961,7 @@ const OFFER_FORBIDDEN: readonly string[] = [
   ONLY_GUARANTOR,
   SUBJECT_TAKES,
 ]
-const OFFER_BAD_BODY: readonly string[] = [BAD_MARK, BAD_GUARANTOR]
+const OFFER_BAD_BODY: readonly string[] = [BAD_MARK, BAD_GUARANTOR, SUBJECT_GUARANTOR]
 
 function offerRefusal(error: string): Failure {
   if (error === EXPIRED) return fail(409, OFFER_CLOSED)
