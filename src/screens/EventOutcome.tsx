@@ -66,9 +66,10 @@ const EARLY_NOTE = [
 ]
 
 // «Ещё не известно» в решении ведущего и голосе (Р-27): вопрос и пояснение окна
-const NOT_YET_ASK: Record<'decide' | 'vote', { question: string; note: string }> = {
+const NOT_YET_ASK: Record<'decide' | 'vote', { question: string; note: string; button?: string }> = {
   decide: {
     question: 'Решить: исход ещё не известен?',
+    button: 'Снять предложение',
     note: 'Предложение снимется, приём ставок останется закрытым. Исход предложат снова, когда станет ясно. Решение не изменить.',
   },
   vote: {
@@ -158,7 +159,7 @@ export function EventOutcome({
       form: formKey(room.id, event.id, action, outcome),
       question: special ? special.question : c.question(title(outcome)),
       note: special ? [special.note] : action === 'propose' && early ? EARLY_NOTE : [c.note],
-      button: c.button,
+      button: special?.button ?? c.button,
       busyLabel: c.busyLabel,
       send: (requestId) => c.send(room.server, room.id, room.key, event.id, { outcome, requestId }),
     })

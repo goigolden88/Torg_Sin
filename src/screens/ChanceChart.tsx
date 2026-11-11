@@ -8,6 +8,7 @@
 // точек — в пикселях экрана (vector-effect), подписи осей — обычным текстом поверх, в процентах
 import { useState, type KeyboardEvent, type PointerEvent } from 'react'
 import { formatDateTime } from '../rules/date'
+import { closingAt } from '../rules/event'
 import { chanceHistory, chancePercents, formatChance } from '../rules/pool'
 import type { EventView } from '../rules/protocol'
 import type { SavedRoom } from '../store/db'
@@ -31,10 +32,11 @@ export function ChanceChart({ room, event, now }: { room: SavedRoom; event: Even
     )
   }
 
-  // Ось времени: от заведения события до сейчас или до закрытия приёма (отменено — до отмены);
-  // часы телефона и сервера могут разойтись — последняя ставка всегда внутри
+  // Ось времени: от заведения события до сейчас или до закрытия приёма — в срок или досрочным
+  // предложением исхода (closingAt, Р-27); отменено — до отмены; часы телефона и сервера могут
+  // разойтись — последняя ставка всегда внутри
   const last = points[points.length - 1]
-  const stop = Math.min(event.cancelled?.at ?? Infinity, event.closesAt, now)
+  const stop = Math.min(event.cancelled?.at ?? Infinity, closingAt(event), now)
   const start = Math.min(event.at, points[0].at)
   const end = Math.max(stop, last.at)
   const span = Math.max(end - start, 1)
