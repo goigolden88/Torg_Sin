@@ -4,12 +4,25 @@
 // правилами, что у сервера (mayPropose, hostDecides, betOn); статус и выплаты считает сервер
 // (EventView.outcome) — здесь только показ. Каждое действие — с окном подтверждения; номер запроса
 // — по событию, действию и выбору, хранится до ответа (двойное нажатие и повтор после «нет связи» —
-// одно действие, Р-13). Esc закрывает окно и форму здесь, не уводя с экрана
+// одно действие, Р-13). Esc закрывает окно и форму здесь, не уводя с экрана. «Исход уже известен» —
+// досрочное предложение до «приём до»; по возражению на него — выбор «ещё не известно» (Р-27)
 import { useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
 import { agreeOutcome, decideOutcome, objectOutcome, proposeOutcome, voteOutcome, type Result } from '../api'
 import type { AppealTarget } from '../rules/appeal'
 import { formatDateTime } from '../rules/date'
-import { AUTHOR_SILENCE, betOn, checkObjection, eventOutcome, eventStatus, hostDecides, mayPropose, MAX_EVENT_TEXT } from '../rules/event'
+import {
+  AUTHOR_SILENCE,
+  betOn,
+  checkObjection,
+  earlyProposal,
+  eventOutcome,
+  eventStatus,
+  hostDecides,
+  mayPropose,
+  MAX_EVENT_TEXT,
+  NOT_YET,
+  NOT_YET_TITLE,
+} from '../rules/event'
 import { formatOdds, poolOdds } from '../rules/pool'
 import type { CourtVerdict, EventView, OutcomeView, Payout } from '../rules/protocol'
 import { formKey, requestFor, type PendingRequest } from '../rules/request'
@@ -46,6 +59,24 @@ const CHOICE = {
 }
 type Choice = keyof typeof CHOICE
 
+// Окно досрочного предложения (Р-27): приём закроется в миг предложения
+const EARLY_NOTE = [
+  'Приём ставок закроется сейчас — дальше как обычно: сутки на возражение.',
+  'Ставок больше не будет, даже если предложение снимут. Предложение не отозвать.',
+]
+
+// «Ещё не известно» в решении ведущего и голосе (Р-27): вопрос и пояснение окна
+const NOT_YET_ASK: Record<'decide' | 'vote', { question: string; note: string }> = {
+  decide: {
+    question: 'Решить: исход ещё не известен?',
+    note: 'Предложение снимется, приём ставок останется закрытым. Исход предложат снова, когда станет ясно. Решение не изменить.',
+  },
+  vote: {
+    question: `Голосовать за „${NOT_YET_TITLE}“?`,
+    note: 'Если большинство за это, предложение снимется, исход предложат снова, когда станет ясно. Голос один, изменить его нельзя.',
+  },
+}
+
 // Что подтверждаем: вопрос, пояснение (строками), кнопка; send — запрос с номером; slot — событие и действие
 type Ask = {
   slot: string
@@ -75,25 +106,31 @@ export function EventOutcome({
 }) {
   const [ask, setAsk] = useState<Ask | null>(null)
   const [objecting, setObjecting] = useState(false)
+  const [known, setKnown] = useState(false) // нажато «Исход уже известен» — виден выбор исхода
   const busy = useRef(false)
   const o = event.outcome
   const me = room.memberId
   const roles = { ...event, hostId: room.hostId }
-  const title = (id: string) => event.outcomes.find((x) => x.id === id)?.title ?? id
+  const title = (id: string) => (id === NOT_YET ? NOT_YET_TITLE : (event.outcomes.find((x) => x.id === id)?.title ?? id))
   const online = sync.state === 'ok'
   const status = eventStatus(event, now)
 
-  // Esc — сначала окно, потом форма возражения; до «Назад» экрана событие не доходит
+  // Esc — сначала окно, потом форма возражения или выбор досрочного исхода; до «Назад» экрана событие не доходит
   function onKey(e: KeyboardEvent) {
-    if (e.key !== 'Escape' || (!ask && !objecting)) return
+    if (e.key !== 'Escape' || (!ask && !objecting && !known)) return
     e.stopPropagation()
     if (busy.current) return
     if (ask) setAsk(null)
-    else setObjecting(false)
+    else if (objecting) setObjecting(false)
+    else setKnown(false)
   }
 
-  // Приём ещё идёт — исхода нет и быть не может
-  if (!o && status !== 'closed') return null
+  // Предложить: исхода нет или снят «ещё не известно» (Р-27); пока приём идёт — досрочно
+  const mayProposeNow = (!o || o.status === 'withdrawn') && status !== 'cancelled' && mayPropose(roles, me, now)
+  const early = status === 'open'
+  // Приём ещё идёт, а предложить досрочно вы не можете — исхода нет
+  if (!o && early && !mayProposeNow) return null
+  if (!o && status === 'cancelled') return null
 
   const iAgreed = !!o && o.agreements.some((x) => x.by === me)
   const mayObject =
@@ -110,15 +147,17 @@ export function EventOutcome({
   const mayDecide = !!o && o.status === 'disputed' && !o.decision && me === room.hostId && hostDecides(roles)
   const mayVote =
     !!o && o.status === 'voting' && o.voters.includes(me) && !o.votes.some((v) => v.by === me) && o.votingUntil !== null && now < o.votingUntil
-  const mayProposeNow = !o && status === 'closed' && mayPropose(roles, me, now)
+  // По возражению на досрочное предложение — ещё и «ещё не известно» (Р-27)
+  const notYet = !!o && earlyProposal({ closesAt: event.closesAt, proposal: o.proposal })
 
   function chosen(action: Choice, outcome: string) {
     const c = CHOICE[action]
+    const special = outcome === NOT_YET && action !== 'propose' ? NOT_YET_ASK[action] : null
     setAsk({
       slot: event.id + '/' + action,
       form: formKey(room.id, event.id, action, outcome),
-      question: c.question(title(outcome)),
-      note: [c.note],
+      question: special ? special.question : c.question(title(outcome)),
+      note: special ? [special.note] : action === 'propose' && early ? EARLY_NOTE : [c.note],
       button: c.button,
       busyLabel: c.busyLabel,
       send: (requestId) => c.send(room.server, room.id, room.key, event.id, { outcome, requestId }),
@@ -165,7 +204,15 @@ export function EventOutcome({
   return (
     <section className="outcome" aria-label="Исход" onKeyDown={onKey}>
       <h3>Исход</h3>
-      {o ? <OutcomeState room={room} event={event} o={o} now={now} title={title} /> : <NotProposed room={room} event={event} now={now} />}
+      {o ? (
+        <OutcomeState room={room} event={event} o={o} now={now} title={title} />
+      ) : early ? (
+        <p className="hint">
+          Исход ожидается к {formatDateTime(event.expectedAt)}. Стал известен раньше — предложите его сейчас: приём ставок закроется.
+        </p>
+      ) : (
+        <NotProposed room={room} event={event} now={now} />
+      )}
       {o && (
         <CourtBlock
           room={room}
@@ -184,11 +231,27 @@ export function EventOutcome({
       )}
       {!online && (mayProposeNow || mayObject || mayDecide || mayVote) && <p className="hint">Действовать можно, когда есть связь с сервером.</p>}
 
-      {mayProposeNow && (
-        <ChooseOutcome event={event} legend="Какой исход наступил" button="Предложить исход" disabled={!online} onChoose={(x) => chosen('propose', x)} />
+      {mayProposeNow &&
+        (early && !known ? (
+          <div className="row">
+            <button className="button" type="button" onClick={() => setKnown(true)} disabled={!online}>
+              Исход уже известен
+            </button>
+          </div>
+        ) : (
+          <ChooseOutcome
+            event={event}
+            legend="Какой исход наступил"
+            button="Предложить исход"
+            disabled={!online}
+            onChoose={(x) => chosen('propose', x)}
+            onClose={early ? () => setKnown(false) : undefined}
+          />
+        ))}
+      {mayDecide && (
+        <ChooseOutcome event={event} legend="Ваше решение как ведущего" button="Решить" notYet={notYet} disabled={!online} onChoose={(x) => chosen('decide', x)} />
       )}
-      {mayDecide && <ChooseOutcome event={event} legend="Ваше решение как ведущего" button="Решить" disabled={!online} onChoose={(x) => chosen('decide', x)} />}
-      {mayVote && <ChooseOutcome event={event} legend="Ваш голос" button="Голосовать" disabled={!online} onChoose={(x) => chosen('vote', x)} />}
+      {mayVote && <ChooseOutcome event={event} legend="Ваш голос" button="Голосовать" notYet={notYet} disabled={!online} onChoose={(x) => chosen('vote', x)} />}
       {mayObject &&
         (objecting ? (
           <ObjectForm disabled={!online} onObject={objected} onClose={() => setObjecting(false)} />
@@ -214,6 +277,7 @@ export function EventOutcome({
           onDone={async () => {
             setAsk(null)
             setObjecting(false)
+            setKnown(false)
             await onDone()
           }}
         />
@@ -222,8 +286,8 @@ export function EventOutcome({
   )
 }
 
-// Исход ещё не предложен (приём закрыт): кто предложит; ведущему — с какого мига сможет и он
-function NotProposed({ room, event, now }: { room: SavedRoom; event: EventView; now: number }) {
+// Кто предложит исход; ведущему — с какого мига сможет и он
+function whoProposes(room: SavedRoom, event: EventView, now: number): string {
   const hostAboutSelf = event.authorId === room.hostId && event.subjectId === room.hostId
   let who: string
   if (hostAboutSelf) who = `Событие ведущего о себе: предложить может любой участник, кроме ${nameOf(room, room.hostId)}; первое предложение — единственное.`
@@ -231,13 +295,15 @@ function NotProposed({ room, event, now }: { room: SavedRoom; event: EventView; 
   else who = `Исход предлагает автор — ${nameOf(room, event.authorId)}.`
   const silentFrom = event.expectedAt + AUTHOR_SILENCE
   const hostLater = room.memberId === room.hostId && !hostAboutSelf && event.authorId !== room.hostId && event.authorId !== event.subjectId && now < silentFrom
+  return who + (hostLater ? ` Если автор промолчит, вы сможете предложить его сами с ${formatDateTime(silentFrom)}.` : '')
+}
+
+// Исход ещё не предложен (приём закрыт)
+function NotProposed({ room, event, now }: { room: SavedRoom; event: EventView; now: number }) {
   return (
     <>
       <p className="outcome-head">Исход ещё не предложен</p>
-      <p className="hint">
-        {who}
-        {hostLater ? ` Если автор промолчит, вы сможете предложить его сами с ${formatDateTime(silentFrom)}.` : ''}
-      </p>
+      <p className="hint">{whoProposes(room, event, now)}</p>
     </>
   )
 }
@@ -318,6 +384,14 @@ function OutcomeState({
     )
   } else if (o.status === 'voting') {
     head = <p className="outcome-head">Есть возражение — голосуют не ставившие{o.votingUntil ? `, до ${formatDateTime(o.votingUntil)}` : ''}</p>
+  } else if (o.status === 'withdrawn') {
+    // Досрочное предложение снято «ещё не известно» (Р-27): приём закрыт, исход предложат снова
+    head = (
+      <>
+        <p className="outcome-head">Предложение снято: исход ещё не известен</p>
+        <p className="hint">Приём ставок закрыт. Исход предложат снова, когда станет ясно. {whoProposes(room, event, now)}</p>
+      </>
+    )
   } else {
     head = (
       <>
@@ -354,6 +428,7 @@ function OutcomeState({
           </li>
         )}
         {o.voters.length > 0 && <Voters o={o} who={who} />}
+        {o.status === 'withdrawn' && o.voters.length > 0 && <li>Большинство голосов — „{NOT_YET_TITLE}“: предложение снято</li>}
       </ul>
       {approved && o.status !== 'cancelled' && <Payouts room={room} event={event} o={o} winner={approved.outcome} title={title} />}
     </>
@@ -461,19 +536,24 @@ function Payouts({
   )
 }
 
-// Выбор исхода (предложить, решить, голосовать) → окно подтверждения
+// Выбор исхода (предложить, решить, голосовать) → окно подтверждения. notYet — последним вариант
+// «Ещё не известно» (Р-27); onClose — кнопка «Не сейчас» (досрочный выбор закрывается)
 function ChooseOutcome({
   event,
   legend,
   button,
+  notYet = false,
   disabled,
   onChoose,
+  onClose,
 }: {
   event: EventView
   legend: string
   button: string
+  notYet?: boolean
   disabled: boolean
   onChoose: (outcome: string) => void
+  onClose?: () => void
 }) {
   const [outcome, setOutcome] = useState<string | null>(null)
   const [error, setError] = useState('')
@@ -492,13 +572,14 @@ function ChooseOutcome({
       <fieldset className="field">
         <legend>{legend}</legend>
         <div className="chips">
-          {event.outcomes.map((o) => (
+          {[...event.outcomes, ...(notYet ? [{ id: NOT_YET, title: NOT_YET_TITLE }] : [])].map((o) => (
             <label key={o.id} className="chip">
               <input type="radio" name={name} checked={outcome === o.id} onChange={() => setOutcome(o.id)} />
               <span>{o.title}</span>
             </label>
           ))}
         </div>
+        {notYet && <span className="hint">Исход предложен раньше срока. «{NOT_YET_TITLE}» снимет предложение — его сделают снова, когда станет ясно.</span>}
       </fieldset>
       {error && (
         <p className="error" role="alert">
@@ -509,6 +590,11 @@ function ChooseOutcome({
         <button className="button" type="submit" disabled={disabled}>
           {button}
         </button>
+        {onClose && (
+          <button className="button secondary" type="button" onClick={onClose}>
+            Не сейчас
+          </button>
+        )}
       </div>
     </form>
   )

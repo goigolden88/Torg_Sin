@@ -153,6 +153,14 @@ describe('ответы комнат', () => {
     expect(isRoomStateResponse({ ...state, events: [{ ...view, outcome: { ...outcome, awaiting: [1] } }] })).toBe(false)
     expect(isRoomStateResponse({ ...state, events: [{ ...view, outcome: { ...outcome, agreements: [{ id: 'G', by: 'N' }] } }] })).toBe(false)
   })
+  it('состояние комнаты: досрочный исход и «снято» (Р-27)', () => {
+    const withdrawn = { ...outcome, status: 'withdrawn', decision: { ...mark, outcome: 'not-yet' }, approved: null, finalAt: null, payouts: [] }
+    expect(isRoomStateResponse({ ...state, events: [{ ...view, status: 'closed', closedAt: 4, outcome: withdrawn }] })).toBe(true)
+    // Нет поля — не закрыт досрочно; не число — не то, что ждём
+    expect(isRoomStateResponse({ ...state, events: [{ ...view, outcome: withdrawn }] })).toBe(true)
+    expect(isRoomStateResponse({ ...state, events: [{ ...view, closedAt: '4', outcome }] })).toBe(false)
+    expect(isRoomStateResponse({ ...state, events: [{ ...view, closedAt: null, outcome }] })).toBe(false)
+  })
   it('ответы действий с исходом', () => {
     const v = PROTOCOL_VERSION
     expect(isProposeOutcomeResponse({ v, proposal: mark })).toBe(true)

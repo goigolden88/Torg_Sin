@@ -10,7 +10,7 @@ import type { AppealView, CourtView, OfferInfo, OfferView } from './protocol'
 import { foldLog, type LogEntry, type RoomState } from './room'
 
 const DAY = 24 * 60 * 60 * 1000
-// Сторона молчит 3 дня после «исход к» или первой отметки (что позже) — решает гарант
+// Сторона молчит 3 дня после первой отметки (не отметил никто — после «исход к») — решает гарант (Р-27)
 export const SIDE_SILENCE = 3 * DAY
 // Гарант молчит 3 дня с мига, как решение перешло к нему, — нужен другой гарант
 export const GUARANTOR_SILENCE = 3 * DAY
@@ -360,10 +360,10 @@ export function currentMarks(o: OfferState): Record<OfferSide, OfferSide | null>
   return m
 }
 
-// С какого мига решает гарант: отметки разошлись или одна сторона молчит 3 дня после «исход к»
-// (или после первой отметки, что позже; не отметил никто — после «исход к»)
+// С какого мига решает гарант: отметки разошлись или одна сторона молчит 3 дня после первой отметки
+// — и раньше «исход к»: исход бывает известен до срока (Р-27); не отметил никто — 3 дня после «исход к»
 export function guarantorTurn(o: OfferState): number {
-  const silence = Math.max(o.expectedAt, o.marks[0]?.at ?? o.expectedAt) + SIDE_SILENCE
+  const silence = (o.marks[0]?.at ?? o.expectedAt) + SIDE_SILENCE
   return o.disagreedAt === null ? silence : Math.min(o.disagreedAt, silence)
 }
 

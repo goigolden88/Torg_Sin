@@ -1,7 +1,9 @@
 // Протокол сайта и сервера (Р-01): версия — в каждом ответе и сообщении. Чистые
 // функции и типы — ими пользуются и экран, и сервер; ни DOM, ни Cloudflare здесь нет
 // 4 — предмет спора (Р-26): subjectRule у события, subjectId у пари, subject в «Предложить пари»
-export const PROTOCOL_VERSION = 4
+// 5 — «Исход уже известен» (Р-27): closedAt у события, статус исхода «снято», «ещё не известно» в
+// решении ведущего и голосе
+export const PROTOCOL_VERSION = 5
 
 // Ответ GET /health: сервер жив, его протокол и время (UTC, мс) — по нему закрываются сроки
 export type Health = { v: number; ok: true; time: number }
@@ -221,8 +223,9 @@ export type Agreement = { id: string; at: number; by: string }
 
 // «сутки на возражение» / «ждёт решения ведущего» / «голосование» / «ждёт суда» (этап 4) /
 // «утверждён» / «окончательный» (7 дней после утверждения без апелляции) — на время сервера /
-// «отменено» — событие отменено на любом шаге исхода: без выплат, окончательным не станет (Р-19)
-export type OutcomeStatus = 'proposed' | 'disputed' | 'voting' | 'court' | 'approved' | 'final' | 'cancelled'
+// «отменено» — событие отменено на любом шаге исхода: без выплат, окончательным не станет (Р-19) /
+// «снято» — досрочное предложение снято «ещё не известно»: приём закрыт, исход предложат снова (Р-27)
+export type OutcomeStatus = 'proposed' | 'disputed' | 'voting' | 'court' | 'approved' | 'final' | 'cancelled' | 'withdrawn'
 
 // Как утверждён: сам — сутки без возражения (by — null); ведущим (by — ведущий);
 // голосованием (by — null); согласием всех ставивших — сразу окончательный (by — null; Р-21);
@@ -252,8 +255,10 @@ export type OutcomeView = {
 }
 
 // Событие в состоянии комнаты: ставки по порядку журнала, уточнения, статус; отменено —
-// refunds: каждому участнику — его сумма; outcome — исход (не предложен — null)
+// refunds: каждому участнику — его сумма; outcome — исход (не предложен — null). closedAt — миг,
+// когда приём закрылся досрочно предложением исхода (Р-27); закрыт в срок или ещё идёт — поля нет
 export type EventView = EventInfo & {
+  closedAt?: number
   status: EventStatus
   clarifications: Clarification[]
   bets: Omit<BetInfo, 'event'>[]
@@ -290,7 +295,8 @@ export type CancelEventResponse = { v: number; cancelled: Cancellation }
 
 // Исход события. requestId — номер запроса (ULID): повтор с тем же номером — тот же ответ.
 // POST …/events/<событие>/propose — автор события (предмет спора — нет: тогда ведущий;
-// автор молчит 3 дня после «исход ожидается к» — и ведущий), после закрытия приёма
+// автор молчит 3 дня после «исход ожидается к» — и ведущий); до «приём до» — досрочно, приём
+// закрывается в миг предложения (Р-27); снова — после снятия «ещё не известно»
 export type ProposeOutcomeRequest = { v?: number; outcome: string; requestId?: string }
 export type ProposeOutcomeResponse = { v: number; proposal: OutcomeMark }
 // POST …/events/<событие>/object — ставивший, кроме предложившего, сутки после предложения
@@ -300,7 +306,8 @@ export type ObjectOutcomeResponse = { v: number; objection: Objection }
 // возражений (Р-21)
 export type AgreeOutcomeRequest = { v?: number; requestId?: string }
 export type AgreeOutcomeResponse = { v: number; agreement: Agreement }
-// POST …/events/<событие>/decide — ведущий после возражения, если не ставил и не предмет спора
+// POST …/events/<событие>/decide — ведущий после возражения, если не ставил и не предмет спора.
+// У решения и голоса по досрочному предложению outcome может быть NOT_YET — «ещё не известно» (Р-27)
 export type DecideOutcomeRequest = { v?: number; outcome: string; requestId?: string }
 export type DecideOutcomeResponse = { v: number; decision: OutcomeMark }
 // POST …/events/<событие>/vote — не ставивший и не предмет, если ведущий ставил или он предмет
@@ -475,7 +482,7 @@ function isObjection(r: Record<string, unknown>): boolean {
   return strings(r, 'id', 'by', 'reason') && numbers(r, 'at')
 }
 
-const OUTCOME_STATUSES: readonly unknown[] = ['proposed', 'disputed', 'voting', 'court', 'approved', 'final', 'cancelled']
+const OUTCOME_STATUSES: readonly unknown[] = ['proposed', 'disputed', 'voting', 'court', 'approved', 'final', 'cancelled', 'withdrawn']
 const APPROVALS: readonly unknown[] = ['unopposed', 'host', 'vote', 'agreed', 'court']
 
 function isVerdict(r: Record<string, unknown>): boolean {
@@ -558,6 +565,7 @@ export function isEventView(x: unknown): x is EventView {
   const r = record(x)
   if (!r || !isEventInfo(r)) return false
   if (r.status !== 'open' && r.status !== 'closed' && r.status !== 'cancelled') return false
+  if (r.closedAt !== undefined && typeof r.closedAt !== 'number') return false
   return (
     nullable(r.cancelled, isCancellation) &&
     list(r.clarifications, isClarification) &&

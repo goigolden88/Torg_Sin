@@ -350,12 +350,24 @@ describe('исход пари', () => {
     expect(out?.approved?.how).toBe('agreement')
     expect(out?.approved?.winner).toBe('taker')
   })
-  it('одна сторона молчит 3 дня после «исход к» — гарант', () => {
-    const o = accepted([mark('a', 'author', T + 20)])
+  it('отметка раньше «исход к» (Р-27): вторая сторона молчит 3 дня с первой отметки — гарант, не дожидаясь «исход к»', () => {
+    const first = T + 20
+    expect(first).toBeLessThan(EXPECT)
+    const o = accepted([mark('a', 'author', first)])
+    expect(offerOutcome(o, first + SIDE_SILENCE - 1)?.phase).toBe('marking')
+    expect(checkDecide(o, 'h', 'author', first + SIDE_SILENCE - 1)).toBe(NOT_TURN)
+    expect(offerOutcome(o, first + SIDE_SILENCE)).toMatchObject({ phase: 'guarantor', turnAt: first + SIDE_SILENCE })
+    expect(checkDecide(o, 'h', 'author', first + SIDE_SILENCE)).toBeNull()
+  })
+  it('никто не отметил — гарант через 3 дня после «исход к»', () => {
+    const o = accepted([])
     expect(offerOutcome(o, EXPECT + SIDE_SILENCE - 1)?.phase).toBe('marking')
-    expect(checkDecide(o, 'h', 'author', EXPECT + SIDE_SILENCE - 1)).toBe(NOT_TURN)
-    expect(offerOutcome(o, EXPECT + SIDE_SILENCE)?.phase).toBe('guarantor')
-    expect(checkDecide(o, 'h', 'author', EXPECT + SIDE_SILENCE)).toBeNull()
+    expect(offerOutcome(o, EXPECT + SIDE_SILENCE)).toMatchObject({ phase: 'guarantor', turnAt: EXPECT + SIDE_SILENCE })
+  })
+  it('отметки сошлись раньше «исход к» — окончательный сразу (Р-06, Р-27)', () => {
+    const o = accepted([mark('a', 'author', T + 20), mark('b', 'author', T + 21)])
+    expect(T + 21).toBeLessThan(EXPECT)
+    expect(offerOutcome(o, T + 21)).toMatchObject({ phase: 'final', approved: { winner: 'author', how: 'agreement', at: T + 21 }, finalAt: T + 21 })
   })
   it('первая отметка позже «исход к» — 3 дня от неё', () => {
     const first = EXPECT + DAY

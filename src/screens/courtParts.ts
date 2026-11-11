@@ -32,6 +32,8 @@ export function eventState(e: EventView, hostId: string): EventState {
     bets: e.bets.map((b) => ({ ...b, event: e.id, requestId: '' })),
     cancelled: e.cancelled,
     hostId,
+    closedAt: e.closedAt ?? null,
+    withdrawn: [], // снятые «ещё не известно» (Р-27) правилам апелляции не нужны
     proposal: o ? req(o.proposal) : null,
     objections: o ? o.objections.map(req) : [],
     agreements: o ? o.agreements.map(req) : [],
