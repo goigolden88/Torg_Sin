@@ -219,6 +219,20 @@ export class Device {
     if (!done) throw new Error(`${this.name}: нет кнопки «${text}»`)
   }
 
+  // Нажать, когда кнопка откроется: после перехода экран сначала показывает копию, а действия
+  // закрыты до первого ответа сервера — повторять нажатие до TIMEOUT
+  async press(text: string, timeout = TIMEOUT): Promise<void> {
+    const started = Date.now()
+    for (;;) {
+      try {
+        return await this.click(text)
+      } catch (e) {
+        if (Date.now() - started > timeout) throw e
+        await sleep(200)
+      }
+    }
+  }
+
   // Ввести в поле с подписью label — как человек: React узнаёт о вводе по событию input
   async fill(label: string, value: string): Promise<void> {
     const done = await this.eval<boolean>(`(() => {
