@@ -37,7 +37,6 @@ export type ServerModule = {
   // seed — зерно жребия суда (выдуманное: снимки одинаковы от прогона к прогону)
   startServer: (options: { file: string; password: string | undefined; port: number; now?: () => number; seed?: () => string }) => Promise<RoomsServer>
 }
-export type StartServer = ServerModule['startServer']
 
 // ─── DevTools-протокол ───────────────────────────────────────────────────────
 
