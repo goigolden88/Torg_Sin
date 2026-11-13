@@ -7,5 +7,5 @@ server/node/data.sqlite*
 *.sqlite-shm
 .wrangler
 # Снимки экранов для отчёта PR (npm run shots)
-shots
+/shots
 *.local
