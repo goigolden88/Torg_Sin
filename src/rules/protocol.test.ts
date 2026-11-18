@@ -253,6 +253,7 @@ describe('пари (Р-22)', () => {
     guarantorId: 'M',
     counterTo: null,
     subjectId: null,
+    guarantorRule: true,
   }
   const outcome = {
     phase: 'guarantor',
@@ -277,7 +278,7 @@ describe('пари (Р-22)', () => {
     for (const bad of [
       // Исход (Р-23): поле обязательно — копия до него проверку не проходит
       { ...view, outcome: undefined },
-      { ...view, outcome: { ...outcome, phase: 'court' } },
+      { ...view, outcome: { ...outcome, phase: 'jury' } },
       { ...view, outcome: { ...outcome, marks: { author: 'yes', taker: null } } },
       { ...view, outcome: { ...outcome, marks: null } },
       { ...view, outcome: { ...outcome, turnAt: null } },
@@ -294,6 +295,9 @@ describe('пари (Р-22)', () => {
       // О ком спор (Р-26): поле обязательно (null — ни о ком)
       { ...view, subjectId: undefined },
       { ...view, subjectId: 5 },
+      // Правило гаранта (Р-31): поле обязательно — копия до него проверку не проходит
+      { ...view, guarantorRule: undefined },
+      { ...view, guarantorRule: 1 },
     ]) {
       expect(isRoomStateResponse({ ...state, offers: [bad] })).toBe(false)
     }
@@ -303,6 +307,9 @@ describe('пари (Р-22)', () => {
     expect(isRoomStateResponse({ ...state, offers: [{ ...view, outcome: final }] })).toBe(true)
     const need = { ...outcome, phase: 'need-guarantor', needSince: 41, nominations: { author: 'C' } }
     expect(isRoomStateResponse({ ...state, offers: [{ ...view, outcome: need }] })).toBe(true)
+    // «Ждёт суда» (Р-31); прежнее пари — guarantorRule false
+    expect(isRoomStateResponse({ ...state, offers: [{ ...view, outcome: { ...need, phase: 'court' } }] })).toBe(true)
+    expect(isRoomStateResponse({ ...state, offers: [{ ...view, guarantorRule: false }] })).toBe(true)
   })
 
   it('ответы на действия с исходом пари (Р-23)', () => {

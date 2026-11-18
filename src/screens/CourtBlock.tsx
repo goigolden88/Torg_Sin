@@ -209,7 +209,7 @@ export function CourtBlock({
         <section className="court-box" aria-label="Суд">
           <h4>Суд</h4>
           <p className="hint">
-            {c.appeal ? 'По апелляции' : 'Исход ждал суда'}, собран {formatDateTime(c.drawnAt)}. У каждого места — {HOURS} часа; нет голоса — место переходит
+            {c.appeal ? 'По апелляции' : kind === 'offer' ? '3 дня без общего гаранта — решает суд' : 'Исход ждал суда'}, собран {formatDateTime(c.drawnAt)}. У каждого места — {HOURS} часа; нет голоса — место переходит
             следующему по жребию. Решает большинство поданных голосов, решение окончательное.
           </p>
           <ol className="seats" aria-label="Места суда">

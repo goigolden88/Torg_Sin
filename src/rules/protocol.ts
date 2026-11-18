@@ -3,7 +3,8 @@
 // 4 — предмет спора (Р-26): subjectRule у события, subjectId у пари, subject в «Предложить пари»
 // 5 — «Исход уже известен» (Р-27): closedAt у события, статус исхода «снято», «ещё не известно» в
 // решении ведущего и голосе
-export const PROTOCOL_VERSION = 5
+// 6 — правило гаранта (Р-31): guarantorRule у пари, фаза исхода пари «ждёт суда» (court)
+export const PROTOCOL_VERSION = 6
 
 // Ответ GET /health: сервер жив, его протокол и время (UTC, мс) — по нему закрываются сроки
 export type Health = { v: number; ok: true; time: number }
@@ -60,6 +61,9 @@ export type OfferInfo = {
   guarantorId: string
   counterTo: string | null
   subjectId: string | null // о ком спор (Р-26): только на стороне «сбудется», не гарант; null — ни о ком
+  // Правило гаранта (Р-31): часы гаранта — с «исход к», 3 дня без общего гаранта — суд. У пари,
+  // предложенных до выкатки, — false: прежние часы, без суда
+  guarantorRule: boolean
 }
 
 // «открыто» / «истекло» (приём до прошёл, по времени сервера) / «отозвано» / «закрыто встречным» /
@@ -73,8 +77,9 @@ export type OfferAct = { id: string; at: number; by: string; offer: string }
 export type OfferSide = 'author' | 'taker'
 
 // Ход исхода пари (Р-23) на now: «стороны отмечают» / «решает гарант» / «нужен другой гарант» /
-// «утверждён» / «окончательный» / «отменено судом» (Р-24: без выплат)
-export type OfferPhase = 'marking' | 'guarantor' | 'need-guarantor' | 'approved' | 'final' | 'cancelled'
+// «ждёт суда» (Р-31: 3 дня без общего гаранта, суд собран) / «утверждён» / «окончательный» /
+// «отменено судом» (Р-24: без выплат)
+export type OfferPhase = 'marking' | 'guarantor' | 'need-guarantor' | 'court' | 'approved' | 'final' | 'cancelled'
 
 // Апелляция и суд (этап 4, Р-05, Р-24; правила — appeal.ts, court.ts). Голос суда: «оставить» (если
 // исход утверждён) / «отменить — вернуть ставки» / «изменить на …» — у пула исход события, у пари —
@@ -645,11 +650,12 @@ function isOfferInfo(r: Record<string, unknown>): boolean {
     numbers(odds, 'a', 'b') &&
     orNull(r.to, 'string') &&
     orNull(r.counterTo, 'string') &&
-    orNull(r.subjectId, 'string')
+    orNull(r.subjectId, 'string') &&
+    typeof r.guarantorRule === 'boolean'
   )
 }
 
-const OFFER_PHASES: readonly unknown[] = ['marking', 'guarantor', 'need-guarantor', 'approved', 'final', 'cancelled']
+const OFFER_PHASES: readonly unknown[] = ['marking', 'guarantor', 'need-guarantor', 'court', 'approved', 'final', 'cancelled']
 const OFFER_APPROVALS: readonly unknown[] = ['agreement', 'guarantor', 'court']
 const OFFER_SIDES: readonly unknown[] = ['author', 'taker']
 

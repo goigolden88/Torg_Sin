@@ -56,7 +56,7 @@ import {
   type CourtRoom,
 } from './appeal'
 import { eventOutcome, eventView, FINAL_TIME, OBJECTION_TIME, roomEvents, VOTING_TIME, type EventState } from './event'
-import { offerOutcome, offerResult, offerView, roomOffers, type OfferRecord, type OfferState } from './offer'
+import { checkNominate, NEED_GUARANTOR_TIME, offerOutcome, offerResult, offerView, roomOffers, type OfferRecord, type OfferState } from './offer'
 import { isEventView, isOfferView, type CourtVerdict } from './protocol'
 import { foldLog, type LogEntry, type RoomState } from './room'
 
@@ -727,6 +727,85 @@ describe('апелляция по пари', () => {
     expect(courtCandidates(of(offerOf(offerRecords('h', 'g'))), OFFER_ROOM, DECIDED + 1)).toEqual(['a', 'c', 'n'])
     expect(courtState(c, DECIDED + 1).seats.map((s) => s.member)).toEqual(drawCourt(SEED, ['a', 'c', 'n'], 'h'))
     expect(c.candidates).not.toContain('h')
+  })
+})
+
+// Пари по правилу гаранта (Р-31): гарант h отказался, стороны назвали разных — 3 дня без общего гаранта
+describe('пари без общего гаранта — суд сам (Р-31)', () => {
+  const DECLINED = T + 20
+  const DUE = DECLINED + NEED_GUARANTOR_TIME
+  const DRAWN = DUE + 5
+  const base = (rule = true): OfferRecord[] => {
+    const [created, accepted] = offerRecords()
+    return [
+      rule ? ({ ...created, guarantorRule: true } as OfferRecord) : created,
+      accepted,
+      { type: 'offer.declined', id: 'r5', at: DECLINED, memberId: 'h', offer: 'o1' },
+      { type: 'offer.nominated', id: 'r6', at: DECLINED + 1, memberId: 'a', offer: 'o1', guarantor: 'c' },
+      { type: 'offer.nominated', id: 'r7', at: DECLINED + 2, memberId: 'b', offer: 'o1', guarantor: 'g' },
+    ]
+  }
+  const courtRecord: OfferRecord = { type: 'court.drawn', id: 'k1', at: DRAWN, memberId: 'h', offer: 'o1' }
+  const inCourt = () => offerOf([...base(), courtRecord])
+  // Заинтересованы стороны a, b и нынешний гарант h
+  const CANDIDATES = ['c', 'g', 'n']
+  const ORDER3 = drawCourt(SEED, CANDIDATES, 'h')
+  const courtOf = (votes: CourtVerdict[] = []) =>
+    offerCase([drawn(DRAWN, CANDIDATES, 'o1'), ...votes.map((v, i) => voted(ORDER3[i], DRAWN + 1 + i, v, 'o1'))], inCourt()) as CourtCase
+  const END = DRAWN + 3
+
+  it('3 дня «нужен гарант» — суд собирается сам; раньше — нет; прежнее пари — суда нет', () => {
+    const o = offerOf(base())
+    expect(offerOutcome(o, DUE - 1)?.phase).toBe('need-guarantor')
+    expect(checkCourtDraw(of(o), null, DUE - 1)).toBe(NOT_COURT)
+    expect(checkCourtDraw(of(o), null, DUE)).toBeNull()
+    expect(courtCandidates(of(o), OFFER_ROOM, DUE)).toEqual(CANDIDATES)
+    const old = offerOf(base(false))
+    expect(checkCourtDraw(of(old), null, DUE + DAY)).toBe(NOT_COURT)
+    // Свёртка: суд по прежнему пари не собирается
+    expect(offerCase([drawn(DRAWN, CANDIDATES, 'o1')], old)).toBeNull()
+  })
+
+  it('суд собран — «ждёт суда», второго суда нет; апелляции нет; суд в ответе', () => {
+    const o = inCourt()
+    const c = courtOf()
+    expect(c).toMatchObject({ appeal: null, drawnAt: DRAWN })
+    expect(checkCourtDraw(of(o), c, DRAWN + 1)).toBe(COURT_EXISTS)
+    expect(offerOutcome(o, DRAWN, c)).toMatchObject({ phase: 'court', approved: null, finalAt: null, appeal: null, court: { candidates: ORDER3, decision: null } })
+    expect(courtState(c, DRAWN).seats.map((s) => s.member)).toEqual(ORDER3)
+    expect(checkAppeal(of(o), c, 'a', 'Не так', OFFER_ROOM, DRAWN + 1)).toBe(NOT_APPROVED)
+    expect(isOfferView(offerView(o, DRAWN, c))).toBe(true)
+  })
+
+  it('«оставить» нечего; «прав соперник» — утверждено судом, окончательно сразу; второй апелляции нет', () => {
+    expect(checkCourtVote(of(inCourt()), courtOf(), ORDER3[0], { verdict: 'keep' }, DRAWN + 1)).toBe(NO_KEEP)
+    expect(checkCourtVote(of(inCourt()), courtOf(), ORDER3[0], { verdict: 'change', winner: 'author' }, DRAWN + 1)).toBeNull()
+    const c = courtOf([{ verdict: 'change', winner: 'taker' }, { verdict: 'change', winner: 'taker' }, { verdict: 'cancel' }])
+    expect(offerOutcome(inCourt(), END, c)).toMatchObject({ phase: 'final', finalAt: END, approved: { winner: 'taker', at: END, how: 'court', by: null } })
+    expect(offerResult(inCourt(), END, c)).toEqual([
+      { memberId: 'a', net: -300 },
+      { memberId: 'b', net: 300 },
+    ])
+    expect(checkAppeal(of(inCourt()), c, 'a', 'Не так', OFFER_ROOM, END + 1)).toBe(COURT_DECIDED)
+    expect(isOfferView(offerView(inCourt(), END, c))).toBe(true)
+  })
+
+  it('«отменить» или большинства нет — без выплат', () => {
+    const cancel = courtOf([{ verdict: 'cancel' }, { verdict: 'cancel' }, { verdict: 'change', winner: 'author' }])
+    expect(offerOutcome(inCourt(), END, cancel)).toMatchObject({ phase: 'cancelled', approved: null, finalAt: null })
+    expect(offerResult(inCourt(), END + FINAL_TIME, cancel)).toEqual([])
+    const split = courtOf([{ verdict: 'change', winner: 'author' }, { verdict: 'change', winner: 'taker' }, { verdict: 'cancel' }])
+    expect(offerOutcome(inCourt(), END, split)).toMatchObject({ phase: 'cancelled', court: { decision: { majority: false, verdict: 'cancel' } } })
+  })
+
+  it('кандидатов нет (комната из трёх: стороны и гарант) — суда нет, гаранта называют', () => {
+    const roles = { hostId: 'h', members: ['h', 'a', 'b'] }
+    const small: CourtRoom = { hostId: 'h', members: roles.members.map((m) => ({ id: m, addedAt: 0 })) }
+    const o = roomOffers(base().slice(0, 3), roles)[0]
+    expect(checkCourtDraw(of(o), null, DUE)).toBeNull()
+    expect(courtCandidates(of(o), small, DUE)).toEqual([])
+    expect(offerOutcome(o, DUE + DAY)?.phase).toBe('need-guarantor')
+    expect(checkNominate(o, 'a', 'h', roles, DUE + DAY)).toBeNull()
   })
 })
 
