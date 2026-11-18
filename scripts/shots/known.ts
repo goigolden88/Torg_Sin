@@ -164,10 +164,18 @@ export async function known(cdp: Cdp, size: Size, startServer: ServerModule['sta
     await boryaPhone.press('Исход уже известен?')
     await boryaPhone.waitText('Ждём отметок сторон')
     await boryaPhone.press('Прав автор')
-    await boryaPhone.waitIn('.modal', 'Отмечаете раньше срока «исход к»')
-    await boryaPhone.waitIn('.modal', 'решит гарант Аня')
+    // Правило гаранта (Р-31): до «исход к» исход утверждают только совпавшие отметки
+    await boryaPhone.waitIn('.modal', 'Совпадёт с отметкой соперника — исход окончательный сразу.')
+    await boryaPhone.waitIn('.modal', 'решит гарант Аня, но не раньше «исход к»')
     await boryaPhone.shot('105-pari-dosrochnaya-otmetka')
     await confirmTwice(boryaPhone, 'Ваша отметка: прав автор')
+    await boryaPhone.waitIn(OUTCOME, 'Разойдутся или одна сторона не отметит — решит гарант Аня, но не раньше «исход к»')
+    await check(boryaPhone, 'Пари: ранняя отметка одной стороны')
+    await boryaPhone.shot('105a-pari-rannyaya-otmetka')
+    // Ведущая-гарант до «исход к» не решает: кнопок решения нет
+    await host.goto(offerHref)
+    await host.waitIn(OUTCOME, 'Вы — гарант: решаете, если стороны разойдутся или одна не отметит, но не раньше «исход к»')
+    if ((await visibleButtons(host)).some((b) => b === 'Прав автор' || b === 'Прав соперник')) throw new Error('Гарант решает до «исход к»')
 
     // Вера отмечает так же — окончательно сразу
     const veraPhone = await open('Вера', vera.key)

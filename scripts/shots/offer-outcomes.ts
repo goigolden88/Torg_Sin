@@ -186,6 +186,8 @@ export async function offerOutcomes(cdp: Cdp, size: Size, startServer: ServerMod
     await host.waitText('Назвать гарантом: Гена?')
     await confirmTwice(host, 'Аня (вы) — называет: Гена')
     await host.waitIn(OUTCOME, 'Вера — ещё не назвал(а)')
+    // Правило гаранта (Р-31): срок, после которого решит суд
+    await host.waitIn(OUTCOME, '— решит суд.')
     await check(host, 'Пари: нужен гарант')
     await host.shot('61-nuzhen-garant')
     await veraPhone.goto(offerHref(lapse))
@@ -217,7 +219,8 @@ export async function offerOutcomes(cdp: Cdp, size: Size, startServer: ServerMod
     await host.goto(`${SITE}#/room/${room.roomId}`)
     await host.waitIn(LIST, 'окончательно: +100 ₽ Аня')
     await host.waitIn(LIST, 'окончательно: +500 ₽ Вера')
-    await host.waitIn(LIST, 'нужен новый гарант') // Гена не решил за 3 дня
+    // Гена не решил за 3 дня, стороны 3 дня не назвали другого — суд сам (Р-31); судит Боря
+    await host.waitIn(LIST, 'ждёт суда — 3 дня без общего гаранта')
     await host.waitIn(LIST, 'принято — ждём отметок сторон')
     await noScroll(host, 'Список пари с исходами')
     await host.shot('62-spisok-iskhody')
@@ -225,6 +228,21 @@ export async function offerOutcomes(cdp: Cdp, size: Size, startServer: ServerMod
     await host.waitText('Утверждено гарантом Аня (вы), окончательно')
     await host.waitText('Окончательно.')
     await host.shot('63-okonchatelno-garantom')
+
+    // Пари 3 «ждёт суда»: сторонам — ни отметок, ни нового гаранта; суд — как у пула
+    await host.goto(offerHref(lapse))
+    await host.waitIn(OUTCOME, 'Ждёт суда')
+    await host.waitIn(OUTCOME, '3 дня без общего гаранта — решает суд')
+    await host.waitIn('section[aria-label="Суд"]', 'Боря')
+    if ((await actions(host)).length > 0) throw new Error('В «ждёт суда» у стороны кнопки: ' + (await actions(host)).join(', '))
+    await check(host, 'Пари: ждёт суда')
+    await host.shot('63a-pari-zhdyot-suda')
+    await boryaPhone.goto(offerHref(lapse))
+    await boryaPhone.waitIn('section[aria-label="Суд"]', 'Вы в суде')
+    const votes = await boryaPhone.eval<string[]>(`[...document.querySelectorAll('[aria-label="Ваш голос"] button')].map((b) => b.innerText.trim())`)
+    if (votes.join('|') !== 'Изменить на „прав автор“|Изменить на „прав соперник“|Отменить — вернуть ставки') throw new Error('Голоса суда по пари: ' + votes.join(', '))
+    await check(boryaPhone, 'Пари: суд без гаранта')
+    await boryaPhone.shot('63b-pari-sud-bez-garanta')
 
     // Действия исхода не завели лишних пари: на сервере — четыре
     const seen = (await (await fetch(server.url + rooms, { headers: { Authorization: 'Bearer ' + room.key } })).json()) as { offers: unknown[] }
