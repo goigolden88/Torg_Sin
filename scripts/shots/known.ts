@@ -4,12 +4,16 @@ import { api, confirmTwice, Device, PASSWORD, SITE, type Cdp, type ServerModule,
 // Вера, Гена. Событие Бори «Вера найдёт работу до декабря», приём — ещё месяц: Боря предлагает «Да»
 // досрочно — приём закрыт, ставка Гены — отказ; Гена возражает, Аня решает «ещё не известно» —
 // предложение снято. Пари Бори и Веры, «исход к» — через месяц: Боря отмечает раньше срока, Вера —
-// так же, исход окончательный сразу; Гене (не сторона) до отметок блока исхода нет
+// так же, исход окончательный сразу; Гене (не сторона) до отметок блока исхода нет. Ставки Бори и Гены
+// — перед самым предложением: у Гены пометка «ставки за сутки до досрочного предложения», ставка Бори —
+// «предложил(а) исход». Событие «Отпуск»: ставки за двое суток до досрочного предложения — пометки нет
+// (часы сервера подставные — сдвигаем вперёд)
 export async function known(cdp: Cdp, size: Size, startServer: ServerModule['startServer']) {
   console.log(`Исход уже известен, ${size.width} px`)
   const HOUR = 60 * 60 * 1000
   const DAY = 24 * HOUR
-  const server = await startServer({ file: ':memory:', password: PASSWORD, port: 0 })
+  let shift = 0
+  const server = await startServer({ file: ':memory:', password: PASSWORD, port: 0, now: () => Date.now() + shift })
   try {
     const room = await api<{ roomId: string; invite: string; key: string; memberId: string }>(server, '/rooms', '', {
       password: PASSWORD,
@@ -100,6 +104,20 @@ export async function known(cdp: Cdp, size: Size, startServer: ServerModule['sta
     )
     if (!late.includes('Приём закрыт: исход уже предложен')) throw new Error('Поздняя ставка не отклонена: ' + (late || 'принята'))
 
+    // Ставки за сутки до досрочного предложения: видны всем; ставка Бори — «предложил(а) исход»;
+    // Гене (ставил, может возразить) — подсказка рядом с «Возразить»
+    const LATE = 'section[aria-label="Ставки за сутки до досрочного предложения"]'
+    await boryaPhone.waitIn(LATE, 'Боря (вы) — 300 ₽ на „Да“, за ')
+    const genaPhone = await open('Гена', gena.key)
+    await genaPhone.goto(eventHref)
+    await genaPhone.waitIn(LATE, 'Боря — 300 ₽ на „Да“, за ')
+    await genaPhone.waitIn(LATE, 'до предложения — предложил(а) исход')
+    await genaPhone.waitIn(LATE, 'Гена (вы) — 200 ₽ на „Нет“, за ')
+    await genaPhone.waitIn(OUTCOME, 'Ставка незадолго до досрочного предложения — основание возразить.')
+    await genaPhone.waitIn(OUTCOME, 'Согласиться с исходом')
+    await check(genaPhone, 'Событие: ставки за сутки до досрочного предложения')
+    await genaPhone.shot('101a-stavki-za-sutki')
+
     // Гена возражает; ведущая не ставила — решает она: «Ещё не известно»
     await api(server, `${rooms}/events/${event.id}/object`, gena.key, { reason: 'Приказа ещё нет — только собеседование' })
     const host = await open('Аня', room.key)
@@ -134,7 +152,6 @@ export async function known(cdp: Cdp, size: Size, startServer: ServerModule['sta
     const offerHref = `${SITE}#/room/${room.roomId}/offer/${offer.id}`
 
     // Гена — не сторона: до «исход к» блока исхода нет
-    const genaPhone = await open('Гена', gena.key)
     await genaPhone.goto(offerHref)
     await genaPhone.waitText('принято — ждём исхода к')
     if (await genaPhone.eval<boolean>(`!!document.querySelector('${OUTCOME}')`)) throw new Error('Не стороне до «исход к» виден блок исхода')
@@ -161,6 +178,27 @@ export async function known(cdp: Cdp, size: Size, startServer: ServerModule['sta
     await confirmTwice(veraPhone, 'Утверждено согласием сторон, окончательно')
     await check(veraPhone, 'Пари: окончательно до «исход к»')
     await veraPhone.shot('106-pari-dosrochno-okonchatelno')
+
+    // «Отпуск»: ставки за двое суток до досрочного предложения — пометки нет
+    const tripCloses = Date.now() + shift + 30 * DAY
+    const trip = await api<{ event: { id: string } }>(server, `${rooms}/events`, borya.key, {
+      condition: 'Вера возьмёт отпуск в январе',
+      check: 'Вера покажет заявление',
+      closesAt: tripCloses,
+      expectedAt: tripCloses + DAY,
+    })
+    await api(server, `${rooms}/events/${trip.event.id}/bets`, borya.key, { outcome: '1', amount: 10000 })
+    await api(server, `${rooms}/events/${trip.event.id}/bets`, gena.key, { outcome: '2', amount: 15000 })
+    shift += 2 * DAY
+    await api(server, `${rooms}/events/${trip.event.id}/propose`, borya.key, { outcome: '1' })
+    await genaPhone.goto(`${SITE}#/room/${room.roomId}/event/${trip.event.id}`)
+    await genaPhone.waitText('исход предложен досрочно')
+    await genaPhone.waitIn(OUTCOME, 'Возразить')
+    if (await genaPhone.eval<boolean>(`!!document.querySelector('${LATE}') || document.body.innerText.includes('основание возразить')`)) {
+      throw new Error('Ставки за двое суток до предложения попали в пометку')
+    }
+    await check(genaPhone, 'Событие: досрочно без поздних ставок')
+    await genaPhone.shot('101b-dosrochno-bez-pozdnikh')
   } finally {
     await server.close()
   }
