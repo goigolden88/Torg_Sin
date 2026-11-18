@@ -908,13 +908,17 @@ describe('отмена события (Р-29)', () => {
     expect(cancel(log, 'H', 'Причина', at + 10, [...appeal, ...keepVotes])).toBe(CANCEL_FINAL)
   })
 
-  it('«ждёт суда»: суд собран — решает суд; без суда — ведущий, если правило ему разрешает (выход по Р-19)', () => {
+  it('«ждёт суда»: суд собран — решает суд; суда нет (судить некому) — ведущий с причиной, и ставивший (выход по Р-19)', () => {
     // Ведущий ставил — голосование; никто не голосовал — «ждёт суда»
     const log = [...base, bet('H', '1', 50), propose('A', '1'), object('B', P)]
     const until = P + VOTING_TIME
     expect(eventOutcome(roomEvents(log)[0], until)?.status).toBe('court')
-    expect(cancel(log, 'H', 'Причина', until)).toBe(CANCEL_HOST_INVOLVED)
+    expect(cancel(log, 'H', null, until)).toBe(NEED_REASON)
+    expect(cancel(log, 'H', 'Судить некому', until)).toBeNull()
+    expect(cancel(log, 'A', 'Судить некому', until)).toBe(CANCEL_OTHERS_BETS)
     expect(cancel(log, 'H', 'Причина', until, [drawn(until, ['C', 'D'])])).toBe(CANCEL_COURT)
+    // До «ждёт суда» (идёт голосование) ставивший ведущий не отменяет
+    expect(cancel(log, 'H', 'Причина', P + HOUR)).toBe(CANCEL_HOST_INVOLVED)
     // Ставил только ведущий, возразил он же: чужих ставок нет — суд не собран, ведущий отменяет сам
     const own = [...room, created(), bet('H', '1', 50), propose('A', '1'), object('H', P)]
     expect(eventOutcome(roomEvents(own)[0], until)?.status).toBe('court')

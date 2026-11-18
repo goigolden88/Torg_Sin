@@ -423,8 +423,10 @@ type CancelRoles = WithBets & { authorId: string; subjectId: string | null; canc
 // Может ли участник отменить событие (Р-29, уточняет Р-19), без причины: окончательный исход — никто;
 // идёт суд (дело есть, решения нет) — никто, решает суд (Р-24); суд уже отменил — никто. Чужих ставок
 // нет — автор или ведущий, в любой момент до окончательности; есть — только ведущий, если сам не ставил
-// и не предмет спора. outcome — eventOutcome с делом суда (у сайта — EventView.outcome: дело суда в
-// нём же, поле court). Можно — null, иначе отказ. Причину проверяет checkCancel
+// и не предмет спора. Исключение — «ждёт суда», а суда нет: судить некому (суд собирается при первом
+// запросе, drawDueCourts сервера) — ведущий отменяет и ставивший, иначе событию нет выхода (Р-19).
+// outcome — eventOutcome с делом суда (у сайта — EventView.outcome: дело суда в нём же, поле court).
+// Можно — null, иначе отказ. Причину проверяет checkCancel
 export function cancelError(e: CancelRoles, outcome: OutcomeView | null, memberId: string, hostId: string): string | null {
   if (e.cancelled) return CANCEL_DONE
   if (outcome?.status === 'final') return CANCEL_FINAL
@@ -432,6 +434,7 @@ export function cancelError(e: CancelRoles, outcome: OutcomeView | null, memberI
   if (outcome?.status === 'cancelled') return CANCEL_COURT_DONE
   if (!othersBet(e, memberId)) return memberId === e.authorId || memberId === hostId ? null : CANCEL_AUTHOR_HOST
   if (memberId !== hostId) return CANCEL_OTHERS_BETS
+  if (outcome?.status === 'court' && !outcome.court) return null
   if (betOn(e, hostId) || e.subjectId === hostId) return CANCEL_HOST_INVOLVED
   return null
 }

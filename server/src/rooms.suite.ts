@@ -5,6 +5,10 @@ import {
   BAD_AMOUNT,
   BAD_OUTCOMES,
   BAD_SUBJECT,
+  CANCEL_COURT,
+  CANCEL_FINAL,
+  CANCEL_HOST_INVOLVED,
+  CANCEL_OTHERS_BETS,
   CLOSE_PASSED,
   EXPECTED_EARLY,
   LONG_CHECK,
@@ -976,16 +980,17 @@ export function roomsSuite(storageName: string, start: (password: string | undef
         expect(AUTHOR_ONLY).toBe('Это может только автор события')
       })
 
-      it('автор отменяет до закрытия приёма — «отменено», ставки возвращаются, новых ставок нет', async () => {
+      it('чужих ставок нет — автор отменяет без причины: «отменено», ставки возвращаются, новых ставок нет', async () => {
         const s = await server()
         const { room, borya, vera } = await room3(s)
         const { event } = await newEvent(s, room.roomId, borya.key, eventForm(s))
         await ok(bet(s, room.roomId, borya.key, event.id, { outcome: '1', amount: 300 }))
-        await ok(bet(s, room.roomId, vera.key, event.id, { outcome: '2', amount: 100 }))
         await ok(bet(s, room.roomId, borya.key, event.id, { outcome: '2', amount: 50 }))
         const cancel = (key: string, body: unknown = {}) => send(s, room.roomId, `events/${event.id}/cancel`, body, key)
-        await refused(cancel(vera.key), 403, AUTHOR_ONLY)
-        await refused(cancel(room.key), 403, AUTHOR_ONLY)
+        // Для Веры и ведущего ставки Бори — чужие (Р-29)
+        await refused(cancel(vera.key, { reason: 'Хочу' }), 403, CANCEL_OTHERS_BETS)
+        await refused(cancel(room.key), 400, NEED_REASON)
+        expect(await eventEntries(s, room.roomId)).toEqual(['event.created', 'bet.placed', 'bet.placed'])
         s.clock.now += 1000
         // Тело не нужно: POST без тела
         const r = await ok<CancelEventResponse>(
@@ -995,25 +1000,23 @@ export function roomsSuite(storageName: string, start: (password: string | undef
         const [view] = await eventsOf(s, room.roomId, vera.key)
         expect(view.status).toBe('cancelled')
         expect(view.cancelled).toEqual(r.cancelled)
-        expect(view.refunds).toEqual([
-          { memberId: borya.memberId, amount: 350 },
-          { memberId: vera.memberId, amount: 100 },
-        ])
+        expect(view.refunds).toEqual([{ memberId: borya.memberId, amount: 350 }])
         await refused(bet(s, room.roomId, vera.key, event.id, { outcome: '1', amount: 10 }), 409, EVENT_CANCELLED)
         // Повтор отмены — тот же ответ без новой записи
         s.clock.now += 1000
         expect(await ok(cancel(borya.key))).toEqual(r)
-        expect(await eventEntries(s, room.roomId)).toEqual(['event.created', 'bet.placed', 'bet.placed', 'bet.placed', 'event.cancelled'])
+        expect(await eventEntries(s, room.roomId)).toEqual(['event.created', 'bet.placed', 'bet.placed', 'event.cancelled'])
       })
 
-      it('после закрытия приёма отменяет только ведущий и только с причиной', async () => {
+      it('есть чужие ставки — автор не отменяет и пока приём идёт; ведущий — только с причиной', async () => {
         const s = await server()
         const { room, borya, vera } = await room3(s)
         const { event } = await newEvent(s, room.roomId, borya.key, eventForm(s))
         await ok(bet(s, room.roomId, vera.key, event.id, { outcome: '1', amount: 100 }))
-        s.clock.now = event.closesAt
         const cancel = (key: string, body: unknown = {}) => send(s, room.roomId, `events/${event.id}/cancel`, body, key)
-        await refused(cancel(borya.key, { reason: 'Передумал' }), 403, HOST_ONLY)
+        await refused(cancel(borya.key), 403, CANCEL_OTHERS_BETS)
+        s.clock.now = event.closesAt
+        await refused(cancel(borya.key, { reason: 'Передумал' }), 403, CANCEL_OTHERS_BETS)
         await refused(cancel(room.key), 400, NEED_REASON)
         await refused(cancel(room.key, { reason: '  ' }), 400, NEED_REASON)
         await refused(cancel(room.key, { reason: 'я'.repeat(301) }), 400, LONG_REASON)
@@ -1022,6 +1025,16 @@ export function roomsSuite(storageName: string, start: (password: string | undef
         const [view] = await eventsOf(s, room.roomId, borya.key)
         expect(view).toMatchObject({ status: 'cancelled', refunds: [{ memberId: vera.memberId, amount: 100 }] })
         expect(NEED_REASON).toBe('Нужна причина отмены')
+      })
+
+      it('ведущий ставил: при чужих ставках не отменяет и с причиной — отказ без записи', async () => {
+        const s = await server()
+        const { room, borya, vera } = await room3(s)
+        const { event } = await newEvent(s, room.roomId, borya.key, eventForm(s))
+        await ok(bet(s, room.roomId, room.key, event.id, { outcome: '1', amount: 50 }))
+        await ok(bet(s, room.roomId, vera.key, event.id, { outcome: '2', amount: 100 }))
+        await refused(send(s, room.roomId, `events/${event.id}/cancel`, { reason: 'Условие плохое' }, room.key), 403, CANCEL_HOST_INVOLVED)
+        expect(await eventEntries(s, room.roomId)).toEqual(['event.created', 'bet.placed', 'bet.placed'])
       })
 
       it('чужой метод и адрес событий — 404; ставка в журнале не хранит лишнего', async () => {
@@ -1381,8 +1394,8 @@ export function roomsSuite(storageName: string, start: (password: string | undef
           const [view] = await eventsOf(s, room.roomId, vera.key)
           expect(view).toMatchObject({ status: 'closed', closedAt: proposedAt, outcome: { status: 'proposed', awaiting: [vera.memberId] } })
           expect(view.bets.length).toBe(2)
-          // Ведущий отменить может только с причиной: приём закрыт
-          await refused(send(s, room.roomId, `events/${event.id}/cancel`, {}, borya.key), 403, HOST_ONLY)
+          // Автор не отменяет: есть ставка Веры (Р-29)
+          await refused(send(s, room.roomId, `events/${event.id}/cancel`, {}, borya.key), 403, CANCEL_OTHERS_BETS)
           await refused(act(s, room.roomId, borya.key, event.id, 'propose', { outcome: '2' }), 409, ALREADY_PROPOSED)
           s.clock.now = event.closesAt + 1000
           await refused(bet(s, room.roomId, vera.key, event.id, { outcome: '2', amount: 50 }), 409, BETS_CLOSED_PROPOSED)
@@ -1497,7 +1510,11 @@ export function roomsSuite(storageName: string, start: (password: string | undef
           await refused(act(s, room.roomId, borya.key, early.id, 'propose', { outcome: '1' }), 409, EVENT_CANCELLED)
           await ok(act(s, room.roomId, borya.key, voting.id, 'propose', { outcome: '1' }))
           await ok(act(s, room.roomId, vera.key, voting.id, 'object', { reason: 'Не так' }))
-          await ok(send(s, room.roomId, `events/${voting.id}/cancel`, { reason: 'Спорим зря' }, room.key))
+          // Ведущий ставил — сейчас не отменит (Р-29); отмена из журнала до Р-29 действует, как была
+          await refused(send(s, room.roomId, `events/${voting.id}/cancel`, { reason: 'Спорим зря' }, room.key), 403, CANCEL_HOST_INVOLVED)
+          await append(s.storage(room.roomId), [
+            { id: ulid(s.clock.now), at: s.clock.now, memberId: room.memberId, type: 'event.cancelled', event: voting.id, reason: 'Спорим зря' },
+          ])
           await refused(act(s, room.roomId, gosha.key, voting.id, 'vote', { outcome: '1' }), 409, EVENT_CANCELLED)
           await refused(act(s, room.roomId, room.key, voting.id, 'object', { reason: 'И я' }), 409, EVENT_CANCELLED)
           await refused(act(s, room.roomId, room.key, voting.id, 'decide', { outcome: '1' }), 409, EVENT_CANCELLED)
@@ -2432,6 +2449,23 @@ export function roomsSuite(storageName: string, start: (password: string | undef
         s.clock.now += 30 * DAY
         expect((await eventOutcome(s, room.roomId, vera.key, event.id))?.status).toBe('final')
         expect(await courtEntries(s, room.roomId)).toEqual(['appeal.filed', 'appeal.joined', 'court.voted', 'court.voted', 'court.voted'])
+      })
+
+      it('отмена события (Р-29): апелляция подана — решает суд; суд решил — окончательный, отмены нет; записи нет', async () => {
+        const s = await server()
+        const p = await room6(s)
+        const { room, vera } = p
+        const event = await proposedEvent(s, p)
+        s.clock.now += DAY
+        s.seeds.push(SEED)
+        await ok(eventAct(s, room.roomId, vera.key, event.id, 'appeal', { reason: 'Скрин старый' }))
+        const cancel = () => eventAct(s, room.roomId, room.key, event.id, 'cancel', { reason: 'Видео не сохранилось' })
+        await refused(cancel(), 409, CANCEL_COURT)
+        // Суд промолчал все 72 часа — исход остался, окончательный
+        s.clock.now += 30 * DAY
+        expect((await eventOutcome(s, room.roomId, vera.key, event.id))?.status).toBe('final')
+        await refused(cancel(), 409, CANCEL_FINAL)
+        expect((await readLog(s.storage(room.roomId))).some((e) => e.type === 'event.cancelled')).toBe(false)
       })
 
       it('досрочная замена ведущим: не проголосовавшего, не себя, с причиной, одна на место; «оставить» — окончательный с решения суда', async () => {
