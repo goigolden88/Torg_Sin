@@ -1,17 +1,28 @@
 // Экран события-пула (Р-04): условие, «как проверяем», уточнения, автор и предмет спора, отсчёт до
 // закрытия приёма по времени сервера; по каждому исходу — полоса банка с числом и основанием;
 // ставка — с окном подтверждения и честной прикидкой выигрыша; «Лента ставок» и «Ваша позиция».
-// Автору — «Уточнить» и, пока приём идёт, «Отменить событие»; ведущему после закрытия — «Отменить»
-// с причиной. Состояние — с сервера раз в 5 с (useRoom); нет связи — последнее известное, ставить
+// Автору — «Уточнить»; «Отменить событие» — кому правило отмены разрешает сейчас (cancelError, Р-29),
+// с причиной, когда есть чужие ставки. Состояние — с сервера раз в 5 с (useRoom); нет связи — последнее известное, ставить
 // нельзя. Деньги считает pool.ts — здесь не считаем заново. Исход (EventView.outcome) — EventOutcome.
 // Предмет спора (Р-26): ему — только доступные исходы (betOutcomes); его ставка — пометкой для всех
 import { useCallback, useEffect, useRef, useState, type FormEvent, type MutableRefObject } from 'react'
 import { cancelEvent, clarifyEvent, placeBet } from '../api'
 import { currency as currencyOf, isCurrencyCode, parseAmount } from '../rules/currency'
 import { formatDateTime } from '../rules/date'
-import { betOutcomes, checkClarification, checkReason, eventStatus, MAX_EVENT_TEXT, NEED_REASON, SUBJECT_NO_BETS, subjectStake } from '../rules/event'
+import {
+  betOutcomes,
+  cancelError,
+  cancelNeedsReason,
+  checkClarification,
+  checkReason,
+  eventStatus,
+  MAX_EVENT_TEXT,
+  NEED_REASON,
+  SUBJECT_NO_BETS,
+  subjectStake,
+} from '../rules/event'
 import { chancePercents, formatChance, formatOdds, payoutIfWins, poolOdds, settlePool } from '../rules/pool'
-import type { EventStatus, EventView } from '../rules/protocol'
+import type { EventView } from '../rules/protocol'
 import { formKey, requestFor, type PendingRequest } from '../rules/request'
 import { ulid } from '../rules/ulid'
 import { savedEvents, type SavedRoom } from '../store/db'
@@ -58,7 +69,11 @@ export function EventScreen({ room, eventId, onUpdate }: { room: SavedRoom; even
   const isAuthor = event.authorId === room.memberId
   const isHost = room.hostId === room.memberId
   const mayClarify = isAuthor && status !== 'cancelled'
-  const mayCancel = (status === 'open' && isAuthor) || (status === 'closed' && isHost)
+  // Отмена — по тому же правилу, что у сервера (cancelError; Р-29). Автору и ведущему, кому сейчас
+  // нельзя, — почему (кроме уже отменённого: это видно и так)
+  const cancelRefusal = cancelError(event, event.outcome, room.memberId, room.hostId)
+  const mayCancel = cancelRefusal === null
+  const cancelWhy = !mayCancel && !event.cancelled && (isAuthor || isHost) ? cancelRefusal : null
 
   // Две обёртки-колонки: «всё про спор и мою ставку» и «график + лента». На телефоне, планшете и
   // 1024–1279 px — одна под другой (порядок блоков прежний), от 1280 px — рядом (styles.css)
@@ -117,14 +132,15 @@ export function EventScreen({ room, eventId, onUpdate }: { room: SavedRoom; even
             )}
             {mayCancel && (
               <button className="button secondary" type="button" onClick={() => setPanel(panel === 'cancel' ? 'none' : 'cancel')} aria-expanded={panel === 'cancel'}>
-                {status === 'open' ? 'Отменить событие' : 'Отменить'}
+                Отменить событие
               </button>
             )}
           </div>
         ) : null}
+        {cancelWhy && <p className="hint">{cancelWhy}</p>}
         {panel === 'clarify' && <ClarifyPanel room={room} event={event} onDone={refresh} onClose={() => setPanel('none')} />}
         {panel === 'cancel' && mayCancel && (
-          <CancelPanel room={room} event={event} status={status} onDone={refresh} onClose={() => setPanel('none')} />
+          <CancelPanel room={room} event={event} onDone={refresh} onClose={() => setPanel('none')} />
         )}
 
         <Position room={room} event={event} />
@@ -491,25 +507,21 @@ function ClarifyPanel({ room, event, onDone, onClose }: { room: SavedRoom; event
   )
 }
 
-// Отмена с подтверждением: пока приём идёт — автор, причина по желанию; после закрытия — ведущий,
-// причина обязательна. Ставки возвращаются
-function CancelPanel({
-  room,
-  event,
-  status,
-  onDone,
-  onClose,
-}: {
-  room: SavedRoom
-  event: EventView
-  status: EventStatus
-  onDone: () => Promise<void>
-  onClose: () => void
-}) {
+// Отмена с подтверждением (Р-29): чужих ставок нет — причина по желанию; есть (отменяет только
+// ведущий) — обязательна. Текст — что будет со ставками: возврат каждому его суммы
+function CancelPanel({ room, event, onDone, onClose }: { room: SavedRoom; event: EventView; onDone: () => Promise<void>; onClose: () => void }) {
   const [reason, setReason] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
-  const required = status !== 'open'
+  const required = cancelNeedsReason(event, room.memberId)
+  const bank = event.bets.reduce((s, b) => s + b.amount, 0)
+  const mine = event.bets.filter((b) => b.memberId === room.memberId).reduce((s, b) => s + b.amount, 0)
+  const bets =
+    bank === 0
+      ? 'Ставок нет.'
+      : bank === mine
+        ? `Ставки только ваши — ${money(mine, room.currency)} вернутся вам.`
+        : `Все ставки вернутся — каждому его сумма, всего ${money(bank, room.currency)}.`
 
   async function submit(e: FormEvent) {
     e.preventDefault()
@@ -528,10 +540,19 @@ function CancelPanel({
 
   return (
     <form className="confirm form" onSubmit={submit} aria-label="Отменить событие?">
-      <p>Отменить событие? Все ставки вернутся, отмену не вернуть.</p>
+      <p>
+        Отменить событие? {bets} Отмену не вернуть.
+      </p>
       <label className="field">
-        <span>{required ? 'Причина отмены' : 'Причина (по желанию)'}</span>
-        <textarea className="input textarea" value={reason} onChange={(e) => setReason(e.target.value)} maxLength={MAX_EVENT_TEXT * 2} rows={2} />
+        <span>{required ? 'Причина отмены (обязательна: есть ставки других участников)' : 'Причина (по желанию)'}</span>
+        <textarea
+          className="input textarea"
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+          maxLength={MAX_EVENT_TEXT * 2}
+          rows={2}
+          required={required}
+        />
       </label>
       {error && (
         <p className="error" role="alert">

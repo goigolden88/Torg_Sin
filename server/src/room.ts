@@ -24,6 +24,10 @@ import {
   BAD_SUBJECT,
   betOf,
   betOn,
+  CANCEL_AUTHOR_HOST,
+  CANCEL_HOST_INVOLVED,
+  CANCEL_OTHERS_BETS,
+  checkCancel,
   checkEventTimes,
   earlyProposal,
   eventBank,
@@ -766,7 +770,11 @@ async function clarifyEvent(
   return ok({ clarification })
 }
 
-// Отмена: пока приём идёт — автор; после закрытия — только ведущий и только с причиной.
+// Отказ отмены «не вам» — 403; «уже не то состояние» (окончательный, суд) — 409; без причины — 400
+const CANCEL_FORBIDDEN: readonly string[] = [CANCEL_AUTHOR_HOST, CANCEL_OTHERS_BETS, CANCEL_HOST_INVOLVED]
+
+// Отмена — по checkCancel (Р-29): окончательный исход и идущий суд — никто; чужих ставок нет — автор
+// или ведущий без причины; есть — только ведущий, сам не ставивший и не предмет спора, с причиной.
 // Уже отменено — та же отмена без новой записи. Ставки возвращаются (eventRefunds)
 async function cancelEvent(
   storage: RoomStorage,
@@ -776,12 +784,10 @@ async function cancelEvent(
   const c = await eventCaller(storage, a.keyHash, a.event)
   if (!c.ok) return c
   if (c.event.cancelled) return ok({ cancelled: c.event.cancelled })
-  if (eventStatus(c.event, now) === 'open') {
-    if (c.me !== c.event.authorId) return fail(403, AUTHOR_ONLY)
-  } else {
-    if (c.me !== c.state.hostId) return fail(403, HOST_ONLY)
-    if (a.reason === null) return fail(400, NEED_REASON)
-  }
+  // Дело суда — только по этому событию
+  const court = appeal.caseOf(appeal.logAppeals(c.log, { events: [c.event], offers: [] }), c.event.id)
+  const error = checkCancel(c.event, eventOutcome(c.event, now, court), c.me, c.state.hostId, a.reason)
+  if (error) return fail(error === NEED_REASON ? 400 : CANCEL_FORBIDDEN.includes(error) ? 403 : 409, error)
   await append(storage, [{ id: ulid(now), at: now, memberId: c.me, type: 'event.cancelled', event: c.event.id, reason: a.reason }])
   return ok({ cancelled: { at: now, by: c.me, reason: a.reason } })
 }
