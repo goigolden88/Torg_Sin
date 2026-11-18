@@ -276,7 +276,7 @@ function Head({ room, out, guarantor }: { room: SavedRoom; out: Outcome; guarant
         <p className="outcome-head court">Нужен новый гарант</p>
         <p className="hint">
           {declined ? `Гарант ${guarantor} отказался ${since}.` : `Гарант ${guarantor} не решил до ${since}.`} Каждая сторона называет участника не из сторон;
-          назовут одного — он гарант, на решение — 3 дня.
+          назовут одного и того же — это и есть гарант, на решение — 3 дня.
         </p>
       </>
     )

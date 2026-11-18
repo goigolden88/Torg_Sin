@@ -1,5 +1,5 @@
 // Общее для экранов событий: сумма в валюте комнаты, имя участника, строка «приём идёт / закрыт /
-// отменено» с отсчётом по времени сервера, пометка «предмет спора сам ставит». Считают правила (pool.ts, event.ts), здесь — только показ
+// отменено» с отсчётом по времени сервера, пометка «предмет спора ставит на себя». Считают правила (pool.ts, event.ts), здесь — только показ
 import { formatAmount, isCurrencyCode } from '../rules/currency'
 import { formatCountdown, formatDateTime } from '../rules/date'
 import { closingAt, eventStatus, subjectStake } from '../rules/event'
@@ -25,15 +25,15 @@ export function eventHref(roomId: string, eventId: string): string {
   return `#/room/${roomId}/event/${eventId}`
 }
 
-// Пометка-предупреждение (Р-26): предмет спора сам поставил — «⚑ Аня — предмет спора — сам ставит:
-// 300 ₽ на „Да“»; у старого события его ставка на «Нет» — «поставил против себя». Не ставил — ничего
+// Пометка-предупреждение (Р-26): у предмета спора есть ставка — «⚑ Аня — предмет спора — ставит на себя:
+// 300 ₽ на „Да“»; у старого события ставка на «Нет» — «ставка против себя: 300 ₽ на „Нет“». Ставки нет — ничего
 export function SubjectFlag({ room, event }: { room: SavedRoom; event: EventView }) {
   const s = subjectStake(event)
   if (!s || event.subjectId === null) return null
   const name = nameOf(room, event.subjectId) + (event.subjectId === room.memberId ? ' (вы)' : '')
-  const text = s.against
-    ? 'поставил против себя'
-    : 'сам ставит: ' + s.stakes.map((x) => `${money(x.amount, room.currency)} на „${x.title}“`).join(', ')
+  // Без рода: участница видит про себя то же, что участник
+  const list = s.stakes.map((x) => `${money(x.amount, room.currency)} на „${x.title}“`).join(', ')
+  const text = (s.against ? 'ставка против себя: ' : 'ставит на себя: ') + list
   return (
     <span className="subject-flag">
       ⚑ {name} — предмет спора — {text}

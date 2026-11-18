@@ -196,7 +196,7 @@ export function NewEvent({ room, onUpdate }: { room: SavedRoom; onUpdate: (room:
                 </label>
               ))}
             </div>
-            <span className="hint">Если спор о ком-то из участников («Боря подтянется 20 раз»): он может ставить, но не объявляет исход.</span>
+            <span className="hint">Если спор о ком-то из участников («Боря подтянется 20 раз»): предмет спора может ставить, но не объявляет исход.</span>
           </fieldset>
           {room.members.length < SMALL_ROOM && <p className="hint">{SMALL_ROOM_NOTE}</p>}
         </div>
