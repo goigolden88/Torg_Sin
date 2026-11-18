@@ -207,6 +207,11 @@ async function events(host: Device, friend: Device, size: Size, server: RoomsSer
   await confirmBet(host)
   await host.waitCount('.feed-row', 2)
   await host.waitCount('.chart-plot', 1)
+  // Ведущий ставил, есть ставка друга — отменить нельзя, видно почему (Р-29)
+  await host.waitText('Вы ставили в этом событии (или вы — предмет спора)')
+  if (await host.eval<boolean>(`[...document.querySelectorAll('button')].some((b) => b.innerText.trim() === 'Отменить событие')`)) {
+    throw new Error('Ведущий со своей ставкой видит «Отменить событие» при ставке друга')
+  }
   await host.shot('12h-sobytie-s-bankom')
   if (size.width >= 1024) await host.shotAt(LAPTOP, '12h-sobytie-s-bankom')
   // Подпись ставки: на телефоне — нажатием, на компьютере — наведением
@@ -281,19 +286,24 @@ async function events(host: Device, friend: Device, size: Size, server: RoomsSer
     closesAt,
     expectedAt: closesAt + 60 * 60 * 1000,
   })
+  // Ставит только друг: ведущий не ставил — отменить может, с причиной (Р-29)
   await api(server, `/rooms/${roomId}/events/${event.id}/bets`, friendKey, { outcome: '1', amount: 20000 })
-  await api(server, `/rooms/${roomId}/events/${event.id}/bets`, hostKey, { outcome: '2', amount: 50000 })
+  await api(server, `/rooms/${roomId}/events/${event.id}/bets`, friendKey, { outcome: '2', amount: 50000 })
   await host.goto(SITE + `#/room/${roomId}/event/${event.id}`)
   await host.waitText('Приём ставок закрыт')
   const betButton = await host.eval<boolean>(`[...document.querySelectorAll('button')].some((b) => b.innerText.trim() === 'Поставить')`)
   if (betButton) throw new Error('После закрытия приёма кнопка «Поставить» осталась')
+  await host.waitText('Отменить событие')
   await host.shot('12j-priyom-zakryt')
 
-  // Ведущий отменяет закрытое: причина обязательна
-  await host.click('Отменить')
+  // Ведущий отменяет: есть чужие ставки — причина обязательна; окно говорит, что будет со ставками
+  await host.click('Отменить событие')
+  await host.waitIn('.confirm', 'Все ставки вернутся — каждому его сумма, всего 700 ₽')
+  await host.waitText('Причина отмены (обязательна: есть ставки других участников)')
+  await host.shot('12j1-okno-otmeny')
   await host.click('Да, отменить')
   await host.waitText('Нужна причина отмены')
-  await host.fill('Причина отмены', 'Электричку отменили — спорить не о чем')
+  await host.fill('Причина отмены (обязательна: есть ставки других участников)', 'Электричку отменили — спорить не о чем')
   await host.click('Да, отменить')
   await host.waitText('отменено — ставки возвращены')
   await host.shot('12k-otmeneno-vedushchim')

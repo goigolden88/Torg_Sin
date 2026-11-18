@@ -1,6 +1,18 @@
 import { describe, expect, it } from 'vitest'
+import { caseOf, roomAppeals, type AppealRecord, type CourtRoom } from './appeal'
 import {
   AUTHOR_SILENCE,
+  CANCEL_AUTHOR_HOST,
+  CANCEL_COURT,
+  CANCEL_COURT_DONE,
+  CANCEL_DONE,
+  CANCEL_FINAL,
+  CANCEL_HOST_INVOLVED,
+  CANCEL_OTHERS_BETS,
+  cancelError,
+  cancelNeedsReason,
+  checkCancel,
+  NEED_REASON,
   BAD_AMOUNT,
   BAD_OUTCOMES,
   BAD_SUBJECT,
@@ -53,6 +65,7 @@ import {
   YES,
   yesNoOutcomes,
 } from './event'
+import type { CourtVerdict } from './protocol'
 import type { LogEntry } from './room'
 
 const FORM = {
@@ -754,5 +767,171 @@ describe('исход события', () => {
     expect(checkObjection(undefined)).toEqual({ ok: false, error: NEED_OBJECTION })
     expect(checkObjection('я'.repeat(300))).toMatchObject({ ok: true })
     expect(checkObjection('я'.repeat(301))).toEqual({ ok: false, error: LONG_OBJECTION })
+  })
+})
+
+describe('отмена события (Р-29)', () => {
+  const HOUR = 60 * 60 * 1000
+  const DAY = 24 * HOUR
+  const P = 10_000 // предложено (приём до 2 000)
+  const SEED = '9f3c51a07be2'
+  const MEMBERS = ['H', 'A', 'B', 'C', 'D']
+  const ROOM: CourtRoom = { hostId: 'H', members: MEMBERS.map((id) => ({ id, addedAt: 0 })) }
+  // Ведущий H; участники A, B, C, D
+  const room: LogEntry[] = [
+    { id: 'R', at: 0, memberId: 'H', type: 'room.created', roomId: 'R', name: 'Дача', currency: 'RUB' },
+    ...MEMBERS.map((m): LogEntry => ({ id: 'M' + m, at: 0, memberId: 'H', type: 'member.added', member: m, name: m })),
+  ]
+  function created(author = 'A', subject: string | null = null): LogEntry {
+    return {
+      id: 'E1',
+      at: 1_000,
+      memberId: author,
+      type: 'event.created',
+      condition: 'Условие',
+      check: 'Как проверяем',
+      outcomes: [
+        { id: '1', title: 'Да' },
+        { id: '2', title: 'Нет' },
+      ],
+      closesAt: 2_000,
+      expectedAt: 3_000,
+      subject,
+      requestId: 'Q0',
+    }
+  }
+  const bet = (who: string, outcome: string, amount: number): LogEntry => ({
+    id: 'B' + who + outcome,
+    at: 1_500,
+    memberId: who,
+    type: 'bet.placed',
+    event: 'E1',
+    outcome,
+    amount,
+    requestId: 'QB' + who + outcome,
+  })
+  const propose = (who: string, outcome: string): LogEntry => ({ id: 'P' + who, at: P, memberId: who, type: 'outcome.proposed', event: 'E1', outcome, requestId: 'QP' + who })
+  const object = (who: string, at: number): LogEntry => ({ id: 'O' + who, at, memberId: who, type: 'outcome.objected', event: 'E1', reason: 'Не так', requestId: 'QO' + who })
+  const cancelled = (who: string, at: number, reason: string | null): LogEntry => ({ id: 'X' + who, at, memberId: who, type: 'event.cancelled', event: 'E1', reason })
+  const filed = (by: string, at: number, candidates: string[]): AppealRecord => ({ type: 'appeal.filed', id: 'F' + by, at, memberId: by, target: 'E1', reason: 'Скрин смонтирован', seed: SEED, candidates })
+  const drawn = (at: number, candidates: string[]): AppealRecord => ({ type: 'court.drawn', id: 'C' + at, at, memberId: 'H', target: 'E1', seed: SEED, candidates })
+  const judged = (by: string, at: number, verdict: CourtVerdict): AppealRecord => ({ type: 'court.voted', id: 'V' + by, at, memberId: by, target: 'E1', ...verdict })
+
+  // Отказ (или null) участнику who на now: исход — с делом суда, как у сервера и в EventView.outcome
+  function cancel(log: LogEntry[], who: string, reason: string | null, now: number, records: AppealRecord[] = []): string | null {
+    const e = roomEvents(log)[0]
+    const court = caseOf(roomAppeals(records, { events: [e], offers: [] }, ROOM), 'E1')
+    return checkCancel(e, eventOutcome(e, now, court), who, 'H', reason)
+  }
+  const OPEN = 1_800
+  // A — 300 на «Да», B — 100 на «Нет»: ведущий не ставил
+  const base = [...room, created(), bet('A', '1', 300), bet('B', '2', 100)]
+
+  it('чужих ставок нет — автор или ведущий без причины; остальным — нет', () => {
+    const log = [...room, created()]
+    expect(cancel(log, 'A', null, OPEN)).toBeNull()
+    expect(cancel(log, 'H', null, OPEN)).toBeNull()
+    expect(cancel(log, 'B', 'Причина', OPEN)).toBe(CANCEL_AUTHOR_HOST)
+    expect(cancelNeedsReason(roomEvents(log)[0], 'A')).toBe(false)
+    // После закрытия приёма без ставок — автор может
+    expect(cancel(log, 'A', null, 2_500)).toBeNull()
+  })
+
+  it('только свои ставки автора — автор без причины; для ведущего это чужие — с причиной', () => {
+    const log = [...room, created(), bet('A', '1', 300), bet('A', '2', 50)]
+    expect(cancel(log, 'A', null, OPEN)).toBeNull()
+    expect(cancel(log, 'A', null, 2_500)).toBeNull()
+    expect(cancel(log, 'H', null, OPEN)).toBe(NEED_REASON)
+    expect(cancel(log, 'H', 'Условие поняли по-разному', OPEN)).toBeNull()
+    expect(cancel(log, 'B', 'Причина', OPEN)).toBe(CANCEL_OTHERS_BETS)
+  })
+
+  it('есть чужие ставки — только ведущий и только с причиной; автор не отменяет и пока приём идёт', () => {
+    expect(cancel(base, 'A', null, OPEN)).toBe(CANCEL_OTHERS_BETS)
+    expect(cancel(base, 'A', 'Передумал', OPEN)).toBe(CANCEL_OTHERS_BETS)
+    expect(cancel(base, 'C', 'Причина', OPEN)).toBe(CANCEL_OTHERS_BETS)
+    expect(cancel(base, 'H', null, OPEN)).toBe(NEED_REASON)
+    expect(cancel(base, 'H', 'Условие поняли по-разному', OPEN)).toBeNull()
+    expect(cancel(base, 'H', 'Условие поняли по-разному', 2_500)).toBeNull()
+    expect(cancelNeedsReason(roomEvents(base)[0], 'H')).toBe(true)
+    expect(cancelError(roomEvents(base)[0], null, 'H', 'H')).toBeNull()
+  })
+
+  it('ведущий ставил: чужих ставок нет — может без причины; есть — не отменяет совсем', () => {
+    const own = [...room, created(), bet('H', '1', 50)]
+    expect(cancel(own, 'H', null, OPEN)).toBeNull()
+    expect(cancel(own, 'A', null, OPEN)).toBe(CANCEL_OTHERS_BETS)
+    const mixed = [...base, bet('H', '1', 50)]
+    expect(cancel(mixed, 'H', 'Причина', OPEN)).toBe(CANCEL_HOST_INVOLVED)
+    expect(cancel(mixed, 'H', null, OPEN)).toBe(CANCEL_HOST_INVOLVED)
+  })
+
+  it('ведущий — предмет спора: при чужих ставках не отменяет; ставок нет — может', () => {
+    expect(cancel([...room, created('A', 'H'), bet('A', '1', 300), bet('B', '2', 100)], 'H', 'Причина', OPEN)).toBe(CANCEL_HOST_INVOLVED)
+    expect(cancel([...room, created('A', 'H')], 'H', null, OPEN)).toBeNull()
+  })
+
+  it('автор — ведущий: свои ставки не в счёт; при чужих — как ведущий, с причиной, если сам не ставил', () => {
+    const own = [...room, created('H'), bet('H', '1', 300)]
+    expect(cancel(own, 'H', null, OPEN)).toBeNull()
+    const others = [...room, created('H'), bet('B', '2', 100)]
+    expect(cancel(others, 'H', null, OPEN)).toBe(NEED_REASON)
+    expect(cancel(others, 'H', 'Причина', OPEN)).toBeNull()
+    expect(cancel([...others, bet('H', '1', 300)], 'H', 'Причина', OPEN)).toBe(CANCEL_HOST_INVOLVED)
+  })
+
+  it('утверждён, но не окончательный — ведущий с причиной может; окончательный — никто', () => {
+    const log = [...base, propose('A', '1')]
+    expect(eventOutcome(roomEvents(log)[0], P + DAY)?.status).toBe('approved')
+    expect(cancel(log, 'H', 'Видео не сохранилось', P + DAY)).toBeNull()
+    expect(cancel(log, 'A', 'Причина', P + DAY)).toBe(CANCEL_OTHERS_BETS)
+    const final = P + DAY + FINAL_TIME
+    expect(eventOutcome(roomEvents(log)[0], final)?.status).toBe('final')
+    for (const who of ['H', 'A', 'B']) expect(cancel(log, who, 'Причина', final)).toBe(CANCEL_FINAL)
+    // Без чужих ставок тоже: окончательный исход не отменяют
+    const alone = [...room, created(), bet('A', '1', 300), propose('A', '1')]
+    expect(cancel(alone, 'A', null, P)).toBe(CANCEL_FINAL)
+  })
+
+  it('апелляция подана — решает суд, никто не отменяет; суд решил — тоже нет', () => {
+    const log = [...base, propose('A', '1')]
+    const at = P + DAY + HOUR
+    const appeal = [filed('B', at, ['H', 'C', 'D'])]
+    expect(cancel(log, 'H', 'Причина', at, appeal)).toBe(CANCEL_COURT)
+    expect(cancel(log, 'A', null, at, appeal)).toBe(CANCEL_COURT)
+    expect(cancel(log, 'H', 'Причина', at + DAY, appeal)).toBe(CANCEL_COURT)
+    // Суд молчал весь срок — исход остаётся («оставить»), окончательный
+    expect(cancel(log, 'H', 'Причина', at + 4 * DAY, appeal)).toBe(CANCEL_FINAL)
+    const cancelVotes = ['H', 'C', 'D'].map((m, i) => judged(m, at + i + 1, { verdict: 'cancel' }))
+    expect(cancel(log, 'H', 'Причина', at + 10, [...appeal, ...cancelVotes])).toBe(CANCEL_COURT_DONE)
+    const keepVotes = ['H', 'C', 'D'].map((m, i) => judged(m, at + i + 1, { verdict: 'keep' }))
+    expect(cancel(log, 'H', 'Причина', at + 10, [...appeal, ...keepVotes])).toBe(CANCEL_FINAL)
+  })
+
+  it('«ждёт суда»: суд собран — решает суд; суда нет (судить некому) — ведущий с причиной, и ставивший (выход по Р-19)', () => {
+    // Ведущий ставил — голосование; никто не голосовал — «ждёт суда»
+    const log = [...base, bet('H', '1', 50), propose('A', '1'), object('B', P)]
+    const until = P + VOTING_TIME
+    expect(eventOutcome(roomEvents(log)[0], until)?.status).toBe('court')
+    expect(cancel(log, 'H', null, until)).toBe(NEED_REASON)
+    expect(cancel(log, 'H', 'Судить некому', until)).toBeNull()
+    expect(cancel(log, 'A', 'Судить некому', until)).toBe(CANCEL_OTHERS_BETS)
+    expect(cancel(log, 'H', 'Причина', until, [drawn(until, ['C', 'D'])])).toBe(CANCEL_COURT)
+    // До «ждёт суда» (идёт голосование) ставивший ведущий не отменяет
+    expect(cancel(log, 'H', 'Причина', P + HOUR)).toBe(CANCEL_HOST_INVOLVED)
+    // Ставил только ведущий, возразил он же: чужих ставок нет — суд не собран, ведущий отменяет сам
+    const own = [...room, created(), bet('H', '1', 50), propose('A', '1'), object('H', P)]
+    expect(eventOutcome(roomEvents(own)[0], until)?.status).toBe('court')
+    expect(cancel(own, 'H', null, until)).toBeNull()
+    expect(cancel(own, 'H', null, until, [drawn(until, ['B', 'C', 'D'])])).toBe(CANCEL_COURT)
+  })
+
+  it('уже отменено — отказ правила; старая отмена из журнала действует, как была', () => {
+    // Запись до Р-29: автор отменил при чужих ставках после окончательности — свёртка её не судит
+    const old = [...base, propose('A', '1'), cancelled('A', P + DAY + FINAL_TIME, null)]
+    const e = roomEvents(old)[0]
+    expect(e.cancelled).toEqual({ at: P + DAY + FINAL_TIME, by: 'A', reason: null })
+    expect(eventOutcome(e, P + 30 * DAY)?.status).toBe('cancelled')
+    expect(cancel(old, 'H', 'Причина', P + 30 * DAY)).toBe(CANCEL_DONE)
   })
 })

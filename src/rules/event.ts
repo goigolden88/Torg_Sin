@@ -58,6 +58,15 @@ export const LONG_OBJECTION = `Причина возражения — не дл
 // Предмет спора ставит только на «сбудется» (Р-26)
 export const SUBJECT_YES_ONLY = `Вы — предмет спора: ставить можно только на „${YES}“`
 export const SUBJECT_NO_BETS = 'Вы — предмет спора: в событии со своими исходами вы не ставите'
+// Отказы отмены события (checkCancel; Р-29)
+export const CANCEL_DONE = 'Событие уже отменено'
+export const CANCEL_FINAL = 'Исход окончательный — событие не отменить'
+export const CANCEL_COURT = 'Решает суд — отменить может только суд'
+export const CANCEL_COURT_DONE = 'Суд уже отменил событие — ставки возвращаются'
+export const CANCEL_AUTHOR_HOST = 'Отменить может только автор события или ведущий'
+export const CANCEL_OTHERS_BETS = 'Есть ставки других участников — отменить может только ведущий, с причиной'
+export const CANCEL_HOST_INVOLVED =
+  'Вы ставили в этом событии (или вы — предмет спора): при ставках других участников отмены нет — путь: возражение и суд'
 
 // «Ещё не известно» (Р-27): решение ведущего или голос по возражению на досрочный исход — не исход
 // события, а снятие предложения. Номера исходов — числа, это значение с ними не совпадёт
@@ -402,6 +411,45 @@ export function eventBettors(e: WithBets): string[] {
 // Возражение решает ведущий, если сам не ставил и не предмет спора; иначе — голосование (Р-17)
 export function hostDecides(e: Pick<EventRoles, 'bets' | 'hostId' | 'subjectId'>): boolean {
   return !betOn(e, e.hostId) && e.subjectId !== e.hostId
+}
+
+// Есть ли на событии ставки других участников — кроме memberId (свои не в счёт)
+export function othersBet(e: WithBets, memberId: string): boolean {
+  return e.bets.some((b) => b.memberId !== memberId)
+}
+
+type CancelRoles = WithBets & { authorId: string; subjectId: string | null; cancelled: Cancellation | null }
+
+// Может ли участник отменить событие (Р-29, уточняет Р-19), без причины: окончательный исход — никто;
+// идёт суд (дело есть, решения нет) — никто, решает суд (Р-24); суд уже отменил — никто. Чужих ставок
+// нет — автор или ведущий, в любой момент до окончательности; есть — только ведущий, если сам не ставил
+// и не предмет спора. Исключение — «ждёт суда», а суда нет: судить некому (суд собирается при первом
+// запросе, drawDueCourts сервера) — ведущий отменяет и ставивший, иначе событию нет выхода (Р-19).
+// outcome — eventOutcome с делом суда (у сайта — EventView.outcome: дело суда в нём же, поле court).
+// Можно — null, иначе отказ. Причину проверяет checkCancel
+export function cancelError(e: CancelRoles, outcome: OutcomeView | null, memberId: string, hostId: string): string | null {
+  if (e.cancelled) return CANCEL_DONE
+  if (outcome?.status === 'final') return CANCEL_FINAL
+  if (outcome?.court && outcome.court.decision === null) return CANCEL_COURT
+  if (outcome?.status === 'cancelled') return CANCEL_COURT_DONE
+  if (!othersBet(e, memberId)) return memberId === e.authorId || memberId === hostId ? null : CANCEL_AUTHOR_HOST
+  if (memberId !== hostId) return CANCEL_OTHERS_BETS
+  if (outcome?.status === 'court' && !outcome.court) return null
+  if (betOn(e, hostId) || e.subjectId === hostId) return CANCEL_HOST_INVOLVED
+  return null
+}
+
+// Нужна ли причина отмены: есть ставки других участников (тогда отменяет только ведущий; Р-29)
+export function cancelNeedsReason(e: WithBets, memberId: string): boolean {
+  return othersBet(e, memberId)
+}
+
+// Отмена события целиком (Р-29): cancelError и причина, когда она нужна (reason — уже из checkReason:
+// пустая — null). Можно — null, иначе отказ. Повтор уже отменённого сервер узнаёт до этой проверки
+export function checkCancel(e: CancelRoles, outcome: OutcomeView | null, memberId: string, hostId: string, reason: string | null): string | null {
+  const error = cancelError(e, outcome, memberId, hostId)
+  if (error) return error
+  return reason === null && cancelNeedsReason(e, memberId) ? NEED_REASON : null
 }
 
 // Голосующие: участники на миг первого возражения, кто не ставил и не предмет спора.
