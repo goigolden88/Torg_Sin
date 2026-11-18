@@ -511,8 +511,8 @@ function Payouts({
           <thead>
             <tr>
               <th scope="col">Кто</th>
-              <th scope="col">Поставил</th>
-              <th scope="col">Получил</th>
+              <th scope="col">Ставка</th>
+              <th scope="col">Выплата</th>
               <th scope="col">Итог</th>
             </tr>
           </thead>
@@ -523,8 +523,8 @@ function Payouts({
                   {nameOf(room, p.memberId)}
                   {p.memberId === room.memberId ? ' (вы)' : ''}
                 </th>
-                <td data-label="Поставил">{sum(p.staked)}</td>
-                <td data-label="Получил">{sum(p.payout)}</td>
+                <td data-label="Ставка">{sum(p.staked)}</td>
+                <td data-label="Выплата">{sum(p.payout)}</td>
                 <td data-label="Итог" className={p.net > 0 ? 'win' : p.net < 0 ? 'loss' : ''}>
                   {net(p)}
                 </td>

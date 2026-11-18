@@ -196,10 +196,10 @@ export function stakesLine(room: SavedRoom, o: OfferView): string {
   return `${author} ${sum(s.author)} на „${sideLabel(o.side)}“, ${taker} — ${sum(s.taker)} (кэф ${oddsLabel(o.odds)}), банк ${sum(s.bank)}`
 }
 
-// Пометка-предупреждение (Р-26): предмет спора — сторона пари, он на «сбудется»; иначе ничего
+// Пометка-предупреждение (Р-26): предмет спора — сторона пари, всегда на «сбудется»; иначе ничего
 export function OfferSubjectFlag({ room, offer }: { room: SavedRoom; offer: OfferView }) {
   if (!subjectIsSide(offer) || offer.subjectId === null) return null
-  return <span className="subject-flag">⚑ {who(room, offer.subjectId)} — предмет спора — сам на стороне „{sideLabel('yes')}“</span>
+  return <span className="subject-flag">⚑ {who(room, offer.subjectId)} — предмет спора — на стороне „{sideLabel('yes')}“</span>
 }
 
 // Кому: адресат или «открытое — любой»

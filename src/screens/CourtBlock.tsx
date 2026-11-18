@@ -146,7 +146,7 @@ export function CourtBlock({
       question: `Заменить: ${nameOf(room, member)}?`,
       body: [
         'Место перейдёт следующему по жребию; одна замена на место.',
-        nextReserve ? `Следующий по жребию — ${nameOf(room, nextReserve)}, у него свои ${HOURS} часа.` : 'Запасных нет — место останется пустым.',
+        nextReserve ? `Следующий по жребию — ${nameOf(room, nextReserve)}: на голос — свои ${HOURS} часа.` : 'Запасных нет — место останется пустым.',
         `Причина: ${reason}`,
       ],
       button: 'Заменить',
@@ -209,7 +209,7 @@ export function CourtBlock({
         <section className="court-box" aria-label="Суд">
           <h4>Суд</h4>
           <p className="hint">
-            {c.appeal ? 'По апелляции' : 'Исход ждал суда'}, собран {formatDateTime(c.drawnAt)}. У каждого места — {HOURS} часа; промолчал — место переходит
+            {c.appeal ? 'По апелляции' : 'Исход ждал суда'}, собран {formatDateTime(c.drawnAt)}. У каждого места — {HOURS} часа; нет голоса — место переходит
             следующему по жребию. Решает большинство поданных голосов, решение окончательное.
           </p>
           <ol className="seats" aria-label="Места суда">

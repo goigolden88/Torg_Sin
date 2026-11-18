@@ -70,7 +70,7 @@ export async function subjects(cdp: Cdp, size: Size, startServer: ServerModule['
     await anya.click('Поставить')
     await anya.waitIn('.modal', 'Поставить 300 ₽ на „Да“?')
     await confirmBet(anya)
-    await anya.waitIn('.subject-flag', '⚑ Аня (вы) — предмет спора — сам ставит: 300 ₽ на „Да“')
+    await anya.waitIn('.subject-flag', '⚑ Аня (вы) — предмет спора — ставит на себя: 300 ₽ на „Да“')
 
     // Событие о ней со своими исходами — формы ставки нет
     await anya.goto(eventHref(pullups.event.id))
@@ -81,7 +81,7 @@ export async function subjects(cdp: Cdp, size: Size, startServer: ServerModule['
     // Боря видит пометку у события — на экране события и в списке
     const boryaPhone = await open('Боря', borya.key)
     await boryaPhone.goto(eventHref(job.event.id))
-    await boryaPhone.waitIn('.subject-flag', '⚑ Аня — предмет спора — сам ставит: 300 ₽ на „Да“')
+    await boryaPhone.waitIn('.subject-flag', '⚑ Аня — предмет спора — ставит на себя: 300 ₽ на „Да“')
     await noScroll(boryaPhone, 'Событие с пометкой')
     await boryaPhone.shot('93-pometka-sobytie')
 
@@ -100,7 +100,7 @@ export async function subjects(cdp: Cdp, size: Size, startServer: ServerModule['
     await boryaPhone.click('Предложить')
     await boryaPhone.waitIn('.modal', 'о ком спор — Боря')
     await confirmTwice(boryaPhone, 'открыто — приём до')
-    await boryaPhone.waitIn('.subject-flag', '⚑ Боря (вы) — предмет спора — сам на стороне „сбудется“')
+    await boryaPhone.waitIn('.subject-flag', '⚑ Боря (вы) — предмет спора — на стороне „сбудется“')
     await boryaPhone.waitText('только на стороне „сбудется“')
     await noScroll(boryaPhone, 'Пари с пометкой')
     await boryaPhone.shot('95-pometka-pari')
@@ -146,8 +146,8 @@ export async function subjects(cdp: Cdp, size: Size, startServer: ServerModule['
 
     // Комната у Бори: пометки в списках событий и пари
     await boryaPhone.goto(`${SITE}#/room/${room.roomId}`)
-    await boryaPhone.waitIn('section[aria-label="События"]', '⚑ Аня — предмет спора — сам ставит: 300 ₽ на „Да“')
-    await boryaPhone.waitIn('section[aria-label="Пари"]', '⚑ Боря (вы) — предмет спора — сам на стороне „сбудется“')
+    await boryaPhone.waitIn('section[aria-label="События"]', '⚑ Аня — предмет спора — ставит на себя: 300 ₽ на „Да“')
+    await boryaPhone.waitIn('section[aria-label="Пари"]', '⚑ Боря (вы) — предмет спора — на стороне „сбудется“')
     await noScroll(boryaPhone, 'Комната с пометками')
     await boryaPhone.shot('97-pometki-v-spiskah')
   } finally {
