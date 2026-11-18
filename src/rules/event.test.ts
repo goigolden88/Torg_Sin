@@ -36,6 +36,8 @@ import {
   EXPECTED_EARLY,
   FINAL_TIME,
   hostDecides,
+  LATE_BET_TIME,
+  lateBets,
   LONG_OBJECTION,
   mayPropose,
   NEED_OBJECTION,
@@ -758,6 +760,91 @@ describe('исход события', () => {
       expect(withdrawnAt(roomEvents(one)[0], E + HOUR + VOTING_TIME)).toBe(E + HOUR + VOTING_TIME)
       const yes = [...voting, vote('C', '1', E + 2 * HOUR), vote('D', '1', E + 3 * HOUR)]
       expect(outcomeAt(yes, E + 3 * HOUR)).toMatchObject({ status: 'approved', approved: { outcome: '1', how: 'vote' } })
+    })
+  })
+
+  describe('ставки за сутки до досрочного предложения (Р-27)', () => {
+    // Своё событие: создано в 0, «приём до» — через 3 суток; досрочно предложено через 2 суток
+    const E = 2 * DAY
+    const long: LogEntry = {
+      id: 'E1',
+      at: 0,
+      memberId: 'A',
+      type: 'event.created',
+      condition: 'Условие',
+      check: 'Как проверяем',
+      closesAt: 3 * DAY,
+      expectedAt: 4 * DAY,
+      subject: null,
+      requestId: 'Q0',
+      outcomes: [
+        { id: '1', title: 'Да' },
+        { id: '2', title: 'Нет' },
+        { id: '3', title: 'Другое' },
+      ],
+    }
+    const betAt = (who: string, outcome: string, amount: number, at: number): LogEntry => ({
+      id: 'B' + who + at,
+      at,
+      memberId: who,
+      type: 'bet.placed',
+      event: 'E1',
+      outcome,
+      amount,
+      requestId: 'QB' + who + at,
+    })
+    const early = (who: string, at = E): LogEntry => ({ id: 'P' + who, at, memberId: who, type: 'outcome.proposed', event: 'E1', outcome: '1', requestId: 'QP' + who })
+    const late = (log: LogEntry[], proposer: string | null = null) => lateBets(roomEvents([...room, long, ...log])[0], proposer)
+
+    it('сутки — те же 24 часа', () => {
+      expect(LATE_BET_TIME).toBe(DAY)
+    })
+
+    it('не досрочно — пусто: предложено после «приём до» или не предложено', () => {
+      const bets = [betAt('B', '1', 500, 3 * DAY - HOUR)]
+      expect(late([...bets, early('A', 3 * DAY + HOUR)])).toEqual([])
+      expect(late(bets)).toEqual([])
+      // Ответ сайта без closedAt — тоже пусто
+      expect(lateBets({ bets: [{ id: 'x', memberId: 'B', outcome: '1', amount: 500, at: 1 }] })).toEqual([])
+    })
+
+    it('граница суток включена, раньше — нет; ставка в миг предложения — за 0 мс', () => {
+      const log = [betAt('B', '1', 100, E - DAY - 1), betAt('C', '1', 200, E - DAY), betAt('D', '2', 300, E), early('A')]
+      expect(late(log).map((b) => [b.memberId, b.before])).toEqual([
+        ['C', DAY],
+        ['D', 0],
+      ])
+    })
+
+    it('ставка предложившего — отмечена; кто, сколько, на что и за сколько', () => {
+      const log = [betAt('B', '2', 500, E - 5 * HOUR), betAt('A', '1', 900, E - 12 * 60_000), early('A')]
+      expect(late(log, 'A')).toEqual([
+        { id: 'BB' + (E - 5 * HOUR), memberId: 'B', outcome: '2', amount: 500, at: E - 5 * HOUR, before: 5 * HOUR, proposer: false },
+        { id: 'BA' + (E - 12 * 60_000), memberId: 'A', outcome: '1', amount: 900, at: E - 12 * 60_000, before: 12 * 60_000, proposer: true },
+      ])
+      expect(late(log).every((b) => !b.proposer)).toBe(true)
+    })
+
+    it('несколько исходов — по времени, не по исходам; ставки после предложения не действуют', () => {
+      const log = [
+        betAt('C', '3', 50, E - 2 * HOUR),
+        betAt('B', '1', 70, E - 3 * HOUR),
+        betAt('D', '2', 30, E - HOUR),
+        early('A'),
+        betAt('B', '2', 999, E + 1),
+      ]
+      expect(late(log).map((b) => [b.memberId, b.outcome, b.amount])).toEqual([
+        ['B', '1', 70],
+        ['C', '3', 50],
+        ['D', '2', 30],
+      ])
+    })
+
+    it('сайт считает так же по ответу сервера (closedAt, ставки с at)', () => {
+      const e = roomEvents([...room, long, betAt('B', '1', 500, E - HOUR), early('A')])[0]
+      const view = eventView(e, E + HOUR)
+      expect(lateBets(view, view.outcome?.proposal.by ?? null)).toEqual(lateBets(e, 'A'))
+      expect(lateBets(view)).toHaveLength(1)
     })
   })
 

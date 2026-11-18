@@ -966,6 +966,25 @@ h3 {
   color: var(--ok);
 }
 
+/* Ставки за сутки до досрочного предложения (Р-27): ставка предложившего — золотом */
+.late-bets {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--gold);
+  border-radius: 0.5rem;
+}
+
+.late-bets > p {
+  margin: 0;
+}
+
+.late-bets .proposer {
+  color: var(--gold);
+  font-weight: 600;
+}
+
 .outcome-form {
   gap: 0.75rem;
 }

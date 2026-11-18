@@ -377,6 +377,26 @@ export function earlyProposal(e: { closesAt: number; proposal: { at: number } | 
   return e.proposal !== null && e.proposal.at < e.closesAt
 }
 
+// Ставки за сутки до досрочного предложения (Р-27 и уточнение): запрета нет, но всем видно основание
+// возразить. Событие закрыто досрочно (closedAt — первое предложение раньше «приём до») — ставки с at
+// в [closedAt − сутки, closedAt], по времени; before — за сколько мс до closedAt; proposer — ставка
+// того, кто предложил исход (proposer — его номер, нет — null). Закрыто в срок или ещё идёт — пусто
+export const LATE_BET_TIME = DAY
+
+export type LateBet = { id: string; memberId: string; outcome: string; amount: number; at: number; before: number; proposer: boolean }
+
+export function lateBets(
+  e: { closedAt?: number | null; bets: readonly { id: string; memberId: string; outcome: string; amount: number; at: number }[] },
+  proposer: string | null = null,
+): LateBet[] {
+  const closedAt = e.closedAt
+  if (closedAt === undefined || closedAt === null) return []
+  return e.bets
+    .filter((b) => b.at >= closedAt - LATE_BET_TIME && b.at <= closedAt)
+    .sort((a, b) => a.at - b.at)
+    .map((b) => ({ id: b.id, memberId: b.memberId, outcome: b.outcome, amount: b.amount, at: b.at, before: closedAt - b.at, proposer: b.memberId === proposer }))
+}
+
 export function poolBets(e: EventState): PoolBet[] {
   return e.bets.map((b) => ({ memberId: b.memberId, outcome: b.outcome, amount: b.amount, at: b.at }))
 }

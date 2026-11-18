@@ -173,7 +173,7 @@ export async function outcomes(cdp: Cdp, size: Size, startServer: ServerModule['
     await vera.goto(fire.href)
     await vera.waitText('Согласны 1 из 2 ставивших: Боря')
     await vera.shot('38-soglasny-1-iz-2')
-    await vera.click('Согласен с исходом')
+    await vera.click('Согласиться с исходом')
     await vera.waitText('Согласие не отозвать. Когда согласятся все ставившие, исход утвердится сразу и станет окончательным.')
     await vera.waitIn('.modal', 'Соглашаясь, вы отказываетесь возразить и подать апелляцию.')
     await vera.shot('38a-soglasie-podtverzhdenie')
@@ -190,8 +190,8 @@ export async function outcomes(cdp: Cdp, size: Size, startServer: ServerModule['
     await borya.goto(tent.href)
     await borya.waitText('Вы согласны с исходом.')
     await borya.waitText('Согласны 2 из 3 ставивших: Аня, Боря (вы)')
-    if (await borya.eval<boolean>(`[...document.querySelectorAll('button')].some((b) => /Согласен|Возразить/.test(b.innerText))`)) {
-      throw new Error('У согласившегося остались кнопки «Согласен» или «Возразить»')
+    if (await borya.eval<boolean>(`[...document.querySelectorAll('button')].some((b) => /Согласиться|Возразить/.test(b.innerText))`)) {
+      throw new Error('У согласившегося остались кнопки «Согласиться» или «Возразить»')
     }
     await borya.shot('40-vy-soglasny')
 

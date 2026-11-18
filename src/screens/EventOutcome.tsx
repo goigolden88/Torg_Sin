@@ -5,11 +5,12 @@
 // (EventView.outcome) — здесь только показ. Каждое действие — с окном подтверждения; номер запроса
 // — по событию, действию и выбору, хранится до ответа (двойное нажатие и повтор после «нет связи» —
 // одно действие, Р-13). Esc закрывает окно и форму здесь, не уводя с экрана. «Исход уже известен» —
-// досрочное предложение до «приём до»; по возражению на него — выбор «ещё не известно» (Р-27)
+// досрочное предложение до «приём до»; по возражению на него — выбор «ещё не известно» (Р-27);
+// ставки за сутки до досрочного предложения — пометкой всем (lateBets, Р-30)
 import { useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
 import { agreeOutcome, decideOutcome, objectOutcome, proposeOutcome, voteOutcome, type Result } from '../api'
 import type { AppealTarget } from '../rules/appeal'
-import { formatDateTime } from '../rules/date'
+import { formatCountdown, formatDateTime } from '../rules/date'
 import {
   AUTHOR_SILENCE,
   betOn,
@@ -18,6 +19,8 @@ import {
   eventOutcome,
   eventStatus,
   hostDecides,
+  lateBets,
+  type LateBet,
   mayPropose,
   MAX_EVENT_TEXT,
   NOT_YET,
@@ -150,6 +153,8 @@ export function EventOutcome({
     !!o && o.status === 'voting' && o.voters.includes(me) && !o.votes.some((v) => v.by === me) && o.votingUntil !== null && now < o.votingUntil
   // По возражению на досрочное предложение — ещё и «ещё не известно» (Р-27)
   const notYet = !!o && earlyProposal({ closesAt: event.closesAt, proposal: o.proposal })
+  // Ставки за сутки до досрочного предложения (Р-27) — всем, пока событие не отменено
+  const late = o && o.status !== 'cancelled' && status !== 'cancelled' ? lateBets(event, o.proposal.by) : []
 
   function chosen(action: Choice, outcome: string) {
     const c = CHOICE[action]
@@ -188,7 +193,7 @@ export function EventOutcome({
         'Соглашаясь, вы отказываетесь возразить и подать апелляцию.',
         'Согласие не отозвать. Когда согласятся все ставившие, исход утвердится сразу и станет окончательным.',
       ],
-      button: 'Согласен',
+      button: 'Согласиться',
       busyLabel: 'Отправляю…',
       send: (requestId) => agreeOutcome(room.server, room.id, room.key, event.id, { requestId }),
     })
@@ -214,6 +219,7 @@ export function EventOutcome({
       ) : (
         <NotProposed room={room} event={event} now={now} />
       )}
+      {late.length > 0 && <LateBets room={room} bets={late} title={title} />}
       {o && (
         <CourtBlock
           room={room}
@@ -253,6 +259,7 @@ export function EventOutcome({
         <ChooseOutcome event={event} legend="Ваше решение как ведущего" button="Решить" notYet={notYet} disabled={!online} onChoose={(x) => chosen('decide', x)} />
       )}
       {mayVote && <ChooseOutcome event={event} legend="Ваш голос" button="Голосовать" notYet={notYet} disabled={!online} onChoose={(x) => chosen('vote', x)} />}
+      {mayObject && late.length > 0 && <p className="hint">Ставка незадолго до досрочного предложения — основание возразить.</p>}
       {mayObject &&
         (objecting ? (
           <ObjectForm disabled={!online} onObject={objected} onClose={() => setObjecting(false)} />
@@ -260,7 +267,7 @@ export function EventOutcome({
           <div className="row">
             {mayAgree && (
               <button className="button" type="button" onClick={agreed} disabled={!online}>
-                Согласен с исходом
+                Согласиться с исходом
               </button>
             )}
             <button className="button secondary" type="button" onClick={() => setObjecting(true)} disabled={!online}>
@@ -433,6 +440,26 @@ function OutcomeState({
       </ul>
       {approved && o.status !== 'cancelled' && <Payouts room={room} event={event} o={o} winner={approved.outcome} title={title} />}
     </>
+  )
+}
+
+// Ставки за сутки до досрочного предложения (lateBets, Р-27): «Боря — 500 ₽ на „Да“, за 12 мин до
+// предложения», по времени; ставка того, кто предложил исход, — выделена. Запрета нет — основание возразить
+function LateBets({ room, bets, title }: { room: SavedRoom; bets: LateBet[]; title: (id: string) => string }) {
+  const who = (id: string) => nameOf(room, id) + (id === room.memberId ? ' (вы)' : '')
+  return (
+    <section className="late-bets" aria-label="Ставки за сутки до досрочного предложения">
+      <p className="outcome-head">Ставки за сутки до досрочного предложения</p>
+      <ul className="outcome-log">
+        {bets.map((b) => (
+          <li key={b.id} className={b.proposer ? 'proposer' : ''}>
+            {who(b.memberId)} — {money(b.amount, room.currency)} на „{title(b.outcome)}“,{' '}
+            {b.before === 0 ? 'в миг предложения' : `за ${formatCountdown(b.before)} до предложения`}
+            {b.proposer && ' — предложил(а) исход'}
+          </li>
+        ))}
+      </ul>
+    </section>
   )
 }
 
