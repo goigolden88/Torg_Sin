@@ -551,7 +551,7 @@ function CancelPanel({ room, event, onDone, onClose }: { room: SavedRoom; event:
           onChange={(e) => setReason(e.target.value)}
           maxLength={MAX_EVENT_TEXT * 2}
           rows={2}
-          required={required}
+          aria-required={required}
         />
       </label>
       {error && (
