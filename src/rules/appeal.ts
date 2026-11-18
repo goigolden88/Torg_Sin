@@ -5,7 +5,7 @@
 // court.* журнала комнаты (Р-25) переводит в записи правил logAppeals (внизу). Ни DOM, ни Cloudflare
 import { courtState, courtVerdict, type CourtCase } from './court'
 import { eventBettors, eventOutcome, MAX_EVENT_TEXT, roomEvents, type EventState } from './event'
-import { logOffers, offerOutcome, type OfferSide, type OfferState } from './offer'
+import { courtDue, logOffers, offerOutcome, type OfferSide, type OfferState } from './offer'
 import type { CourtVerdict } from './protocol'
 import { foldLog, type LogEntry, type RoomState } from './room'
 
@@ -29,7 +29,7 @@ export const OWN_APPEAL = 'Апелляцию подали вы — присое
 export const ALREADY_JOINED = 'Вы уже присоединились к апелляции'
 export const COURT_DECIDED = 'Суд уже решил — решение окончательное'
 // Суд без апелляции
-export const NOT_COURT = 'Суд без апелляции собирается, только когда исход «ждёт суда»'
+export const NOT_COURT = 'Суд без апелляции собирается, только когда исход «ждёт суда» или у пари 3 дня нет общего гаранта'
 export const COURT_EXISTS = 'Суд уже собран'
 export const BAD_SEED = 'Зерно жребия — шестнадцатеричные цифры'
 export const BAD_CANDIDATES = 'Кандидаты в суд — участники комнаты без заинтересованных'
@@ -194,11 +194,12 @@ export function checkJoin(t: AppealTarget, c: CourtCase | null, memberId: string
   return null
 }
 
-// Суд без апелляции: исход пула «ждёт суда» (ничья или некому голосовать, Р-17) — суд собирается сам
+// Суд без апелляции: исход пула «ждёт суда» (ничья или некому голосовать, Р-17) или у пари 3 дня без
+// общего гаранта (правило гаранта, Р-31; courtDue) — суд собирается сам
 export function checkCourtDraw(t: AppealTarget, existing: CourtCase | null, now: number): string | null {
   if (existing) return COURT_EXISTS
-  if (t.kind !== 'event' || dispute(t, now).stage !== 'court') return NOT_COURT
-  return null
+  const due = t.kind === 'event' ? dispute(t, now).stage === 'court' : courtDue(t.offer, now)
+  return due ? null : NOT_COURT
 }
 
 // Голос суда из запроса: «оставить», «отменить» или «изменить» — у пула с outcome, у пари с winner

@@ -43,18 +43,25 @@ export type OfferAsk = {
 // checkDecide, checkDecline и checkNominate на часах сервера дали то же, что сервер: с какого мига решает
 // гарант (turnAt — как миг расхождения; отметки — не раньше, чем turnAt минус 3 дня), до какого он
 // решает (guarantorUntil — 3 дня с guarantorSince), отказ или пропуск срока (needSince), утверждено
-// согласием или гарантом. Сами записи журнала сайту не приходят; между опросами фаза идёт по часам
-function outcomeState(o: OfferView): Pick<OfferState, 'guarantorSince' | 'marks' | 'disagreedAt' | 'agreed' | 'decision' | 'declinedAt' | 'nominations'> {
+// согласием или гарантом; суд по «ждёт суда» (Р-31: суд без апелляции — courtAt с мига сбора, а другой
+// гарант нужен с needSince). Сами записи журнала сайту не приходят; между опросами фаза идёт по часам
+function outcomeState(
+  o: OfferView,
+): Pick<OfferState, 'guarantorSince' | 'marks' | 'disagreedAt' | 'agreed' | 'decision' | 'declinedAt' | 'nominations' | 'courtAt'> {
   const out = o.outcome
-  if (!out) return { guarantorSince: null, marks: [], disagreedAt: null, agreed: null, decision: null, declinedAt: null, nominations: {} }
+  if (!out) return { guarantorSince: null, marks: [], disagreedAt: null, agreed: null, decision: null, declinedAt: null, nominations: {}, courtAt: null }
   const markAt = Math.max(o.expectedAt, out.turnAt - SIDE_SILENCE)
   const sides: OfferSide[] = ['author', 'taker']
+  const courtAt = out.court && !out.appeal ? out.court.drawnAt : null
   // Суд изменил решение гаранта (Р-24): в ответе — новый исход, а правилам нужно решение гаранта, на
-  // которое подана апелляция (согласие не обжалуется): прав был другой, решено не позже подачи
+  // которое подана апелляция (согласие не обжалуется): прав был другой, решено не позже подачи. Суд по
+  // «ждёт суда» решал без утверждённого исхода — до него не было ничего
   const a =
-    out.approved?.how === 'court'
-      ? { winner: other(out.approved.winner), at: out.appeal?.at ?? out.court?.drawnAt ?? out.approved.at, how: 'guarantor' as const, by: out.guarantorId }
-      : out.approved
+    courtAt !== null
+      ? null
+      : out.approved?.how === 'court'
+        ? { winner: other(out.approved.winner), at: out.appeal?.at ?? out.court?.drawnAt ?? out.approved.at, how: 'guarantor' as const, by: out.guarantorId }
+        : out.approved
   return {
     guarantorSince: out.guarantorUntil === null ? null : out.guarantorUntil - GUARANTOR_SILENCE,
     marks: sides.flatMap((by) => {
@@ -64,8 +71,9 @@ function outcomeState(o: OfferView): Pick<OfferState, 'guarantorSince' | 'marks'
     disagreedAt: out.turnAt,
     agreed: a?.how === 'agreement' ? { winner: a.winner, at: a.at } : null,
     decision: a?.how === 'guarantor' ? { winner: a.winner, at: a.at, by: a.by ?? out.guarantorId } : null,
-    declinedAt: out.phase === 'need-guarantor' ? out.needSince : null,
+    declinedAt: out.phase === 'need-guarantor' || courtAt !== null ? out.needSince : null,
     nominations: { ...out.nominations },
+    courtAt,
   }
 }
 
@@ -87,6 +95,7 @@ export function offerState(o: OfferView): OfferState {
     expectedAt: o.expectedAt,
     counterTo: o.counterTo,
     subject: o.subjectId,
+    guarantorRule: o.guarantorRule,
     guarantorId: o.guarantorId,
     accepted: o.accepted,
     withdrawnAt: o.withdrawnAt,
@@ -145,6 +154,7 @@ function acceptedLine(room: SavedRoom, offer: OfferView, now: number) {
   if (out.phase === 'marking') return <span className="status open">принято — ждём отметок сторон</span>
   if (out.phase === 'guarantor') return <span className="status open">решает гарант — {who(room, out.guarantorId)}</span>
   if (out.phase === 'need-guarantor') return <span className="status cancelled">нужен новый гарант</span>
+  if (out.phase === 'court') return <span className="status open">ждёт суда — 3 дня без общего гаранта</span>
   if (out.phase === 'cancelled') return <span className="status cancelled">отменено судом — ставки возвращены</span>
   const winner = out.approved?.winner ?? 'author'
   const nets = netsOf(room, offer, winner)

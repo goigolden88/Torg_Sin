@@ -57,6 +57,8 @@ import {
   GUARANTOR_PRESENT,
   GUARANTOR_SILENCE,
   GUARANTOR_TAKES,
+  IN_COURT,
+  NEED_GUARANTOR_TIME,
   MARK_EARLY,
   NEED_GUARANTOR,
   NEED_TIMES as OFFER_NEED_TIMES,
@@ -1696,11 +1698,14 @@ export function roomsSuite(storageName: string, start: (password: string | undef
           guarantorId: room.memberId,
           counterTo: null,
           subjectId: null,
+          guarantorRule: true,
         })
         const expected = { ...offer, status: 'open', accepted: null, withdrawnAt: null, closedBy: null, outcome: null }
         for (const key of [room.key, borya.key, vera.key, gosha.key]) expect(await offersOf(s, room.roomId, key)).toEqual([expected])
         const log = await readLog(s.storage(room.roomId))
         expect(log.at(-1)).toMatchObject({ type: 'offer.created', id: offer.id, memberId: borya.memberId, guarantor: room.memberId, counterTo: null, requestId: expect.any(String) })
+        // Правило гаранта (Р-31) — пометкой в записи нового пари
+        expect(log.at(-1)).toMatchObject({ guarantorRule: 1 })
         // Ни о ком — поля «о ком спор» в записи нет, как у пари до выкатки (Р-26)
         expect('subject' in (log.at(-1) ?? {})).toBe(false)
         // Адресное, сторона «не сбудется», свой гарант; «100 очков на 3 к 1» — соперник 33
@@ -2017,7 +2022,7 @@ export function roomsSuite(storageName: string, start: (password: string | undef
               ...before,
               phase: 'final',
               marks: { author: 'taker', taker: 'taker' },
-              turnAt: first.marked.at + SIDE_SILENCE, // отметили раньше «исход к» — отсчёт с первой отметки (Р-27)
+              // Отметили раньше «исход к» — отсчёт всё равно с «исход к» (правило гаранта, Р-31)
               guarantorUntil: null,
               approved: { winner: 'taker', at, how: 'agreement', by: null },
               finalAt: at,
@@ -2048,7 +2053,7 @@ export function roomsSuite(storageName: string, start: (password: string | undef
           expect(await offerEntries(s, room.roomId)).toEqual(['offer.created', 'offer.accepted', 'offer.created', 'offer.marked'])
         })
 
-        it('разошлись — решает гарант сразу; сторона ещё может поменять отметку; решение — окончательное через 7 дней', async () => {
+        it('разошлись до «исход к» — гарант решает с «исход к» (Р-31); сторона ещё может поменять отметку; решение — окончательное через 7 дней', async () => {
           const s = await server()
           const { room, borya, vera, gosha, offer } = await acceptedOffer(s)
           await ok(mark(s, room.roomId, borya.key, offer.id, 'author'))
@@ -2056,7 +2061,12 @@ export function roomsSuite(storageName: string, start: (password: string | undef
           await refused(decide(s, room.roomId, room.key, offer.id, 'author'), 409, NOT_TURN)
           s.clock.now += 1000
           await ok(mark(s, room.roomId, vera.key, offer.id, 'taker'))
-          const turnAt = s.clock.now
+          // Разошлись раньше «исход к» — гарант ещё не решает
+          const turnAt = offer.expectedAt
+          expect(s.clock.now).toBeLessThan(turnAt)
+          expect(await outcomeOf(s, room.roomId, gosha.key, offer.id)).toMatchObject({ phase: 'marking', turnAt })
+          await refused(decide(s, room.roomId, room.key, offer.id, 'author'), 409, NOT_TURN)
+          s.clock.now = turnAt
           expect(await outcomeOf(s, room.roomId, gosha.key, offer.id)).toMatchObject({
             phase: 'guarantor',
             marks: { author: 'author', taker: 'taker' },
@@ -2094,6 +2104,7 @@ export function roomsSuite(storageName: string, start: (password: string | undef
         it('разошлись, а до решения гаранта сторона поменяла отметку и сошлись — утверждён согласием', async () => {
           const s = await server()
           const { room, borya, vera, offer } = await acceptedOffer(s)
+          s.clock.now = offer.expectedAt
           await ok(mark(s, room.roomId, borya.key, offer.id, 'author'))
           await ok(mark(s, room.roomId, vera.key, offer.id, 'taker'))
           expect((await outcomeOf(s, room.roomId, room.key, offer.id))?.phase).toBe('guarantor')
@@ -2107,12 +2118,12 @@ export function roomsSuite(storageName: string, start: (password: string | undef
           await refused(decide(s, room.roomId, room.key, offer.id, 'author'), 409, AGREED)
         })
 
-        it('сторона отметила раньше «исход к», вторая молчит 3 дня с отметки — решает гарант (Р-27); гарант молчит 3 дня — нужен другой', async () => {
+        it('сторона отметила раньше «исход к», вторая молчит — решает гарант через 3 дня с «исход к» (Р-31); гарант молчит 3 дня — нужен другой', async () => {
           const s = await server()
           const { room, borya, gosha, offer } = await acceptedOffer(s)
           expect(s.clock.now).toBeLessThan(offer.expectedAt)
           await ok(mark(s, room.roomId, borya.key, offer.id, 'author'))
-          const turnAt = s.clock.now + SIDE_SILENCE
+          const turnAt = offer.expectedAt + SIDE_SILENCE
           s.clock.now = turnAt - 1
           await refused(decide(s, room.roomId, room.key, offer.id, 'author'), 409, NOT_TURN)
           expect((await outcomeOf(s, room.roomId, gosha.key, offer.id))?.phase).toBe('marking')
@@ -2135,8 +2146,8 @@ export function roomsSuite(storageName: string, start: (password: string | undef
           await refused(offerAct(s, room.roomId, gosha.key, offer.id, 'decline'), 403, ONLY_GUARANTOR)
           const nominate = (key: string, guarantor: unknown, requestId?: string) => offerAct(s, room.roomId, key, offer.id, 'nominate', { guarantor, requestId })
           await refused(nominate(borya.key, gosha.memberId), 409, GUARANTOR_PRESENT)
-          // Аня отказалась
-          s.clock.now += 1000
+          // Стороны молчат 3 дня после «исход к» — решение у Ани; Аня отказалась
+          s.clock.now = offer.expectedAt + SIDE_SILENCE
           const declined = await ok<DeclineOfferResponse>(offerAct(s, room.roomId, room.key, offer.id, 'decline'))
           expect(isDeclineOfferResponse(declined)).toBe(true)
           expect(declined).toEqual({ v: PROTOCOL_VERSION, declined: { id: expect.any(String), at: s.clock.now, by: room.memberId, offer: offer.id } })
@@ -2157,8 +2168,7 @@ export function roomsSuite(storageName: string, start: (password: string | undef
             phase: 'need-guarantor',
             nominations: { author: gosha.memberId, taker: room.memberId },
           })
-          // Нужен другой гарант, пока стороны не сошлись, — и через сутки после того, как решение перешло
-          // бы к гаранту (стороны молчат 3 дня после «исход к»)
+          // Нужен другой гарант, пока стороны не сошлись (их 3 дня до суда ещё идут, Р-31)
           s.clock.now = offer.expectedAt + SIDE_SILENCE + DAY
           expect((await outcomeOf(s, room.roomId, gosha.key, offer.id))?.phase).toBe('need-guarantor')
           // Вера соглашается на Гошу — он гарант; решение у него сразу, его 3 дня — с назначения
@@ -2233,7 +2243,8 @@ export function roomsSuite(storageName: string, start: (password: string | undef
           await refused(mark(s, room.roomId, vera.key, offer.id, 'author', markId), 409, REQUEST_USED)
           await refused(decide(s, room.roomId, room.key, offer.id, 'author', markId), 409, REQUEST_USED)
           await ok(mark(s, room.roomId, vera.key, offer.id, 'taker'))
-          // Решение гаранта и его повтор
+          // Решение гаранта (разошлись — с «исход к», Р-31) и его повтор
+          s.clock.now = offer.expectedAt
           const decideId = ulid(s.clock.now)
           const decided = await ok(decide(s, room.roomId, room.key, offer.id, 'author', decideId))
           s.clock.now += FINAL_TIME
@@ -2629,6 +2640,7 @@ export function roomsSuite(storageName: string, start: (password: string | undef
         // Разошлись — решила гарант (ведущая)
         await ok(offerAct(s, room.roomId, borya.key, offer.id, 'mark', { winner: 'author' }))
         await ok(offerAct(s, room.roomId, vera.key, offer.id, 'mark', { winner: 'taker' }))
+        s.clock.now = offer.expectedAt // разошлись до «исход к» — гарант решает с него (Р-31)
         await ok(offerAct(s, room.roomId, room.key, offer.id, 'decide', { winner: 'author' }))
         s.clock.now += HOUR
         s.seeds.push(SEED)
@@ -2661,6 +2673,73 @@ export function roomsSuite(storageName: string, start: (password: string | undef
           court: { decision: { majority: true, verdict: 'cancel' } },
         })
         expect(await courtEntries(s, room.roomId)).toEqual(['appeal.filed', 'appeal.joined', 'court.voted', 'court.voted', 'court.voted'])
+      })
+
+      it('пари без общего гаранта 3 дня — суд собирается сам (drawDueCourts, Р-31); гаранта уже не назвать; «прав соперник» — окончательно', async () => {
+        const s = await server()
+        const { room, borya, vera, gosha, dasha, zhenya } = await room6(s)
+        const keyOf = keys(room, borya, vera, gosha, dasha, zhenya)
+        const form = { v: PROTOCOL_VERSION, condition: 'Вася бросит курить', check: 'Скажет сам', odds: { a: 3, b: 1 }, amount: 300, closesAt: s.clock.now + HOUR, expectedAt: s.clock.now + DAY }
+        const { offer } = await ok<CreateOfferResponse>(send(s, room.roomId, 'offers', form, borya.key))
+        await ok(offerAct(s, room.roomId, vera.key, offer.id, 'accept'))
+        // Гарант (ведущая) отказалась; стороны называют разных
+        await ok(offerAct(s, room.roomId, room.key, offer.id, 'decline'))
+        const due = s.clock.now + NEED_GUARANTOR_TIME
+        await ok(offerAct(s, room.roomId, borya.key, offer.id, 'nominate', { guarantor: gosha.memberId }))
+        await ok(offerAct(s, room.roomId, vera.key, offer.id, 'nominate', { guarantor: dasha.memberId }))
+        s.clock.now = due - 1
+        expect(await offerOutcome(s, room.roomId, gosha.key, offer.id)).toMatchObject({ phase: 'need-guarantor', needSince: due - NEED_GUARANTOR_TIME })
+        expect(await courtEntries(s, room.roomId)).toEqual([])
+        // 3 дня прошли — первый запрос собирает суд: кандидаты — не стороны и не нынешний гарант
+        s.clock.now = due
+        s.seeds.push(SEED)
+        const candidates = [gosha.memberId, dasha.memberId, zhenya.memberId]
+        const order = A.drawCourt(SEED, candidates, room.memberId)
+        const view = await offerOutcome(s, room.roomId, vera.key, offer.id)
+        expect(view).toMatchObject({ phase: 'court', approved: null, appeal: null, court: { seed: SEED, drawnAt: due, candidates: order, decision: null } })
+        const log = await readLog(s.storage(room.roomId))
+        expect(log.at(-1)).toEqual({ id: expect.any(String), at: due, memberId: room.memberId, type: 'court.drawn', target: offer.id, seed: SEED, candidates })
+        // Второго суда нет; назвать гаранта и отметить исход — нельзя, решает суд
+        s.clock.now += 1000
+        await refused(offerAct(s, room.roomId, vera.key, offer.id, 'nominate', { guarantor: gosha.memberId }), 409, IN_COURT)
+        await refused(offerAct(s, room.roomId, borya.key, offer.id, 'mark', { winner: 'author' }), 409, IN_COURT)
+        await refused(offerAct(s, room.roomId, vera.key, offer.id, 'appeal', { reason: 'Хочу суд' }), 409, A.NOT_APPROVED)
+        expect(await courtEntries(s, room.roomId)).toEqual(['court.drawn'])
+        // Суд: «оставить» нечего; «прав соперник» большинством — окончательно сразу
+        const judge = (memberId: string, body: Record<string, unknown>) => offerAct(s, room.roomId, keyOf(memberId), offer.id, 'judge', body)
+        await refused(judge(order[0], { verdict: 'keep' }), 400, A.NO_KEEP)
+        await ok(judge(order[0], { verdict: 'change', winner: 'taker' }))
+        await ok(judge(order[1], { verdict: 'change', winner: 'taker' }))
+        await ok(judge(order[2], { verdict: 'cancel' }))
+        const at = s.clock.now
+        expect(await offerOutcome(s, room.roomId, borya.key, offer.id)).toMatchObject({
+          phase: 'final',
+          approved: { winner: 'taker', at, how: 'court', by: null },
+          finalAt: at,
+          court: { decision: { at, majority: true, verdict: 'change', winner: 'taker' } },
+        })
+        // Решение окончательное — апелляции нет
+        await refused(offerAct(s, room.roomId, borya.key, offer.id, 'appeal', { reason: 'Не согласен' }), 409, A.COURT_DECIDED)
+        expect(await courtEntries(s, room.roomId)).toEqual(['court.drawn', 'court.voted', 'court.voted', 'court.voted'])
+      })
+
+      it('пари без общего гаранта, а судить некому (комната из трёх) — суда нет, гаранта по-прежнему называют', async () => {
+        const s = await server()
+        const room = await create(s)
+        const borya = await member(s, room, 'Боря')
+        const vera = await member(s, room, 'Вера')
+        const form = { v: PROTOCOL_VERSION, condition: 'Вася бросит курить', check: 'Скажет сам', odds: { a: 1, b: 1 }, amount: 100, closesAt: s.clock.now + HOUR, expectedAt: s.clock.now + DAY }
+        const { offer } = await ok<CreateOfferResponse>(send(s, room.roomId, 'offers', form, borya.key))
+        await ok(offerAct(s, room.roomId, vera.key, offer.id, 'accept'))
+        await ok(offerAct(s, room.roomId, room.key, offer.id, 'decline'))
+        s.clock.now += NEED_GUARANTOR_TIME + DAY
+        expect(await offerOutcome(s, room.roomId, vera.key, offer.id)).toMatchObject({ phase: 'need-guarantor' })
+        expect(await courtEntries(s, room.roomId)).toEqual([])
+        // Стороны сошлись на ведущей снова — она гарант
+        await ok(offerAct(s, room.roomId, borya.key, offer.id, 'nominate', { guarantor: room.memberId }))
+        await ok(offerAct(s, room.roomId, vera.key, offer.id, 'nominate', { guarantor: room.memberId }))
+        expect(await offerOutcome(s, room.roomId, vera.key, offer.id)).toMatchObject({ phase: 'guarantor', guarantorId: room.memberId, needSince: null })
+        expect(await courtEntries(s, room.roomId)).toEqual([])
       })
 
       it('отказы подачи: согласием — окончательный, 7 дней прошли, отменено, некому судить; нет спора — 404, без ключа — 403, кривое тело — 400', async () => {

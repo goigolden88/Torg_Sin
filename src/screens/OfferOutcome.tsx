@@ -7,26 +7,31 @@
 import { useState, type FormEvent } from 'react'
 import { declineOffer, decideOffer, markOffer, nominateGuarantor } from '../api'
 import { formatDateTime } from '../rules/date'
+import { courtCandidates } from '../rules/appeal'
 import {
   checkDecide,
   checkDecline,
   checkMark,
   checkNominate,
+  courtFrom,
   offerOutcome,
   SIDE_SILENCE,
   sideOf,
   type OfferOutcome as Outcome,
   type OfferSide,
+  type OfferState,
 } from '../rules/offer'
 import type { CourtVerdict, OfferView } from '../rules/protocol'
 import { formKey } from '../rules/request'
 import type { SavedRoom } from '../store/db'
 import { CourtBlock } from './CourtBlock'
+import { courtRoomOf } from './courtParts'
 import { nameOf } from './eventParts'
 import { netsOf, offerCourt, offerState, roomRolesOf, sideMember, who, winnerLabel, type OfferAsk } from './offerParts'
 
 const SIDES: OfferSide[] = ['author', 'taker']
 const ROLE: Record<OfferSide, string> = { author: 'автор', taker: 'соперник' }
+const OF: Record<OfferSide, string> = { author: 'автора', taker: 'соперника' }
 
 export function OfferOutcome({
   room,
@@ -100,17 +105,26 @@ export function OfferOutcome({
         : theirs === null
           ? `Если ${ROLE[other]} отметит так же, исход окончательный сразу и не обжалуется.`
           : `${cap(ROLE[other])} отметил иначе — решает гарант ${nameOf(room, offer.guarantorId)}; пока он не решил, отметку можно поменять.`
-    // Первая отметка раньше «исход к» (Р-27): молчание второй стороны — 3 дня с неё
+    // Первая отметка раньше «исход к» у прежних пари (Р-27): молчание второй стороны — 3 дня с неё.
+    // Правило гаранта (Р-31): раньше «исход к» исход утверждают только совпавшие отметки
     const first = out?.marks.author === null && out?.marks.taker === null
-    const silence =
-      first && now < offer.expectedAt
+    const early = now < offer.expectedAt
+    const silence = !early
+      ? []
+      : state.guarantorRule
         ? [
-            `Отмечаете раньше срока «исход к» (${formatDateTime(offer.expectedAt)}). Если ${ROLE[other]} не отметит до ${formatDateTime(now + SIDE_SILENCE)}, решит гарант ${nameOf(room, offer.guarantorId)}.`,
+            `Совпадёт с отметкой ${OF[other]} — исход окончательный сразу. Разойдётся или ${ROLE[other]} не отметит — решит гарант ${nameOf(room, offer.guarantorId)}, но не раньше «исход к» (${formatDateTime(offer.expectedAt)}).`,
           ]
-        : []
+        : first
+          ? [
+              `Отмечаете раньше срока «исход к» (${formatDateTime(offer.expectedAt)}). Если ${ROLE[other]} не отметит до ${formatDateTime(now + SIDE_SILENCE)}, решит гарант ${nameOf(room, offer.guarantorId)}.`,
+            ]
+          : []
+    // У ранней отметки по правилу гаранта строка про гаранта — в silence, вместо next
+    const nextLine = early && state.guarantorRule && theirs !== winner ? [] : [next]
     onAsk({
       question: `Отметить: ${winnerLabel(winner)}?`,
-      body: [`Вы отмечаете: ${result(winner)}.`, next, ...silence],
+      body: [`Вы отмечаете: ${result(winner)}.`, ...nextLine, ...silence],
       button: 'Отметить',
       busyLabel: 'Отмечаю…',
       form: formKey(room.id, offer.id, 'mark', winner),
@@ -161,7 +175,7 @@ export function OfferOutcome({
   return (
     <section className="outcome" aria-label="Исход">
       <h3>Исход</h3>
-      <Head room={room} out={out} guarantor={guarantor} />
+      <Head room={room} offer={offer} state={state} out={out} now={now} guarantor={guarantor} />
       <ul className="outcome-log" aria-label="Отметки сторон">
         {SIDES.map((side) => {
           const mark = out.marks[side]
@@ -213,7 +227,11 @@ export function OfferOutcome({
       {(mayDecide || mayDecline) && (
         <div className="outcome-act" role="group" aria-label="Решение гаранта">
           <p className="hint">
-            {mayDecide ? `Вы — гарант: ваше решение до ${out.guarantorUntil === null ? '' : formatDateTime(out.guarantorUntil)}.` : `Вы — гарант: решаете, если стороны разойдутся или одна промолчит до ${formatDateTime(out.turnAt)}.`}
+            {mayDecide
+              ? `Вы — гарант: ваше решение до ${out.guarantorUntil === null ? '' : formatDateTime(out.guarantorUntil)}.`
+              : state.guarantorRule && now < offer.expectedAt
+                ? `Вы — гарант: решаете, если стороны разойдутся или одна не отметит, но не раньше «исход к» (${formatDateTime(offer.expectedAt)}).`
+                : `Вы — гарант: решаете, если стороны разойдутся или одна промолчит до ${formatDateTime(out.turnAt)}.`}
           </p>
           <div className="row">
             {mayDecide &&
@@ -244,16 +262,51 @@ export function OfferOutcome({
   )
 }
 
-// Строка фазы сверху: ждём отметок / решает гарант до … / нужен новый гарант / утверждено
-function Head({ room, out, guarantor }: { room: SavedRoom; out: Outcome; guarantor: string }) {
+// Строка фазы сверху: ждём отметок / решает гарант до … / нужен новый гарант / ждёт суда / утверждено
+function Head({
+  room,
+  offer,
+  state,
+  out,
+  now,
+  guarantor,
+}: {
+  room: SavedRoom
+  offer: OfferView
+  state: OfferState
+  out: Outcome
+  now: number
+  guarantor: string
+}) {
   const { marks } = out
   if (out.phase === 'marking') {
+    // Правило гаранта (Р-31): до «исход к» исход утверждают только совпавшие отметки
+    if (state.guarantorRule && now < offer.expectedAt) {
+      const apart = marks.author !== null && marks.taker !== null && marks.author !== marks.taker
+      return (
+        <>
+          <p className="outcome-head">{apart ? 'Отметки сторон разошлись' : 'Ждём отметок сторон'}</p>
+          <p className="hint">
+            {apart ? 'Поменяет кто-то отметку и они совпадут' : 'Совпадут отметки сторон'} — исход окончательный сразу. Разойдутся или одна сторона не
+            отметит — решит гарант {guarantor}, но не раньше «исход к» ({formatDateTime(offer.expectedAt)}).
+          </p>
+        </>
+      )
+    }
     return (
       <>
         <p className="outcome-head">Ждём отметок сторон</p>
         <p className="hint">
           Отметки совпадут — исход окончательный сразу. Разойдутся или одна сторона промолчит до {formatDateTime(out.turnAt)} — решает гарант {guarantor}.
         </p>
+      </>
+    )
+  }
+  if (out.phase === 'court') {
+    return (
+      <>
+        <p className="outcome-head court">Ждёт суда</p>
+        <p className="hint">3 дня без общего гаранта — решает суд. Суд выбирает: прав автор, прав соперник или отменить — вернуть ставки.</p>
       </>
     )
   }
@@ -278,6 +331,7 @@ function Head({ room, out, guarantor }: { room: SavedRoom; out: Outcome; guarant
           {declined ? `Гарант ${guarantor} отказался ${since}.` : `Гарант ${guarantor} не решил до ${since}.`} Каждая сторона называет участника не из сторон;
           назовут одного и того же — это и есть гарант, на решение — 3 дня.
         </p>
+        <CourtDeadline room={room} state={state} now={now} />
       </>
     )
   }
@@ -330,6 +384,17 @@ function Head({ room, out, guarantor }: { room: SavedRoom; out: Outcome; guarant
       </p>
     </>
   )
+}
+
+// Срок суда, пока нужен новый гарант (Р-31; courtFrom): до срока — «не сойдётесь до … — решит суд»;
+// срок прошёл, а суда нет — судить некому (courtCandidates пусто) или суд соберёт следующий запрос.
+// Прежние пари — ничего: суда без гаранта у них нет
+function CourtDeadline({ room, state, now }: { room: SavedRoom; state: OfferState; now: number }) {
+  const from = courtFrom(state, now)
+  if (from === null) return null
+  if (now < from) return <p className="hint">Не сойдётесь до {formatDateTime(from)} — решит суд.</p>
+  const nobody = courtCandidates({ kind: 'offer', offer: state }, courtRoomOf(room), now).length === 0
+  return <p className="hint">{nobody ? 'Суд собрать не из кого — договоритесь о гаранте.' : '3 дня без общего гаранта прошли — собираем суд.'}</p>
 }
 
 // Итог: кто прав, кто забирает банк, плюс и минус каждой стороны (offerNets) — с основанием

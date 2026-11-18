@@ -21,6 +21,7 @@ function offer(id: string): OfferView {
     guarantorId: 'MV',
     counterTo: null,
     subjectId: null,
+    guarantorRule: true,
     status: 'open',
     accepted: null,
     withdrawnAt: null,

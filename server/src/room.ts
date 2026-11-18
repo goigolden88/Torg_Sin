@@ -297,23 +297,29 @@ export async function roomState(storage: RoomStorage, keyHash: string, now: numb
 }
 
 // Суд по «ждёт суда» (Р-17, Р-25) собирается сам — будильника нет: при первом запросе к комнате после
-// того, как исход пула перешёл в «ждёт суда», — запись court.drawn (зерно, кандидаты на этот миг; автор —
-// ведущий). Суд уже собран — второй записи нет; кандидатов нет — записи нет, исход остаётся «ждёт суда»
-// (выход — отмена ведущим с причиной, Р-19)
+// того, как исход пула перешёл в «ждёт суда» или стороны пари 3 дня не сошлись на новом гаранте (Р-31), —
+// запись court.drawn (зерно, кандидаты на этот миг; автор — ведущий). Суд уже собран — второй записи
+// нет; кандидатов нет — записи нет: у пула исход остаётся «ждёт суда» (выход — отмена ведущим с
+// причиной, Р-19), у пари — «нужен другой гарант» (стороны по-прежнему могут сойтись на гаранте)
 export async function drawDueCourts(storage: RoomStorage, now: number, seed: () => string): Promise<void> {
   const log = await readLog(storage)
   const state = foldLog(log)
   if (!state) return
   const events = roomEvents(log)
-  const cases = appeal.logAppeals(log, { events, offers: [] })
+  const offers = logOffers(log)
+  const cases = appeal.logAppeals(log, { events, offers })
   const room = appeal.courtRoom(state)
+  const targets: appeal.AppealTarget[] = [
+    ...events.map((event) => ({ kind: 'event' as const, event })),
+    ...offers.map((offer) => ({ kind: 'offer' as const, offer })),
+  ]
   const entries: LogEntry[] = []
-  for (const event of events) {
-    const t = { kind: 'event', event } as const
-    if (appeal.checkCourtDraw(t, appeal.caseOf(cases, event.id), now)) continue
+  for (const t of targets) {
+    const target = t.kind === 'event' ? t.event.id : t.offer.id
+    if (appeal.checkCourtDraw(t, appeal.caseOf(cases, target), now)) continue
     const candidates = appeal.courtCandidates(t, room, now)
     if (candidates.length === 0) continue
-    entries.push({ id: ulid(now), at: now, memberId: state.hostId, type: 'court.drawn', target: event.id, seed: seed(), candidates })
+    entries.push({ id: ulid(now), at: now, memberId: state.hostId, type: 'court.drawn', target, seed: seed(), candidates })
   }
   if (entries.length > 0) await append(storage, entries)
 }
@@ -1037,6 +1043,8 @@ async function writeOffer(
     counterTo,
     // О ком спор (Р-26) — только если задан: у пари ни о ком поля нет, как до выкатки
     ...(input.subject !== null && { subject: input.subject }),
+    // Правило гаранта (Р-31) — у всех новых пари, встречных тоже: часы гаранта с «исход к», суд без гаранта
+    guarantorRule: 1,
     requestId,
   }
   await append(storage, [entry])
