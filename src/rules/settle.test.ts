@@ -21,6 +21,7 @@ import {
   SAME_MODE,
   SELF_TRANSFER,
   TRANSFER_CANCELLED,
+  cancelCycles,
   checkAnswer,
   checkReceive,
   checkRevoke,
@@ -414,6 +415,62 @@ describe('«кто кому»', () => {
     const fewest = settle({ log }, LATER, 'fewest')
     expect(fewest.mode).toBe('fewest')
     expect(fewest.suggestions).toEqual([{ from: 'A', to: 'C', amount: 100 }])
+  })
+
+  it('все в расчёте после «меньше переводов» и возврата к «по ставкам» — пусто', () => {
+    // A должен B 100, B — C 100; по «меньше переводов» A перевёл C 100, C подтвердил
+    const log = [...pool('E1', 'A', [['A', '2', 100], ['B', '1', 100]], '1'), ...pool('E2', 'B', [['B', '2', 100], ['C', '1', 100]], '1')]
+    const transfers = [sent('t1', 'A', 'C', 100), got('g1', 'C', 't1')]
+    const fewest = settle({ log, transfers }, LATER, 'fewest')
+    expect(fewest.suggestions).toEqual([])
+    expect(checkSettleMode(fewest, { hostId: 'H', currency: 'RUB' }, 'H', 'stakes')).toBeNull()
+    const stakes = settle({ log, transfers }, LATER, 'stakes')
+    expect(balances(stakes)).toEqual({})
+    expect(stakes.suggestions).toEqual([])
+  })
+
+  it('круг из трёх с остатком у одного — подсказка без круга, суммы сходятся с балансами', () => {
+    // A должен B 100, B — C 100, C — A 70: круг сокращается на 70
+    const log = [
+      ...pool('E1', 'A', [['A', '2', 100], ['B', '1', 100]], '1'),
+      ...pool('E2', 'B', [['B', '2', 100], ['C', '1', 100]], '1'),
+      ...pool('E3', 'C', [['C', '2', 70], ['A', '1', 70]], '1'),
+    ]
+    for (const members of [MEMBERS, [...MEMBERS].reverse()]) {
+      const s = settle({ log, members }, LATER)
+      expect(balances(s)).toEqual({ A: -30, C: 30 })
+      expect(s.suggestions).toEqual([
+        { from: 'A', to: 'B', amount: 30 },
+        { from: 'B', to: 'C', amount: 30 },
+      ])
+      for (const m of s.members) {
+        const net = s.suggestions.reduce((x, t) => x + (t.to === m.memberId ? t.amount : 0) - (t.from === m.memberId ? t.amount : 0), 0)
+        expect(net).toBe(m.balance)
+      }
+    }
+  })
+
+  it('cancelCycles: два круга через общего участника — оба сокращаются; без кругов — как было', () => {
+    // Круги A → B → C → A (10) и A → D → E → A (5)
+    const debts = [
+      { from: 'A', to: 'B', amount: 10 },
+      { from: 'A', to: 'D', amount: 8 },
+      { from: 'B', to: 'C', amount: 12 },
+      { from: 'C', to: 'A', amount: 10 },
+      { from: 'D', to: 'E', amount: 5 },
+      { from: 'E', to: 'A', amount: 5 },
+    ]
+    expect(cancelCycles(debts)).toEqual([
+      { from: 'A', to: 'D', amount: 3 },
+      { from: 'B', to: 'C', amount: 2 },
+    ])
+    expect(debts[0].amount).toBe(10)
+    const chain = [
+      { from: 'A', to: 'B', amount: 10 },
+      { from: 'B', to: 'C', amount: 5 },
+    ]
+    expect(cancelCycles(chain)).toEqual(chain)
+    expect(cancelCycles([])).toEqual([])
   })
 
   it('пул с остатком — суммы пар точные, остаток — по порядку первой ставки', () => {

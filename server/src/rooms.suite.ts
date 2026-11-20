@@ -3191,11 +3191,11 @@ export function roomsSuite(storageName: string, start: (password: string | undef
         const settled = await settlementOf(s, id, room.key)
         expect(settled.members.every((m) => m.balance === 0)).toBe(true)
         expect(settled.suggestions).toEqual([])
-        // Все рассчитались — можно; «по ставкам» переводы пары вычитаются из долгов пары
+        // Все рассчитались — можно; «по ставкам» долги по кругу (Боря → Вера → Гоша → Боря) сокращаются — пусто
         await ok(setMode(s, id, room.key, { mode: 'stakes' }))
         const back = await settlementOf(s, id, vera.key)
         expect(back.mode).toBe('stakes')
-        expect(back.suggestions).toHaveLength(3)
+        expect(back.suggestions).toEqual([])
         expect(await settleEntries(s, id)).toEqual(['room.settle-mode', 'transfer.sent', 'transfer.received', 'room.settle-mode'])
       })
 
