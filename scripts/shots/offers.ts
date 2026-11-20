@@ -170,10 +170,10 @@ export async function offers(cdp: Cdp, size: Size, startServer: ServerModule['st
     await confirmTwice(host, 'Автор отозвал пари')
     await host.shot('53a-otozvano')
 
-    // Список: открытые и принятые сверху, ниже отозванные и закрытые встречным
+    // Список: открытые и принятые; отозванное и закрытое встречным — в «Истории» (#72)
     await host.goto(roomHref)
-    await host.waitIn(LIST, 'Отозванные, истёкшие и закрытые встречным')
-    await host.waitIn(LIST, 'отозвано')
+    await host.waitIn(LIST, 'Открытые и принятые')
+    await host.waitText('История · 2')
     await noScroll(host, 'Комната с пари')
     await host.shot('54-spisok-pari-vse')
     // Двойные нажатия не дали лишних пари: четыре — два через экран, два через сервер, встречное
