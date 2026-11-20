@@ -1,7 +1,15 @@
 // Хранилище на устройстве — единственный модуль, который трогает IndexedDB (CLAUDE.md).
 // База «torgsin», версия схемы — DB_VERSION; каждая новая версия — шаг в upgrade, старые шаги
 // не меняются. Настройки устройства (адрес сервера, пароль компании) — не здесь, а в settings.ts
-import { isEventView, isOfferView, type EventView, type OfferView, type RoomStateResponse } from '../rules/protocol'
+import {
+  isEventView,
+  isOfferView,
+  isSettlementView,
+  type EventView,
+  type OfferView,
+  type RoomStateResponse,
+  type SettlementView,
+} from '../rules/protocol'
 
 export const DB_NAME = 'torgsin'
 export const DB_VERSION = 2
@@ -29,6 +37,9 @@ export type SavedRoom = {
   // Пари — последнее известное с сервера (этап 3), так же: поле только добавлено, версия базы та же;
   // у записей до него поля нет — «пари нет» до первого ответа сервера
   offers?: OfferView[]
+  // Свод расчёта — последнее известное с сервера (этап 5), так же: поле только добавлено, версия базы
+  // та же; у записей до него и у сервера до этапа 5 поля нет — расчёта не показываем
+  settlement?: SettlementView
 }
 
 // Копия с сервера на устройстве — только то, что проходит проверку протокола: запись, сохранённая
@@ -48,12 +59,17 @@ export function savedOffers(room: SavedRoom): OfferView[] {
   return fresh(room.offers, isOfferView)
 }
 
-// Ответ сервера о комнате поверх записанного на устройстве (с событиями и пари); syncedAt — сейчас.
-// Сервер без пари (до этапа 3) — пари нет
+// Свод расчёта на устройстве: нет поля или не проходит проверку протокола — null (расчёта не показываем)
+export function savedSettlement(room: SavedRoom): SettlementView | null {
+  return isSettlementView(room.settlement) ? room.settlement : null
+}
+
+// Ответ сервера о комнате поверх записанного на устройстве (с событиями, пари и сводом); syncedAt —
+// сейчас. Сервер без пари (до этапа 3) — пари нет; без свода (до этапа 5) — свода нет, прежний не остаётся
 export function withState(room: SavedRoom, state: RoomStateResponse, now: number): SavedRoom {
-  const { room: s, members, events } = state
+  const { room: s, members, events, settlement } = state
   const offers = state.offers ?? []
-  return { ...room, name: s.name, currency: s.currency, hostId: s.hostId, createdAt: s.createdAt, members, events, offers, syncedAt: now }
+  return { ...room, name: s.name, currency: s.currency, hostId: s.hostId, createdAt: s.createdAt, members, events, offers, settlement, syncedAt: now }
 }
 
 // Заявка на вход по ссылке, которую ещё не впустили: ключ заявки откроет комнату, когда ведущий

@@ -1,7 +1,20 @@
 import { IDBFactory } from 'fake-indexeddb'
 import { describe, expect, it } from 'vitest'
-import type { EventView, OfferView, RoomStateResponse } from '../rules/protocol'
-import { createStore, DB_NAME, DB_VERSION, openDb, savedEvents, savedOffers, withState, type SavedJoin, type SavedRoom } from './db'
+import type { EventView, OfferView, RoomStateResponse, SettlementView } from '../rules/protocol'
+import {
+  createStore,
+  DB_NAME,
+  DB_VERSION,
+  openDb,
+  savedEvents,
+  savedOffers,
+  savedSettlement,
+  withState,
+  type SavedJoin,
+  type SavedRoom,
+} from './db'
+
+const zero = { amount: 0, events: 0, offers: 0 }
 
 // Пари «3 к 1, сумма автора 300 ₽» — открытое, как его отдаёт сервер
 function offer(id: string): OfferView {
@@ -256,6 +269,47 @@ describe('хранилище на устройстве', () => {
     expect(saved && savedOffers(saved).map((o) => o.id)).toEqual(['O1'])
     expect(saved?.offers?.map((o) => o.id)).toEqual(['O1', 'O2'])
     expect(savedOffers(room('A', 1, { offers: 'испорчено' as unknown as OfferView[] }))).toEqual([])
+  })
+
+  it('свод расчёта: старая запись без поля — нет; ответ сервера — записан; сервер без свода — прежний не остаётся', async () => {
+    const factory = new IDBFactory()
+    const first = createStore(factory)
+    await first.saveRoom(room('A', 1)) // как до этапа 5: поля settlement нет
+    const old = (await first.getRoom('A')) as SavedRoom
+    expect(savedSettlement(old)).toBeNull()
+
+    const settlement: SettlementView = {
+      mode: 'stakes',
+      members: [
+        { memberId: 'MA', total: { amount: -30000, events: 0, offers: 1 }, pending: zero, inPlay: zero, sent: 0, received: 0, balance: -30000 },
+        { memberId: 'MB', total: { amount: 30000, events: 0, offers: 1 }, pending: zero, inPlay: zero, sent: 0, received: 0, balance: 30000 },
+      ],
+      transfers: [],
+      suggestions: [{ from: 'MA', to: 'MB', amount: 30000 }],
+    }
+    const state: RoomStateResponse = {
+      v: 6,
+      room: { id: 'A', name: 'Дача', currency: 'RUB', hostId: 'MA', createdAt: 1 },
+      members: [
+        { id: 'MA', name: 'Аня' },
+        { id: 'MB', name: 'Боря' },
+      ],
+      me: 'MA',
+      events: [],
+      offers: [],
+      settlement,
+      now: 50,
+    }
+    await first.saveRoom(withState(old, state, 60))
+    await first.close()
+    const saved = (await createStore(factory).getRoom('A')) as SavedRoom
+    expect(savedSettlement(saved)).toEqual(settlement)
+
+    const noSettlement: RoomStateResponse = { ...state }
+    delete noSettlement.settlement
+    expect(savedSettlement(withState(saved, noSettlement, 70))).toBeNull()
+    // Испорченная копия — как нет
+    expect(savedSettlement(room('A', 1, { settlement: { mode: 'stakes' } as unknown as SettlementView }))).toBeNull()
   })
 
   it('заявка: записана, отклонена, а впустили — стала комнатой и убрана', async () => {
