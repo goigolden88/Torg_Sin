@@ -241,9 +241,52 @@ export function fewestTransfers(balances: readonly { memberId: string; balance: 
   return out
 }
 
+// Первый круг долгов (A → B → C → A) обходом в глубину: от участников и к получателям по номерам.
+// Круг — его пары по ходу; нет круга — null
+function findCycle(debts: readonly Suggestion[]): Suggestion[] | null {
+  const out = new Map<string, Suggestion[]>()
+  for (const d of debts) out.set(d.from, [...(out.get(d.from) ?? []), d])
+  for (const list of out.values()) list.sort((x, y) => (x.to < y.to ? -1 : x.to > y.to ? 1 : 0))
+  const state = new Map<string, 'open' | 'done'>()
+  const path: Suggestion[] = []
+  const visit = (node: string): Suggestion[] | null => {
+    state.set(node, 'open')
+    for (const d of out.get(node) ?? []) {
+      const seen = state.get(d.to)
+      if (seen === 'open') return [...path.slice(path.findIndex((p) => p.from === d.to)), d]
+      if (seen === 'done') continue
+      path.push(d)
+      const found = visit(d.to)
+      if (found) return found
+      path.pop()
+    }
+    state.set(node, 'done')
+    return null
+  }
+  for (const node of [...out.keys()].sort()) {
+    if (state.has(node)) continue
+    const found = visit(node)
+    if (found) return found
+  }
+  return null
+}
+
+// Круги долгов сокращаются: на каждом шаге из каждой пары первого круга вычитается наименьший долг круга
+// (хоть одна пара уходит в ноль), пока кругов нет. Сумма долгов каждого участника не меняется; все
+// балансы ноль — пусто. Порядок пар — прежний
+export function cancelCycles(debts: readonly Suggestion[]): Suggestion[] {
+  const left = debts.filter((d) => d.amount > 0).map((d) => ({ ...d }))
+  for (;;) {
+    const cycle = findCycle(left.filter((d) => d.amount > 0))
+    if (!cycle) return left.filter((d) => d.amount > 0)
+    const least = Math.min(...cycle.map((d) => d.amount))
+    for (const d of cycle) d.amount -= least
+  }
+}
+
 // «По ставкам»: долги пар по каждому окончательному спору; встречные долги пары сворачиваются в один;
-// переводы пары (counted) вычитаются из её долга, переплата — долг меняет сторону. Порядок — по
-// номерам пары
+// переводы пары (counted) вычитаются из её долга, переплата — долг меняет сторону; круги долгов
+// сокращаются (cancelCycles). Порядок — по номерам пары
 function stakeTransfers(results: readonly Result[], transfers: readonly Transfer[]): Suggestion[] {
   const owed = new Map<string, { a: string; b: string; amount: number }>() // a должен b (минус — b должен a)
   const add = (from: string, to: string, amount: number) => {
@@ -255,10 +298,12 @@ function stakeTransfers(results: readonly Result[], transfers: readonly Transfer
   }
   for (const r of results) for (const d of resultDebts(r)) add(d.from, d.to, d.amount)
   for (const t of transfers) if (countedTransfer(t)) add(t.from, t.to, -t.amount)
-  return [...owed.values()]
-    .filter((p) => p.amount !== 0)
-    .sort((x, y) => (x.a === y.a ? (x.b < y.b ? -1 : 1) : x.a < y.a ? -1 : 1))
-    .map((p) => (p.amount > 0 ? { from: p.a, to: p.b, amount: p.amount } : { from: p.b, to: p.a, amount: -p.amount }))
+  return cancelCycles(
+    [...owed.values()]
+      .filter((p) => p.amount !== 0)
+      .sort((x, y) => (x.a === y.a ? (x.b < y.b ? -1 : 1) : x.a < y.a ? -1 : 1))
+      .map((p) => (p.amount > 0 ? { from: p.a, to: p.b, amount: p.amount } : { from: p.b, to: p.a, amount: -p.amount })),
+  )
 }
 
 // Свод комнаты на now (время сервера) в режиме mode. Событие: отменено (и судом) или «без игры» — не в
