@@ -1,5 +1,6 @@
 // «Создать комнату» по паролю компании (Р-03). Повтор той же формы — тот же номер запроса:
-// двойное нажатие и «Создать» ещё раз после «нет связи» дают одну комнату (Р-13)
+// двойное нажатие и «Создать» ещё раз после «нет связи» дают одну комнату (Р-13). «Кто кому переводит»
+// (Р-32): «По ставкам» (выбран) или «Меньше переводов»; в комнате на очки выбора нет
 import { useCallback, useRef, useState, type FormEvent } from 'react'
 import { createRoom, fetchRoom } from '../api'
 import { CURRENCIES, currencyLabel, type CurrencyCode } from '../rules/currency'
@@ -8,7 +9,9 @@ import { formKey, requestFor, type PendingRequest } from '../rules/request'
 import { ulid } from '../rules/ulid'
 import { getPassword, getServer, setPassword } from '../settings'
 import { store, type SavedRoom } from '../store/db'
+import type { SettleModeView } from '../rules/protocol'
 import { BackLink, useEscape } from './BackLink'
+import { isPoints, MODE_ABOUT, MODE_TITLE, MODES } from './settleParts'
 
 const NEED_PASSWORD = 'Нужен пароль компании'
 const NOT_SAVED = 'Комната создана, но не записалась на этом устройстве. Нажмите «Создать» ещё раз — будет та же комната'
@@ -16,6 +19,10 @@ const NOT_SAVED = 'Комната создана, но не записалась
 export function CreateRoom({ onCreated }: { onCreated: (room: SavedRoom) => void }) {
   const [name, setName] = useState('')
   const [currency, setCurrency] = useState<CurrencyCode>('RUB')
+  // Режим «кто кому» (Р-32): по умолчанию — по ставкам; в комнате на очки выбора нет
+  const [settleMode, setSettleMode] = useState<SettleModeView>('stakes')
+  const points = isPoints(currency)
+  const mode: SettleModeView = points ? 'stakes' : settleMode
   const [hostName, setHostName] = useState('')
   const [password, setPasswordDraft] = useState(getPassword)
   const [error, setError] = useState('')
@@ -37,14 +44,16 @@ export function CreateRoom({ onCreated }: { onCreated: (room: SavedRoom) => void
     if (!checked.ok) return setError(checked.error)
     if (!password.trim()) return setError(NEED_PASSWORD)
     const server = getServer()
-    const request = requestFor(pending.current, formKey(checked.input.name, currency, checked.input.hostName, password, server), ulid)
+    const request = requestFor(pending.current, formKey(checked.input.name, currency, checked.input.hostName, password, server, mode), ulid)
     pending.current = request
 
     sending.current = true
     setBusy(true)
     setError('')
     try {
-      const created = await createRoom(server, { password, ...checked.input, requestId: request.requestId })
+      // «По ставкам» — без поля: так и сервер до этапа 5 комнату создаст
+      const modeField = mode === 'stakes' ? {} : { settleMode: mode }
+      const created = await createRoom(server, { password, ...checked.input, ...modeField, requestId: request.requestId })
       if (!created.ok) return setError(created.error)
       const { roomId, invite, memberId, key } = created.value
       setPassword(password) // пароль верный — устройство его помнит
@@ -63,6 +72,7 @@ export function CreateRoom({ onCreated }: { onCreated: (room: SavedRoom) => void
         members: state.ok ? state.value.members : [{ id: memberId, name: checked.input.hostName }],
         savedAt: Date.now(),
         syncedAt: state.ok ? Date.now() : null,
+        settlement: state.ok ? state.value.settlement : undefined,
       }
       try {
         await store().saveRoom(room)
@@ -105,6 +115,21 @@ export function CreateRoom({ onCreated }: { onCreated: (room: SavedRoom) => void
             ))}
           </div>
         </fieldset>
+        {!points && (
+          <fieldset className="field">
+            <legend>Кто кому переводит</legend>
+            {MODES.map((m) => (
+              <label key={m} className="check">
+                <input type="radio" name="settle-mode" value={m} checked={settleMode === m} onChange={() => setSettleMode(m)} />
+                <span>
+                  {MODE_TITLE[m]}
+                  <span className="hint"> — {MODE_ABOUT[m]}</span>
+                </span>
+              </label>
+            ))}
+            <span className="hint">Ведущий может сменить режим в «Расчёте», пока переводов нет.</span>
+          </fieldset>
+        )}
         <label className="field">
           <span>Ваше имя в комнате</span>
           <input

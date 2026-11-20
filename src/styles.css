@@ -1166,6 +1166,152 @@ h3 {
   font-weight: 600;
 }
 
+/* ─── Расчёт (этап 5) ─────────────────────────────────────────────────────── */
+
+/* Карточка комнаты в «Моих комнатах»: «вы должны 300 ₽» / «вам должны 900 ₽» */
+.room-balance {
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.room-balance.win,
+.settle-block .win,
+.settle-numbers .win,
+.transfer-status.received {
+  color: var(--ok);
+}
+
+.room-balance.loss,
+.settle-block .loss,
+.settle-numbers .loss,
+.transfer-status.rejected,
+.transfer-status.cancelled {
+  color: var(--error);
+}
+
+.settle-block {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.settle-block .win,
+.settle-block .loss {
+  font-weight: 600;
+}
+
+.settle-mine,
+.settle-debts,
+.settle-mode {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.settle-mine > *,
+.settle-mode > * {
+  margin: 0;
+}
+
+/* Три числа с основанием: на телефоне — подпись над значением, от 600 px — подпись колонкой слева */
+.settle-numbers {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.settle-numbers li {
+  display: flex;
+  flex-direction: column;
+  overflow-wrap: anywhere;
+}
+
+.settle-numbers .hint {
+  font-size: 0.9rem;
+}
+
+.settle-debts-head {
+  margin: 0;
+  font-weight: 600;
+}
+
+.settle-debts ul,
+.transfer-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+/* «Петя — 300 ₽ [Перевёл]»: имя и сумма слева, кнопка справа; узко — кнопка переносится */
+.settle-debt {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-2);
+  overflow-wrap: anywhere;
+}
+
+.settle-debt > span {
+  flex: 1 1 10rem;
+  min-width: 0;
+}
+
+.settle-debt .button {
+  flex: none;
+}
+
+.settle-mode {
+  align-items: flex-start;
+}
+
+/* Переводы комнаты — карточками: кто → кому, состояние, когда, кнопки */
+.transfer {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-2);
+  overflow-wrap: anywhere;
+}
+
+.transfer.pending {
+  border-color: var(--gold);
+}
+
+.transfer .row {
+  margin: 0.3rem 0 0;
+}
+
+.transfer .hint {
+  font-size: 0.9rem;
+}
+
+.transfer-status.pending {
+  color: var(--gold);
+}
+
+/* Все участники: на телефоне — карточка в две колонки чисел (имя — во всю ширину) */
+.settle-table tr {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.settle-table td .hint {
+  font-size: 0.8rem;
+}
+
 /* Свои исходы в форме: поле и «Убрать» в строку */
 .outcomes-edit {
   display: flex;
@@ -1305,6 +1451,19 @@ h3 {
 
   .payouts td::before {
     content: none;
+  }
+
+  /* Все участники — таблицей: сумма и под ней основание */
+  .settle-table td > span {
+    display: block;
+  }
+
+  /* Три числа — строкой: подпись колонкой слева */
+  .settle-numbers li {
+    display: grid;
+    grid-template-columns: minmax(8rem, 13rem) minmax(0, 1fr);
+    gap: 1rem;
+    align-items: baseline;
   }
 }
 

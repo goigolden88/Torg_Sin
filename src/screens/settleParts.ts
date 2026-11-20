@@ -13,6 +13,11 @@ export function isPoints(currency: string): boolean {
   return currency === POINTS
 }
 
+// Адрес экрана «Расчёт» комнаты
+export function settleHref(roomId: string): string {
+  return `#/room/${roomId}/settle`
+}
+
 // «1 200 ₽»; валюта не из таблицы (сервер новее сайта) — число и код
 export function sumText(units: number, currency: string): string {
   return isCurrencyCode(currency) ? formatAmount(units, currency) : `${units} ${currency}`

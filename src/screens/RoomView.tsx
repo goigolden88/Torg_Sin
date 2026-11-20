@@ -3,7 +3,8 @@
 // сервер не спрашиваем, POST /invite сменил бы ссылку — это отдельная кнопка «Сменить ссылку»
 // с подтверждением. «Ссылка для другого устройства» — себе; ведущему — и за другого участника.
 // Состояние — с сервера раз в 5 с, пока комната открыта (useRoom); нет связи — последнее известное.
-// Под участниками — «События» (EventList), под ними — «Пари» (OfferList). На iPhone в браузере —
+// Под участниками — «Расчёт» (SettleBlock; на очках — «Таблица очков»), «События» (EventList), под ними —
+// «Пари» (OfferList). На iPhone в браузере —
 // заметка про экран «Домой» (HomeScreenNote)
 import { useCallback, useState } from 'react'
 import { admitRequest, fetchRequests, issueDeviceLink, rejectRequest, renewInvite } from '../api'
@@ -11,12 +12,13 @@ import { currencyLabel } from '../rules/currency'
 import { formatDate, formatDateTime } from '../rules/date'
 import { deviceLink, inviteLink } from '../rules/link'
 import type { JoinRequestsResponse } from '../rules/protocol'
-import type { SavedRoom } from '../store/db'
+import { savedSettlement, type SavedRoom } from '../store/db'
 import { BackLink, useEscape } from './BackLink'
 import { EventList } from './EventList'
 import { HomeScreenNote } from './HomeScreenNote'
 import { LinkBox, siteUrl } from './LinkBox'
 import { OfferList } from './OfferList'
+import { balanceNote, isPoints, myTotalLine, settleHref } from './settleParts'
 import { usePoll } from './usePoll'
 import { useRoom } from './useRoom'
 
@@ -70,9 +72,29 @@ export function RoomView({ room, onUpdate }: { room: SavedRoom; onUpdate: (room:
           </li>
         ))}
       </ul>
+      <SettleBlock room={room} />
       <EventList room={room} clock={clock} />
       <OfferList room={room} clock={clock} />
     </div>
+  )
+}
+
+// «Расчёт» (в комнате на очки — «Таблица очков») со своей строкой; нажатие — экран расчёта. Сервер без
+// свода (до этапа 5) — блока нет
+function SettleBlock({ room }: { room: SavedRoom }) {
+  const settlement = savedSettlement(room)
+  if (!settlement) return null
+  const title = isPoints(room.currency) ? 'Таблица очков' : 'Расчёт'
+  const note = balanceNote(settlement, room.memberId, room.currency)
+  return (
+    <section className="settle-block" aria-label={title}>
+      <h3>{title}</h3>
+      <a className="event-item" href={settleHref(room.id)}>
+        <span className="event-name">{myTotalLine(settlement, room.memberId, room.currency)}</span>
+        {note && <span className={note.startsWith('вы должны') ? 'loss' : 'win'}>{note[0].toUpperCase() + note.slice(1)}</span>}
+        <span className="hint">{isPoints(room.currency) ? 'Открыть таблицу →' : 'Кто кому, переводы, все участники →'}</span>
+      </a>
+    </section>
   )
 }
 

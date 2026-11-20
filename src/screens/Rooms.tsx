@@ -8,7 +8,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { fetchRoom } from '../api'
 import { currencyLabel } from '../rules/currency'
 import type { DeviceLink, InviteLink } from '../rules/link'
-import { savedEvents, savedOffers, store, withState, type SavedRoom } from '../store/db'
+import { savedEvents, savedOffers, savedSettlement, store, withState, type SavedRoom } from '../store/db'
 import { BackLink } from './BackLink'
 import { ClaimDevice } from './ClaimDevice'
 import { roomAwaitsMyVote } from './courtParts'
@@ -20,6 +20,8 @@ import { NewOffer } from './NewOffer'
 import { OfferScreen } from './OfferScreen'
 import { PasteLink } from './PasteLink'
 import { RoomView } from './RoomView'
+import { balanceNote } from './settleParts'
+import { SettleScreen } from './SettleScreen'
 
 export type RoomsView =
   | { kind: 'list' }
@@ -29,6 +31,7 @@ export type RoomsView =
   | { kind: 'event'; id: string; event: string } // событие комнаты id
   | { kind: 'new-offer'; id: string } // предложить пари в комнате id
   | { kind: 'offer'; id: string; offer: string } // пари комнаты id
+  | { kind: 'settle'; id: string } // «Расчёт» комнаты id
   | { kind: 'join'; link: InviteLink } // по ссылке-приглашению
   | { kind: 'device'; link: DeviceLink } // по ссылке для другого устройства
   | { kind: 'bad-link'; text: string } // ссылка не разобралась
@@ -62,13 +65,14 @@ export function Rooms({ view }: { view: RoomsView }) {
       )
   }, [upsert])
 
-  const inRoom = view.kind === 'room' || view.kind === 'event' || view.kind === 'new-event' || view.kind === 'offer' || view.kind === 'new-offer'
+  const inRoom =
+    view.kind === 'room' || view.kind === 'event' || view.kind === 'new-event' || view.kind === 'offer' || view.kind === 'new-offer' || view.kind === 'settle'
   const openId = inRoom ? view.id : null
   const open = rooms?.find((r) => r.id === openId)
-  // Событие, пари и их формы — во всю ширину содержимого и на компьютере: список комнат прячется,
-  // «Назад» ведёт в комнату (экрану события нужно ≥ 640 px, рядом со списком на 1024–1279 его нет;
-  // пари — как событие, Р-20: открытое пари и список пари комнаты рядом)
-  const wide = view.kind === 'event' || view.kind === 'new-event' || view.kind === 'offer' || view.kind === 'new-offer'
+  // Событие, пари, их формы и «Расчёт» — во всю ширину содержимого и на компьютере: список комнат
+  // прячется, «Назад» ведёт в комнату (экрану события нужно ≥ 640 px, рядом со списком на 1024–1279 его
+  // нет; пари — как событие, Р-20: открытое пари и список пари комнаты рядом; «Расчёт» — таблица участников)
+  const wide = view.kind === 'event' || view.kind === 'new-event' || view.kind === 'offer' || view.kind === 'new-offer' || view.kind === 'settle'
 
   return (
     <div className={'screen rooms' + (view.kind === 'list' ? '' : ' open') + (wide ? ' wide' : '')}>
@@ -102,6 +106,7 @@ export function Rooms({ view }: { view: RoomsView }) {
                       {currencyLabel(r.currency)} · {participants(r.members.length)}
                       {r.hostId === r.memberId ? ' · вы ведущий' : ''}
                     </span>
+                    <RoomBalance room={r} />
                   </a>
                 </li>
               ))}
@@ -135,6 +140,8 @@ export function Rooms({ view }: { view: RoomsView }) {
               <OfferScreen key={open.id + '/' + view.offer} room={open} offerId={view.offer} onUpdate={upsert} />
             ) : view.kind === 'new-offer' ? (
               <NewOffer key={open.id} room={open} onUpdate={upsert} />
+            ) : view.kind === 'settle' ? (
+              <SettleScreen key={open.id} room={open} onUpdate={upsert} />
             ) : (
               <RoomView key={open.id} room={open} onUpdate={upsert} />
             )
@@ -168,6 +175,13 @@ function refreshStale(rooms: readonly SavedRoom[], onUpdate: (room: SavedRoom) =
         .catch(() => undefined)
     })
   }
+}
+
+// «вы должны 300 ₽» / «вам должны 900 ₽» — по своду из последнего ответа комнаты; баланс ноль — ничего
+function RoomBalance({ room }: { room: SavedRoom }) {
+  const note = balanceNote(savedSettlement(room), room.memberId, room.currency)
+  if (!note) return null
+  return <span className={'room-balance ' + (note.startsWith('вы должны') ? 'loss' : 'win')}>{note}</span>
 }
 
 // Другая ссылка — экран заново, со своим состоянием
