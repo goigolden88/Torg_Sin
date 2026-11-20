@@ -327,10 +327,11 @@ async function events(host: Device, friend: Device, size: Size, server: RoomsSer
   await friend.waitText('отменено — ставки возвращены')
   await friend.shot('12m-otmeneno-avtorom')
 
-  // Список событий: открытые сверху, ниже закрытые и отменённые
+  // Список событий: открытые сверху; оба отменённых ушли в «Историю» (#72) — строка «История · 2»
   await host.goto(SITE + '#/room/' + roomId)
-  await host.waitText('Закрытые и отменённые')
-  await host.waitText('Кто первым доплывёт до буйка')
+  await host.waitText('История · 2')
+  const gone = await host.eval<boolean>(`document.querySelector('section[aria-label="События"]').innerText.includes('Кто первым доплывёт до буйка')`)
+  if (gone) throw new Error('Отменённое событие осталось в «Событиях»')
   await host.shot('12n-spisok-sobytiy')
   if (!eventHash.includes('/event/')) throw new Error('После «Завести событие» открылось не событие: ' + eventHash)
 }

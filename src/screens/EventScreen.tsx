@@ -30,6 +30,7 @@ import { BackLink, useEscape } from './BackLink'
 import { ChanceChart } from './ChanceChart'
 import { money, nameOf, StatusLine, SubjectFlag } from './eventParts'
 import { EventOutcome } from './EventOutcome'
+import { eventPastAt, historyHref } from './historyParts'
 import { useRoom, useServerNow, type Sync } from './useRoom'
 
 type Ask = { outcome: string; units: number }
@@ -44,7 +45,8 @@ export function EventScreen({ room, eventId, onUpdate }: { room: SavedRoom; even
   const [panel, setPanel] = useState<Panel>('none')
   const [placed, setPlaced] = useState<Placed | null>(null)
   const busy = useRef(false) // идёт запрос ставки — окно не закрывается
-  const back = '#/room/' + room.id
+  // Прошедшее событие живёт в «Истории» — «Назад» туда; идущее — в комнату
+  const back = event && eventPastAt(event, now) !== null ? historyHref(room.id) : '#/room/' + room.id
 
   useEscape(
     useCallback(() => {

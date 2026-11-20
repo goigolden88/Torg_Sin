@@ -19,6 +19,7 @@ import { Cdp, launchChrome, OUT, PASSWORD, PORT, SIZES, WIDE, type RoomsServer, 
 import { courts } from './shots/courts.ts'
 import { crash } from './shots/crash.ts'
 import { eventWidth } from './shots/event-width.ts'
+import { history } from './shots/history.ts'
 import { known } from './shots/known.ts'
 import { layout } from './shots/layout.ts'
 import { offerOutcomes } from './shots/offer-outcomes.ts'
@@ -103,6 +104,11 @@ const SCENARIOS: Scenario[] = [
     name: 'settle',
     about: '«Расчёт»: пусто, блок в комнате, по ставкам и меньше переводов, «Перевёл», смена режима, создание, таблица очков, карточки (110–118)',
     perSize: (c, size) => settle(c.cdp, size, c.startServer),
+  },
+  {
+    name: 'history',
+    about: '«История»: пусто, строка «История · N» в комнате, итоги и прошедшее, «С моим участием», «Назад» из пари (120–123)',
+    perSize: (c, size) => history(c.cdp, size, c.startServer),
   },
   {
     name: 'layout',

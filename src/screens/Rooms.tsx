@@ -14,6 +14,7 @@ import { ClaimDevice } from './ClaimDevice'
 import { roomAwaitsMyVote } from './courtParts'
 import { CreateRoom } from './CreateRoom'
 import { EventScreen } from './EventScreen'
+import { HistoryScreen } from './HistoryScreen'
 import { JoinRoom } from './JoinRoom'
 import { NewEvent } from './NewEvent'
 import { NewOffer } from './NewOffer'
@@ -32,6 +33,7 @@ export type RoomsView =
   | { kind: 'new-offer'; id: string } // предложить пари в комнате id
   | { kind: 'offer'; id: string; offer: string } // пари комнаты id
   | { kind: 'settle'; id: string } // «Расчёт» комнаты id
+  | { kind: 'history'; id: string } // «История» комнаты id
   | { kind: 'join'; link: InviteLink } // по ссылке-приглашению
   | { kind: 'device'; link: DeviceLink } // по ссылке для другого устройства
   | { kind: 'bad-link'; text: string } // ссылка не разобралась
@@ -65,14 +67,15 @@ export function Rooms({ view }: { view: RoomsView }) {
       )
   }, [upsert])
 
-  const inRoom =
-    view.kind === 'room' || view.kind === 'event' || view.kind === 'new-event' || view.kind === 'offer' || view.kind === 'new-offer' || view.kind === 'settle'
+  const wide =
+    view.kind === 'event' || view.kind === 'new-event' || view.kind === 'offer' || view.kind === 'new-offer' || view.kind === 'settle' || view.kind === 'history'
+  const inRoom = view.kind === 'room' || wide
   const openId = inRoom ? view.id : null
   const open = rooms?.find((r) => r.id === openId)
-  // Событие, пари, их формы и «Расчёт» — во всю ширину содержимого и на компьютере: список комнат
-  // прячется, «Назад» ведёт в комнату (экрану события нужно ≥ 640 px, рядом со списком на 1024–1279 его
-  // нет; пари — как событие, Р-20: открытое пари и список пари комнаты рядом; «Расчёт» — таблица участников)
-  const wide = view.kind === 'event' || view.kind === 'new-event' || view.kind === 'offer' || view.kind === 'new-offer' || view.kind === 'settle'
+  // Событие, пари, их формы, «Расчёт» и «История» — во всю ширину содержимого и на компьютере: список
+  // комнат прячется, «Назад» ведёт в комнату (экрану события нужно ≥ 640 px, рядом со списком на 1024–1279
+  // его нет; пари — как событие, Р-20: открытое пари и список пари комнаты рядом; «Расчёт» — таблица
+  // участников; «История» — чтобы «Назад» в комнату был виден и на компьютере)
 
   return (
     <div className={'screen rooms' + (view.kind === 'list' ? '' : ' open') + (wide ? ' wide' : '')}>
@@ -142,6 +145,8 @@ export function Rooms({ view }: { view: RoomsView }) {
               <NewOffer key={open.id} room={open} onUpdate={upsert} />
             ) : view.kind === 'settle' ? (
               <SettleScreen key={open.id} room={open} onUpdate={upsert} />
+            ) : view.kind === 'history' ? (
+              <HistoryScreen key={open.id} room={open} onUpdate={upsert} />
             ) : (
               <RoomView key={open.id} room={open} onUpdate={upsert} />
             )

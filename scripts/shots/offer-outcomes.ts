@@ -217,8 +217,8 @@ export async function offerOutcomes(cdp: Cdp, size: Size, startServer: ServerMod
     await api(server, `${rooms}/offers/${wait.id}/accept`, gena.key, {})
     await sleep(2500)
     await host.goto(`${SITE}#/room/${room.roomId}`)
-    await host.waitIn(LIST, 'окончательно: +100 ₽ Аня')
-    await host.waitIn(LIST, 'окончательно: +500 ₽ Вера')
+    // Окончательные пари 1 и 2 — в «Истории» (#72), в списке их нет
+    await host.waitText('История · 2')
     // Гена не решил за 3 дня, стороны 3 дня не назвали другого — суд сам (Р-31); судит Боря
     await host.waitIn(LIST, 'ждёт суда — 3 дня без общего гаранта')
     await host.waitIn(LIST, 'принято — ждём отметок сторон')

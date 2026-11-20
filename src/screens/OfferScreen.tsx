@@ -32,6 +32,7 @@ import { ulid } from '../rules/ulid'
 import { savedOffers, type SavedRoom } from '../store/db'
 import { BackLink, useEscape } from './BackLink'
 import { money, nameOf } from './eventParts'
+import { historyHref, offerPastNow } from './historyParts'
 import { OfferList } from './OfferList'
 import { OfferOutcome } from './OfferOutcome'
 import {
@@ -63,7 +64,8 @@ export function OfferScreen({ room, offerId, onUpdate }: { room: SavedRoom; offe
   const [ask, setAsk] = useState<Ask | null>(null)
   const [counter, setCounter] = useState(false)
   const busy = useRef(false) // идёт запрос — окно не закрывается
-  const back = '#/room/' + room.id
+  // Прошедшее пари живёт в «Истории» — «Назад» туда; идущее — в комнату
+  const back = offer && offerPastNow(room, offer, now) !== null ? historyHref(room.id) : '#/room/' + room.id
 
   useEscape(
     useCallback(() => {
