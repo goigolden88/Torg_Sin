@@ -1,20 +1,24 @@
 // «События» в комнате: сначала открытые (ближний срок сверху, с отсчётом до закрытия приёма),
-// ниже закрытые и отменённые (новые сверху); пусто — «Событий пока нет». События — последнее
-// известное с сервера (у комнаты на устройстве), отсчёт — по времени сервера. Участник — член суда
-// по событию и ещё не голосовал — значок «вы в суде» (Р-24). У предмета спора есть ставка — пометка (Р-26)
+// ниже с закрытым приёмом, исход ещё не окончательный (новые сверху); прошедшее — окончательные и
+// отменённые — в «Истории» (historyParts), не здесь; пусто — «Событий пока нет», всё прошло — «Идущих
+// событий нет». События — последнее известное с сервера (у комнаты на устройстве), отсчёт — по времени
+// сервера. Участник — член суда по событию и ещё не голосовал — значок «вы в суде» (Р-24). У предмета
+// спора есть ставка — пометка (Р-26)
 import { eventStatus } from '../rules/event'
 import { poolOdds } from '../rules/pool'
 import type { EventView } from '../rules/protocol'
 import { savedEvents, type SavedRoom } from '../store/db'
 import { awaitsMyVote } from './courtParts'
 import { eventHref, money, StatusLine, SubjectFlag } from './eventParts'
+import { eventPastAt } from './historyParts'
 import { useServerNow, type Clock } from './useRoom'
 
 export function EventList({ room, clock }: { room: SavedRoom; clock: Clock | null }) {
-  const events = savedEvents(room)
-  const now = useServerNow(clock, events.length > 0)
+  const all = savedEvents(room)
+  const now = useServerNow(clock, all.length > 0)
+  const events = all.filter((e) => eventPastAt(e, now) === null)
   const open = events.filter((e) => eventStatus(e, now) === 'open').sort((a, b) => a.closesAt - b.closesAt)
-  const past = events.filter((e) => eventStatus(e, now) !== 'open').sort((a, b) => b.at - a.at)
+  const closed = events.filter((e) => eventStatus(e, now) !== 'open').sort((a, b) => b.at - a.at)
 
   return (
     <section className="events" aria-label="События">
@@ -25,11 +29,11 @@ export function EventList({ room, clock }: { room: SavedRoom; clock: Clock | nul
         </a>
       </div>
       {events.length === 0 ? (
-        <p className="empty">Событий пока нет</p>
+        <p className="empty">{all.length === 0 ? 'Событий пока нет' : 'Идущих событий нет'}</p>
       ) : (
         <>
           {open.length > 0 && <Group title="Приём идёт" room={room} events={open} now={now} />}
-          {past.length > 0 && <Group title="Закрытые и отменённые" room={room} events={past} now={now} />}
+          {closed.length > 0 && <Group title="Приём закрыт — ждём исхода" room={room} events={closed} now={now} />}
         </>
       )}
     </section>

@@ -1200,6 +1200,53 @@ h3 {
   font-weight: 600;
 }
 
+/* «История» (Р-11): строка в комнате под «Пари», итоги участников, прошедшее с моим результатом */
+.history-link {
+  margin-top: 1rem;
+}
+
+.history .win {
+  color: var(--ok);
+  font-weight: 600;
+}
+
+.history .loss {
+  color: var(--error);
+  font-weight: 600;
+}
+
+.history-totals,
+.history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.history-totals h3,
+.history-list h3,
+.history-totals p {
+  margin: 0;
+}
+
+.history-totals {
+  margin-top: 0.5rem;
+}
+
+.history-total {
+  margin-left: auto;
+  font-weight: 600;
+  text-align: right;
+}
+
+.history-list {
+  margin-top: 1rem;
+}
+
+.history-outcome,
+.history-result {
+  overflow-wrap: anywhere;
+}
+
 .settle-mine,
 .settle-debts,
 .settle-mode {

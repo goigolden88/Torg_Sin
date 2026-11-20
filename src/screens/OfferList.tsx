@@ -1,6 +1,7 @@
-// «Пари» в комнате — под «Событиями»: сначала открытые (ближний срок «приём до» сверху, с отсчётом)
-// и принятые (ближний «исход к» сверху), ниже отозванные, истёкшие и закрытые встречным (новые
-// сверху); пусто — «Пари пока нет». У каждого — условие, кто автор и на какую сторону, кэф, суммы
+// «Пари» в комнате — под «Событиями»: открытые (ближний срок «приём до» сверху, с отсчётом) и принятые
+// (ближний «исход к» сверху); прошедшее — окончательные, отменённые судом, отозванные, истёкшие и закрытые
+// встречным — в «Истории» (historyParts), не здесь; пусто — «Пари пока нет», всё прошло — «Идущих пари
+// нет». У каждого — условие, кто автор и на какую сторону, кэф, суммы
 // обеих сторон, кому, статус (у принятого — фаза исхода: «ждём отметок», «решает гарант»,
 // «окончательно: +100 ₽ Аня»). Пари — последнее известное с сервера (у комнаты на устройстве),
 // статус и отсчёт — по времени сервера. На экране пари — тот же список рядом, открытое отмечено.
@@ -10,6 +11,7 @@ import { offerStatus } from '../rules/offer'
 import type { OfferView } from '../rules/protocol'
 import { savedOffers, type SavedRoom } from '../store/db'
 import { awaitsMyVote } from './courtParts'
+import { offerPastNow } from './historyParts'
 import { offerHref, offerState, OfferStatusLine, OfferSubjectFlag, stakesLine, toLabel, who } from './offerParts'
 import { useServerNow, type Clock } from './useRoom'
 
@@ -17,9 +19,9 @@ export function OfferList({ room, clock, current }: { room: SavedRoom; clock: Cl
   const offers = savedOffers(room)
   const now = useServerNow(clock, offers.length > 0)
   const status = (o: OfferView) => offerStatus(offerState(o), now)
-  const open = offers.filter((o) => status(o) === 'open').sort((a, b) => a.closesAt - b.closesAt)
-  const accepted = offers.filter((o) => status(o) === 'accepted').sort((a, b) => a.expectedAt - b.expectedAt)
-  const past = offers.filter((o) => status(o) !== 'open' && status(o) !== 'accepted').sort((a, b) => b.at - a.at)
+  const going = offers.filter((o) => offerPastNow(room, o, now) === null)
+  const open = going.filter((o) => status(o) === 'open').sort((a, b) => a.closesAt - b.closesAt)
+  const accepted = going.filter((o) => status(o) === 'accepted').sort((a, b) => a.expectedAt - b.expectedAt)
   const live = [...open, ...accepted]
 
   return (
@@ -30,13 +32,10 @@ export function OfferList({ room, clock, current }: { room: SavedRoom; clock: Cl
           Предложить пари
         </a>
       </div>
-      {offers.length === 0 ? (
-        <p className="empty">Пари пока нет</p>
+      {live.length === 0 ? (
+        <p className="empty">{offers.length === 0 ? 'Пари пока нет' : 'Идущих пари нет'}</p>
       ) : (
-        <>
-          {live.length > 0 && <Group title="Открытые и принятые" room={room} offers={live} all={offers} now={now} current={current} />}
-          {past.length > 0 && <Group title="Отозванные, истёкшие и закрытые встречным" room={room} offers={past} all={offers} now={now} current={current} />}
-        </>
+        <Group title="Открытые и принятые" room={room} offers={live} all={offers} now={now} current={current} />
       )}
     </section>
   )

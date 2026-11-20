@@ -4,7 +4,7 @@
 // с подтверждением. «Ссылка для другого устройства» — себе; ведущему — и за другого участника.
 // Состояние — с сервера раз в 5 с, пока комната открыта (useRoom); нет связи — последнее известное.
 // Под участниками — «Расчёт» (SettleBlock; на очках — «Таблица очков»), «События» (EventList), под ними —
-// «Пари» (OfferList). На iPhone в браузере —
+// «Пари» (OfferList); прошедшее из них — в «Истории», строка «История · N» под «Пари». На iPhone в браузере —
 // заметка про экран «Домой» (HomeScreenNote)
 import { useCallback, useState } from 'react'
 import { admitRequest, fetchRequests, issueDeviceLink, rejectRequest, renewInvite } from '../api'
@@ -12,15 +12,16 @@ import { currencyLabel } from '../rules/currency'
 import { formatDate, formatDateTime } from '../rules/date'
 import { deviceLink, inviteLink } from '../rules/link'
 import type { JoinRequestsResponse } from '../rules/protocol'
-import { savedSettlement, type SavedRoom } from '../store/db'
+import { savedEvents, savedOffers, savedSettlement, type SavedRoom } from '../store/db'
 import { BackLink, useEscape } from './BackLink'
 import { EventList } from './EventList'
+import { historyHref, historyItems, historyLine } from './historyParts'
 import { HomeScreenNote } from './HomeScreenNote'
 import { LinkBox, siteUrl } from './LinkBox'
 import { OfferList } from './OfferList'
 import { balanceNote, isPoints, myTotalLine, settleHref } from './settleParts'
 import { usePoll } from './usePoll'
-import { useRoom } from './useRoom'
+import { useRoom, useServerNow, type Clock } from './useRoom'
 
 type Panel = 'none' | 'invite' | 'device'
 
@@ -75,7 +76,23 @@ export function RoomView({ room, onUpdate }: { room: SavedRoom; onUpdate: (room:
       <SettleBlock room={room} />
       <EventList room={room} clock={clock} />
       <OfferList room={room} clock={clock} />
+      <HistoryLink room={room} clock={clock} />
     </div>
+  )
+}
+
+// Под «Пари» — «История · 12»: сколько прошедшего ушло из списков (всё, без пропусков); ноль — строки нет
+function HistoryLink({ room, clock }: { room: SavedRoom; clock: Clock | null }) {
+  const events = savedEvents(room)
+  const offers = savedOffers(room)
+  const now = useServerNow(clock, events.length + offers.length > 0)
+  const line = historyLine(historyItems(room, events, offers, now).length)
+  if (!line) return null
+  return (
+    <a className="event-item history-link" href={historyHref(room.id)}>
+      <span className="event-name">{line}</span>
+      <span className="hint">Прошедшие события и пари, итоги участников →</span>
+    </a>
   )
 }
 
