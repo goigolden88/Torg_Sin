@@ -5,15 +5,16 @@
 // Состояние — с сервера раз в 5 с, пока комната открыта (useRoom); нет связи — последнее известное.
 // Под участниками — «Расчёт» (SettleBlock; на очках — «Таблица очков»), «События» (EventList), под ними —
 // «Пари» (OfferList); прошедшее из них — в «Истории», строка «История · N» под «Пари». На iPhone в браузере —
-// заметка про экран «Домой» (HomeScreenNote)
+// заметка про экран «Домой» (HomeScreenNote). В самом низу — «Скачать копию комнаты» (BackupBlock)
 import { useCallback, useState } from 'react'
-import { admitRequest, fetchRequests, issueDeviceLink, rejectRequest, renewInvite } from '../api'
+import { admitRequest, fetchBackup, fetchRequests, issueDeviceLink, rejectRequest, renewInvite } from '../api'
 import { currencyLabel } from '../rules/currency'
 import { formatDate, formatDateTime } from '../rules/date'
 import { deviceLink, inviteLink } from '../rules/link'
 import type { JoinRequestsResponse } from '../rules/protocol'
 import { savedEvents, savedOffers, savedSettlement, type SavedRoom } from '../store/db'
 import { BackLink, useEscape } from './BackLink'
+import { BACKUP_FAILED, BACKUP_NOTE, backupFileName, backupText, deliveryWay } from './backupParts'
 import { EventList } from './EventList'
 import { historyHref, historyItems, historyLine } from './historyParts'
 import { HomeScreenNote } from './HomeScreenNote'
@@ -77,8 +78,66 @@ export function RoomView({ room, onUpdate }: { room: SavedRoom; onUpdate: (room:
       <EventList room={room} clock={clock} />
       <OfferList room={room} clock={clock} />
       <HistoryLink room={room} clock={clock} />
+      <BackupBlock room={room} />
     </div>
   )
+}
+
+// Внизу комнаты — «Скачать копию комнаты» (этап 6, #100): копия участника с сервера файлом. Сервер не
+// ответил или старый, без адреса копии, — строка отказа; остальная комната работает как была
+function BackupBlock({ room }: { room: SavedRoom }) {
+  const [busy, setBusy] = useState(false)
+  const [result, setResult] = useState<{ ok: true; file: string } | { ok: false } | null>(null)
+
+  async function download() {
+    setBusy(true)
+    setResult(null)
+    const res = await fetchBackup(room.server, room.id, room.key)
+    if (!res.ok) {
+      setBusy(false)
+      return setResult({ ok: false })
+    }
+    const file = new File([backupText(res.value)], backupFileName(room.name, res.value.exportedAt), { type: 'application/json' })
+    const given = await giveFile(file)
+    setBusy(false)
+    if (given) setResult({ ok: true, file: file.name })
+  }
+
+  return (
+    <section className="backup" aria-label="Копия комнаты">
+      <div className="row">
+        <button className="button secondary" type="button" onClick={download} disabled={busy}>
+          {busy ? 'Готовлю копию…' : 'Скачать копию комнаты'}
+        </button>
+      </div>
+      <p className="hint">{BACKUP_NOTE}</p>
+      {result?.ok === true && <p className="ok">Копия готова: «{result.file}»</p>}
+      {result?.ok === false && <p className="error">{BACKUP_FAILED}</p>}
+    </section>
+  )
+}
+
+// Отдать файл: на iPhone — окно «Поделиться» («Сохранить в Файлы»); не вышло (не умеет, срок нажатия
+// истёк, пока ждали сервер) — загрузкой, как на Android и компьютере. Отменили «Поделиться» — false
+async function giveFile(file: File): Promise<boolean> {
+  const canShareFiles = typeof navigator.canShare === 'function' && navigator.canShare({ files: [file] })
+  if (deliveryWay(navigator.userAgent, navigator.maxTouchPoints ?? 0, canShareFiles) === 'share') {
+    try {
+      await navigator.share({ files: [file], title: file.name })
+      return true
+    } catch (e) {
+      if (e instanceof DOMException && e.name === 'AbortError') return false
+    }
+  }
+  const url = URL.createObjectURL(file)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = file.name
+  document.body.append(link)
+  link.click()
+  link.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 60_000) // Safari читает ссылку не сразу
+  return true
 }
 
 // Под «Пари» — «История · 12»: сколько прошедшего ушло из списков (всё, без пропусков); ноль — строки нет
