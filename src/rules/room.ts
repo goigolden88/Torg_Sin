@@ -3,6 +3,7 @@
 import { CURRENCIES, isCurrencyCode, type CurrencyCode } from './currency'
 import type { AuthorSide, Odds, OfferSide } from './offer'
 import type { CourtVerdict } from './protocol'
+import type { SettleMode } from './settle'
 
 export const MAX_ROOM_NAME = 60
 export const MAX_MEMBER_NAME = 30
@@ -18,8 +19,11 @@ export const NAME_TAKEN = 'Такое имя уже есть — добавьт�
 type EntryBase = { id: string; at: number; memberId: string }
 
 export type LogEntry =
-  // Комната создана; автор — ведущий
-  | (EntryBase & { type: 'room.created'; roomId: string; name: string; currency: CurrencyCode })
+  // Комната создана; автор — ведущий. settleMode — режим «кто кому» (Р-32), если выбран при создании:
+  // нет поля — «по ставкам» (у старых комнат и у старого сайта)
+  | (EntryBase & { type: 'room.created'; roomId: string; name: string; currency: CurrencyCode; settleMode?: SettleMode })
+  // Ведущий сменил режим «кто кому» (Р-32, checkSettleMode в settle.ts); requestId — номер запроса
+  | (EntryBase & { type: 'room.settle-mode'; mode: SettleMode; requestId: string })
   // Участник впущен; автор — кто впустил (ведущего при создании «впускает» он сам).
   // Впущен по заявке — номер участника тот же, что у заявки
   | (EntryBase & { type: 'member.added'; member: string; name: string })
@@ -116,6 +120,15 @@ export type LogEntry =
   | (EntryBase & { type: 'court.voted'; target: string; requestId: string } & CourtVerdict)
   // Досрочная замена члена суда ведущим, с причиной
   | (EntryBase & { type: 'court.replaced'; target: string; member: string; reason: string; requestId: string })
+  // Расчёт (этап 5, Р-32; правила — settle.ts, записи TransferRecord и номер запроса). Номер перевода —
+  // id записи, которой заведён. «Перевёл» (автор — должник): кому, сколько
+  | (EntryBase & { type: 'transfer.sent'; to: string; amount: number; requestId: string })
+  // «Получил» (автор — получатель): подтверждает «Перевёл» (transfer) или сам, без него (от кого, сколько)
+  | (EntryBase & { type: 'transfer.received'; requestId: string } & ({ transfer: string } | { from: string; amount: number }))
+  // «Не получал» на «Перевёл» (автор — получатель)
+  | (EntryBase & { type: 'transfer.rejected'; transfer: string; requestId: string })
+  // Отмена своей отметки (автор — должник или получатель)
+  | (EntryBase & { type: 'transfer.revoked'; transfer: string; requestId: string })
 
 export type Member = {
   id: string // номер участника: не привязан к способу входа (Р-03)
@@ -175,6 +188,13 @@ export function applyEntry(state: RoomState | null, e: LogEntry): RoomState | nu
     case 'court.drawn':
     case 'court.voted':
     case 'court.replaced':
+      return state
+    // Режим «кто кому» и переводы считает сервер с правилами расчёта (settle.ts)
+    case 'room.settle-mode':
+    case 'transfer.sent':
+    case 'transfer.received':
+    case 'transfer.rejected':
+    case 'transfer.revoked':
       return state
   }
 }

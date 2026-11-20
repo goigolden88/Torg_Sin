@@ -11,6 +11,14 @@ import { checkAmount, checkClarification, checkEventInput, checkObjection, check
 import { BAD_GUARANTOR, BAD_MARK, BAD_ODDS, checkOfferInput, MAX_ODDS, MIN_ODDS, NO_OFFER, offerView, type Odds } from '../../src/rules/offer'
 import { appealReason, caseOf, courtVote, NOT_SEAT, replaceReason } from '../../src/rules/appeal'
 import { checkMemberName, checkRoomInput } from '../../src/rules/room'
+import {
+  BAD_MODE,
+  NO_TRANSFER,
+  NOT_MEMBER as TRANSFER_NOT_MEMBER,
+  roomSettlement,
+  SETTLE_MODES,
+  type SettleMode,
+} from '../../src/rules/settle'
 import { ulid } from '../../src/rules/ulid'
 import { deriveCreation, hashKey, randomToken, sameText, ULID_PATTERN } from './keys'
 import {
@@ -26,6 +34,7 @@ import {
   type CreateResult,
   type RoomAction,
   type StateResult,
+  type TransferAnswer,
 } from './room'
 
 // Сайт живёт на другом адресе (GitHub Pages) — браузеру нужно разрешение
@@ -44,6 +53,7 @@ export const WRONG_PASSWORD = 'Неверный пароль компании'
 export const BAD_REQUEST_ID = 'Неверный номер запроса'
 export const NEED_KEY = 'Нет доступа: нужен ключ телефона'
 export const NEED_CLOSE = 'Нужен срок «приём до»'
+export const NEED_PARTY = 'Укажите одно: кому перевели или от кого получили'
 
 export function json(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -118,7 +128,72 @@ export async function handle(request: Request, deps: RoomsDeps): Promise<Respons
     const r = await offerAction(of[1], of[2], of[3], request, deps)
     return json(r.status, r.body)
   }
+  // Расчёт (Р-32): /rooms/<номер>/transfers, /rooms/<номер>/transfers/<перевод>/<действие>, /rooms/<номер>/settle-mode
+  const tr = /^\/rooms\/([^/]+)\/transfers(?:\/([^/]+)\/(receive|reject|cancel))?$/.exec(path)
+  if (tr && request.method === 'POST') {
+    const r = await transferAction(tr[1], tr[2], tr[3] as TransferAnswer | undefined, request, deps)
+    return json(r.status, r.body)
+  }
+  const sm = /^\/rooms\/([^/]+)\/settle-mode$/.exec(path)
+  if (sm && request.method === 'POST') {
+    const r = await settleModeAction(sm[1], request, deps)
+    return json(r.status, r.body)
+  }
   return notFound()
+}
+
+// POST /rooms/<номер>/transfers { to, amount, requestId? } — «Перевёл»; { from, amount, requestId? } —
+// «Получил» сам; …/transfers/<перевод>/receive | reject | cancel { requestId? } — «Получил», «Не
+// получал», отмена своей отметки. Отказы — тексты правил (settle.ts)
+async function transferAction(
+  roomId: string,
+  transferId: string | undefined,
+  answer: TransferAnswer | undefined,
+  request: Request,
+  deps: RoomsDeps,
+): Promise<Reply<unknown>> {
+  const authorization = request.headers.get('Authorization')
+  const raw: unknown = await request.json().catch(() => null)
+  return withKey(roomId, authorization, async (keyHash) => {
+    if (transferId !== undefined && !ULID_PATTERN.test(transferId)) return failure(404, NO_TRANSFER)
+    const read = readBody(raw, answer !== undefined)
+    if (!read.ok) return read.reply
+    const b = read.body
+    const requestId = requestIdOf(b, deps)
+    if (transferId !== undefined && answer !== undefined) {
+      if (!requestId) return failure(400, BAD_REQUEST_ID)
+      return reply(await deps.act(roomId, { type: 'answerTransfer', keyHash, transfer: transferId, answer, requestId }))
+    }
+    if ((b.to === undefined) === (b.from === undefined)) return failure(400, NEED_PARTY)
+    const party = b.to ?? b.from
+    if (typeof party !== 'string' || !party) return failure(400, TRANSFER_NOT_MEMBER)
+    const amount = checkAmount(b.amount)
+    if (!amount.ok) return failure(400, amount.error)
+    if (!requestId) return failure(400, BAD_REQUEST_ID)
+    return b.to !== undefined
+      ? reply(await deps.act(roomId, { type: 'sendTransfer', keyHash, to: party, amount: amount.value, requestId }))
+      : reply(await deps.act(roomId, { type: 'receiveTransfer', keyHash, from: party, amount: amount.value, requestId }))
+  })
+}
+
+// POST /rooms/<номер>/settle-mode { mode: "stakes" | "fewest", requestId? } — ведущий меняет режим «кто кому»
+async function settleModeAction(roomId: string, request: Request, deps: RoomsDeps): Promise<Reply<unknown>> {
+  const authorization = request.headers.get('Authorization')
+  const raw: unknown = await request.json().catch(() => null)
+  return withKey(roomId, authorization, async (keyHash) => {
+    const read = readBody(raw)
+    if (!read.ok) return read.reply
+    const mode = settleModeOf(read.body.mode)
+    if (!mode) return failure(400, BAD_MODE)
+    const requestId = requestIdOf(read.body, deps)
+    if (!requestId) return failure(400, BAD_REQUEST_ID)
+    return reply(await deps.act(roomId, { type: 'setSettleMode', keyHash, mode, requestId }))
+  })
+}
+
+// Режим «кто кому» из тела: «по ставкам» или «меньше переводов»; иное — null
+function settleModeOf(x: unknown): SettleMode | null {
+  return SETTLE_MODES.includes(x as SettleMode) ? (x as SettleMode) : null
 }
 
 // POST /rooms/<номер>/offers { condition, check, side?, odds: { a, b }, amount, to?, closesAt,
@@ -501,8 +576,17 @@ export async function createRoom(body: unknown, deps: RoomsDeps): Promise<Reply<
   if (typeof requestId !== 'string' || !ULID_PATTERN.test(requestId)) return fail(400, BAD_REQUEST_ID)
   const checked = checkRoomInput({ name: body.name, currency: body.currency, hostName: body.hostName })
   if (!checked.ok) return fail(400, checked.error)
+  // Режим «кто кому» (Р-32): не задан — «по ставкам» (старый сайт поля не шлёт)
+  const settleMode = body.settleMode === undefined ? undefined : settleModeOf(body.settleMode)
+  if (settleMode === null) return fail(400, BAD_MODE)
   const { roomId, key } = await deriveCreation(requestId, deps.password)
-  const created = await deps.create({ ...checked.input, roomId, keyHash: await hashKey(key), invite: randomToken() })
+  const created = await deps.create({
+    ...checked.input,
+    ...(settleMode && { settleMode }),
+    roomId,
+    keyHash: await hashKey(key),
+    invite: randomToken(),
+  })
   if (!created.ok) return fail(created.status, created.error)
   return { status: 200, body: { v: PROTOCOL_VERSION, roomId: created.roomId, invite: created.invite, memberId: created.memberId, key } }
 }
@@ -530,6 +614,19 @@ export async function getRoom(roomId: string, authorization: string | null, deps
       // Апелляция и суд (Р-25) — у исхода своего события или пари
       events: r.events.map((e) => eventView(e, now, caseOf(r.cases, e.id))),
       offers: r.offers.map((o) => offerView(o, now, caseOf(r.cases, o.id))),
+      // Свод расчёта (Р-32) — на то же время, в режиме комнаты; виден всем участникам
+      settlement: roomSettlement(
+        {
+          currency: state.currency,
+          members: state.members.map((m) => m.id),
+          events: r.events,
+          offers: r.offers,
+          cases: r.cases,
+          transfers: r.transfers,
+        },
+        now,
+        r.settleMode,
+      ),
       now,
     },
   }

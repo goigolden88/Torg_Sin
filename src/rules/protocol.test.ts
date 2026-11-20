@@ -32,6 +32,9 @@ import {
   isPreviewResponse,
   isRejectResponse,
   isRoomStateResponse,
+  isSettlementView,
+  isSettleModeResponse,
+  isTransferResponse,
   joinMark,
   PROTOCOL_VERSION,
 } from './protocol'
@@ -355,6 +358,58 @@ describe('апелляция и суд (Р-25)', () => {
     expect(isReplaceJurorResponse({ v, replaced: { ...act, member: 'C', reason: 'Уехал' } })).toBe(true)
     expect(isReplaceJurorResponse({ v, replaced: act })).toBe(false)
     expect(isReplaceJurorResponse({ v, error: 'Досрочно заменить члена суда может только ведущий' })).toBe(false)
+  })
+})
+
+describe('расчёт (Р-32)', () => {
+  const v = PROTOCOL_VERSION
+  const sum = { amount: 100, events: 1, offers: 0 }
+  const zero = { amount: 0, events: 0, offers: 0 }
+  const member = { memberId: 'A', total: sum, pending: zero, inPlay: zero, sent: 0, received: 50, balance: 50 }
+  const transfer = { id: 'T', at: 3, from: 'B', to: 'A', amount: 50, by: 'sender', status: 'pending', changedAt: 3 }
+  const settlement = { mode: 'stakes', members: [member], transfers: [transfer], suggestions: [{ from: 'B', to: 'A', amount: 50 }] }
+  const state = {
+    v,
+    room: { id: 'R', name: 'Дача', currency: 'RUB', hostId: 'A', createdAt: 1 },
+    members: [{ id: 'A', name: 'Аня' }],
+    me: 'A',
+    events: [],
+    offers: [],
+    now: 5,
+  }
+
+  it('свод в состоянии комнаты: нет поля (сервер до этапа 5) — тоже ответ; кривой — нет', () => {
+    expect(isSettlementView(settlement)).toBe(true)
+    expect(isSettlementView({ ...settlement, mode: 'fewest', transfers: [], suggestions: [] })).toBe(true)
+    expect(isRoomStateResponse({ ...state, settlement })).toBe(true)
+    expect(isRoomStateResponse(state)).toBe(true)
+    const bad: unknown[] = [
+      null,
+      { ...settlement, mode: 'жадно' },
+      { ...settlement, members: [{ ...member, inPlay: undefined }] },
+      { ...settlement, members: [{ ...member, total: { amount: 1, events: 1 } }] },
+      { ...settlement, members: [{ ...member, balance: '50' }] },
+      { ...settlement, transfers: [{ ...transfer, status: 'потом' }] },
+      { ...settlement, transfers: [{ ...transfer, by: 'host' }] },
+      { ...settlement, transfers: [{ ...transfer, changedAt: undefined }] },
+      { ...settlement, suggestions: [{ from: 'B', amount: 50 }] },
+      { ...settlement, suggestions: undefined },
+    ]
+    for (const x of bad) {
+      expect(isSettlementView(x)).toBe(false)
+      expect(isRoomStateResponse({ ...state, settlement: x })).toBe(false)
+    }
+  })
+
+  it('ответы на перевод и смену режима', () => {
+    expect(isTransferResponse({ v, transfer })).toBe(true)
+    expect(isTransferResponse({ v, transfer: { ...transfer, status: 'received', by: 'receiver' } })).toBe(true)
+    expect(isTransferResponse({ v, transfer: { ...transfer, amount: undefined } })).toBe(false)
+    expect(isTransferResponse({ v, error: 'Себе не переводят' })).toBe(false)
+    const changed = { id: 'S', at: 4, by: 'A', mode: 'fewest' }
+    expect(isSettleModeResponse({ v, settleMode: changed })).toBe(true)
+    expect(isSettleModeResponse({ v, settleMode: { ...changed, mode: 'всё' } })).toBe(false)
+    expect(isSettleModeResponse({ settleMode: changed })).toBe(false)
   })
 })
 
