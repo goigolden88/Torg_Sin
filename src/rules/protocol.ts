@@ -15,12 +15,14 @@ export type ErrorResponse = { v: number; error: string; join?: 'waiting' | 'reje
 
 // POST /rooms: создать комнату по паролю компании (Р-03). requestId — номер запроса (ULID)
 // от телефона: повтор с тем же номером даёт ту же комнату и тот же ответ
+// settleMode — режим «кто кому» (Р-32): «по ставкам» / «меньше переводов»; не задан — «по ставкам»
 export type CreateRoomRequest = {
   v?: number
   password: string
   name: string
   currency: string
   hostName: string
+  settleMode?: SettleModeView
   requestId?: string
 }
 
@@ -31,7 +33,8 @@ export type CreateRoomResponse = { v: number; roomId: string; invite: string; me
 // GET /rooms/<номер> с ключом телефона: состояние комнаты; me — номер владельца ключа;
 // events — события-пул по порядку создания; offers — пари по порядку создания (Р-22; все пари
 // комнаты, адресные тоже — тайных нет; сервер до этапа 3 поля не шлёт); now — время сервера
-// (UTC, мс): по нему сайт считает отсчёт до закрытия приёма, а не по часам телефона
+// (UTC, мс): по нему сайт считает отсчёт до закрытия приёма, а не по часам телефона; settlement —
+// свод расчёта на now (Р-32; сервер до этапа 5 поля не шлёт), видят все участники
 export type RoomStateResponse = {
   v: number
   room: { id: string; name: string; currency: string; hostId: string; createdAt: number }
@@ -39,8 +42,59 @@ export type RoomStateResponse = {
   me: string
   events: EventView[]
   offers?: OfferView[]
+  settlement?: SettlementView
   now: number
 }
+
+// Расчёт (этап 5, Р-32; правила — settle.ts, roomSettlement). Режим «кто кому»: «по ставкам» /
+// «меньше переводов»
+export type SettleModeView = 'stakes' | 'fewest'
+// Число с основанием: сумма и из скольких событий и пари она сложена
+export type SettleSumView = { amount: number; events: number; offers: number }
+// Участник: итог (окончательные), ждёт окончательности, в игре; отдал и получил — по переводам «ждёт
+// подтверждения» и «получен»; баланс = итог + отдал − получил (плюс — ему должны)
+export type MemberSettlementView = {
+  memberId: string
+  total: SettleSumView
+  pending: SettleSumView
+  inPlay: SettleSumView
+  sent: number
+  received: number
+  balance: number
+}
+// «ждёт подтверждения» / «получен» / «отклонён» («Не получал») / «отменён»
+export type TransferStatusView = 'pending' | 'received' | 'rejected' | 'cancelled'
+// Перевод: номер — id записи, которой заведён; by — кто завёл (должник «Перевёл» или получатель
+// «Получил» сам); changedAt — миг последней смены состояния
+export type TransferView = {
+  id: string
+  at: number
+  from: string
+  to: string
+  amount: number
+  by: 'sender' | 'receiver'
+  status: TransferStatusView
+  changedAt: number
+}
+// Свод: режим комнаты, участники, переводы по порядку заведения, подсказка «кто кому» (from → to)
+export type SettlementView = {
+  mode: SettleModeView
+  members: MemberSettlementView[]
+  transfers: TransferView[]
+  suggestions: { from: string; to: string; amount: number }[]
+}
+
+// Переводы на сервере (Р-32). Адреса — POST /rooms/<номер>/transfers и …/transfers/<перевод>/receive |
+// reject | cancel, по ключу участника; requestId — номер запроса (ULID): повтор — тот же ответ без второй
+// записи. …/transfers { to, amount } — «Перевёл» (должник); { from, amount } — «Получил» сам (получатель)
+export type TransferRequest = { v?: number; to?: string; from?: string; amount: number; requestId?: string }
+// …/receive — «Получил» на «Перевёл», …/reject — «Не получал», …/cancel — отмена своей отметки
+export type TransferActRequest = { v?: number; requestId?: string }
+// Ответ — перевод, каким он стал (повтор — каким он сейчас)
+export type TransferResponse = { v: number; transfer: TransferView }
+// POST /rooms/<номер>/settle-mode { mode } — ведущий меняет режим «кто кому»
+export type SettleModeRequest = { v?: number; mode: SettleModeView; requestId?: string }
+export type SettleModeResponse = { v: number; settleMode: { id: string; at: number; by: string; mode: SettleModeView } }
 
 // Пари один на один (этап 3, Р-04, Р-22; правила — offer.ts). Условия пари; сумма соперника —
 // сумма автора × b ÷ a вниз до целой единицы (считается, не хранится); guarantorId — гарант
@@ -439,6 +493,8 @@ export function isRoomStateResponse(x: unknown): x is RoomStateResponse {
   if (typeof r.now !== 'number' || !Array.isArray(r.events) || !r.events.every(isEventView)) return false
   // Пари — с этапа 3: сервер без них (до выкатки) не ломает сайт
   if (r.offers !== undefined && !list(r.offers, isOfferView)) return false
+  // Свод расчёта — с этапа 5: сервер без него (до выкатки) не ломает сайт
+  if (r.settlement !== undefined && !isSettlementView(r.settlement)) return false
   return r.members.every((m) => {
     const member = record(m)
     return !!member && strings(member, 'id', 'name')
@@ -765,4 +821,44 @@ export function isJudgeResponse(x: unknown): x is JudgeResponse {
 
 export function isReplaceJurorResponse(x: unknown): x is ReplaceJurorResponse {
   return recordIn(x, 'replaced', (r) => isCourtAct(r) && strings(r, 'member', 'reason'))
+}
+
+const SETTLE_MODE_VIEWS: readonly unknown[] = ['stakes', 'fewest']
+const TRANSFER_STATUSES: readonly unknown[] = ['pending', 'received', 'rejected', 'cancelled']
+
+function isSettleSum(x: unknown): boolean {
+  const r = record(x)
+  return !!r && numbers(r, 'amount', 'events', 'offers')
+}
+
+function isTransferView(r: Record<string, unknown>): boolean {
+  return (
+    strings(r, 'id', 'from', 'to') &&
+    numbers(r, 'at', 'amount', 'changedAt') &&
+    (r.by === 'sender' || r.by === 'receiver') &&
+    TRANSFER_STATUSES.includes(r.status)
+  )
+}
+
+// Свод расчёта в состоянии комнаты (Р-32)
+export function isSettlementView(x: unknown): x is SettlementView {
+  const r = record(x)
+  return (
+    !!r &&
+    SETTLE_MODE_VIEWS.includes(r.mode) &&
+    list(
+      r.members,
+      (m) => strings(m, 'memberId') && isSettleSum(m.total) && isSettleSum(m.pending) && isSettleSum(m.inPlay) && numbers(m, 'sent', 'received', 'balance'),
+    ) &&
+    list(r.transfers, isTransferView) &&
+    list(r.suggestions, (s) => strings(s, 'from', 'to') && numbers(s, 'amount'))
+  )
+}
+
+export function isTransferResponse(x: unknown): x is TransferResponse {
+  return recordIn(x, 'transfer', isTransferView)
+}
+
+export function isSettleModeResponse(x: unknown): x is SettleModeResponse {
+  return recordIn(x, 'settleMode', (r) => strings(r, 'id', 'by') && numbers(r, 'at') && SETTLE_MODE_VIEWS.includes(r.mode))
 }

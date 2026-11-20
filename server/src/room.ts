@@ -111,7 +111,9 @@ import type {
   OfferWinnerAct,
   OutcomeMark,
   ReplaceJurorResponse,
+  SettleModeResponse,
 } from '../../src/rules/protocol'
+import * as settle from '../../src/rules/settle'
 import { ulid } from '../../src/rules/ulid'
 import { deriveJoinKey, hashKey, randomSeed, randomToken, sameText } from './keys'
 
@@ -215,8 +217,9 @@ export async function append(storage: RoomStorage, entries: readonly LogEntry[])
   }
 }
 
-// Что Worker передаёт комнате при создании: номер, проверенная форма, хеш ключа ведущего, приглашение
-export type CreateInput = RoomInput & { roomId: string; keyHash: string; invite: string }
+// Что Worker передаёт комнате при создании: номер, проверенная форма, хеш ключа ведущего, приглашение;
+// режим «кто кому» (Р-32) — если выбран: нет — «по ставкам»
+export type CreateInput = RoomInput & { roomId: string; keyHash: string; invite: string; settleMode?: settle.SettleMode }
 
 export type CreateResult =
   | { ok: true; roomId: string; memberId: string; invite: string }
@@ -225,16 +228,20 @@ export type CreateResult =
 // Создать комнату. Комната уже есть (повтор того же запроса) — тот же ответ, ничего не дописывая;
 // тот же номер, но другая форма или ключ — отказ
 export async function createRoom(storage: RoomStorage, input: CreateInput, now: number): Promise<CreateResult> {
-  const existing = foldLog(await readLog(storage))
+  const log = await readLog(storage)
+  const existing = foldLog(log)
   if (existing) {
     const owner = await storage.get<KeyRecord>(KEY + input.keyHash)
     const host = existing.members.find((m) => m.id === existing.hostId)
     const invite = await storage.get<InviteRecord>(INVITE)
+    const created = log.find((e) => e.type === 'room.created')
+    const createdMode = created?.type === 'room.created' ? created.settleMode : undefined
     const same =
       owner?.memberId === existing.hostId &&
       existing.name === input.name &&
       existing.currency === input.currency &&
-      host?.name === input.hostName
+      host?.name === input.hostName &&
+      (createdMode ?? settle.DEFAULT_SETTLE_MODE) === (input.settleMode ?? settle.DEFAULT_SETTLE_MODE)
     if (!same || !invite) return { ok: false, status: 409, error: REQUEST_TAKEN }
     return { ok: true, roomId: existing.id, memberId: existing.hostId, invite: invite.token }
   }
@@ -243,7 +250,17 @@ export async function createRoom(storage: RoomStorage, input: CreateInput, now: 
   await storage.put<KeyRecord>(KEY + input.keyHash, { memberId: hostId, at: now })
   await storage.put<InviteRecord>(INVITE, { token: input.invite, at: now })
   await append(storage, [
-    { id: ulid(now), at: now, memberId: hostId, type: 'room.created', roomId: input.roomId, name: input.name, currency: input.currency },
+    {
+      id: ulid(now),
+      at: now,
+      memberId: hostId,
+      type: 'room.created',
+      roomId: input.roomId,
+      name: input.name,
+      currency: input.currency,
+      // Режим «кто кому» (Р-32) — только если выбран: без поля — «по ставкам», как у старых комнат
+      ...(input.settleMode !== undefined && { settleMode: input.settleMode }),
+    },
     { id: ulid(now), at: now, memberId: hostId, type: 'member.added', member: hostId, name: input.hostName },
   ])
   return { ok: true, roomId: input.roomId, memberId: hostId, invite: input.invite }
@@ -253,9 +270,19 @@ export async function createRoom(storage: RoomStorage, input: CreateInput, now: 
 export type Failure = { ok: false; status: 400 | 403 | 404 | 409; error: string; join?: 'waiting' | 'rejected' }
 
 // events и offers — события и пари комнаты из журнала, cases — дела суда по ним (Р-25; статус на
-// время ответа считает http.ts)
+// время ответа считает http.ts); transfers — записи о переводах, settleMode — режим «кто кому» (Р-32;
+// свод на время ответа считает http.ts)
 export type StateResult =
-  | { ok: true; state: RoomState; me: string; events: EventState[]; offers: OfferState[]; cases: CourtCase[] }
+  | {
+      ok: true
+      state: RoomState
+      me: string
+      events: EventState[]
+      offers: OfferState[]
+      cases: CourtCase[]
+      transfers: settle.TransferRecord[]
+      settleMode: settle.SettleMode
+    }
   | Failure
 
 function fail(status: Failure['status'], error: string, join?: Failure['join']): Failure {
@@ -293,7 +320,16 @@ export async function roomState(storage: RoomStorage, keyHash: string, now: numb
   if (!c.ok) return c
   const events = roomEvents(c.log)
   const offers = logOffers(c.log)
-  return { ok: true, state: c.state, me: c.me, events, offers, cases: appeal.logAppeals(c.log, { events, offers }) }
+  return {
+    ok: true,
+    state: c.state,
+    me: c.me,
+    events,
+    offers,
+    cases: appeal.logAppeals(c.log, { events, offers }),
+    transfers: logTransfers(c.log),
+    settleMode: logSettleMode(c.log),
+  }
 }
 
 // Суд по «ждёт суда» (Р-17, Р-25) собирается сам — будильника нет: при первом запросе к комнате после
@@ -363,6 +399,12 @@ export type RoomAction =
   | { type: 'joinAppeal'; keyHash: string; kind: CourtKind; target: string; requestId: string }
   | { type: 'judgeCourt'; keyHash: string; kind: CourtKind; target: string; vote: CourtVerdict; requestId: string }
   | { type: 'replaceJuror'; keyHash: string; kind: CourtKind; target: string; member: string; reason: string; requestId: string }
+  // Расчёт (Р-32): правила — settle.ts. «Перевёл» (кому) и «Получил» сам (от кого); ответ на перевод —
+  // «Получил», «Не получал», отмена своей отметки; смена режима «кто кому» — ведущий
+  | { type: 'sendTransfer'; keyHash: string; to: string; amount: number; requestId: string }
+  | { type: 'receiveTransfer'; keyHash: string; from: string; amount: number; requestId: string }
+  | { type: 'answerTransfer'; keyHash: string; transfer: string; answer: TransferAnswer; requestId: string }
+  | { type: 'setSettleMode'; keyHash: string; mode: settle.SettleMode; requestId: string }
 
 export type CourtKind = appeal.AppealTarget['kind']
 
@@ -399,6 +441,10 @@ export type ActionValues = {
   joinAppeal: { joined: JoinAppealResponse['joined'] }
   judgeCourt: { voted: JudgeResponse['voted'] }
   replaceJuror: { replaced: ReplaceJurorResponse['replaced'] }
+  sendTransfer: { transfer: settle.Transfer }
+  receiveTransfer: { transfer: settle.Transfer }
+  answerTransfer: { transfer: settle.Transfer }
+  setSettleMode: { settleMode: SettleModeResponse['settleMode'] }
 }
 
 export type ActionType = RoomAction['type']
@@ -506,6 +552,18 @@ export async function act<K extends ActionType>(
       break
     case 'replaceJuror':
       r = await replaceJuror(storage, a, now)
+      break
+    case 'sendTransfer':
+      r = await newTransfer(storage, { keyHash: a.keyHash, kind: 'send', party: a.to, amount: a.amount, requestId: a.requestId }, now)
+      break
+    case 'receiveTransfer':
+      r = await newTransfer(storage, { keyHash: a.keyHash, kind: 'receive', party: a.from, amount: a.amount, requestId: a.requestId }, now)
+      break
+    case 'answerTransfer':
+      r = await answerTransfer(storage, a, now)
+      break
+    case 'setSettleMode':
+      r = await setSettleMode(storage, a, now)
       break
   }
   return r as ActionResult<K>
@@ -1476,4 +1534,174 @@ async function replaceJuror(
 
 function replacedOut(e: ReplacedEntry): ReplaceJurorResponse['replaced'] {
   return { ...courtAct(e), member: e.member, reason: e.reason }
+}
+
+// --- Расчёт (этап 5, Р-32). Правила — settle.ts: переводы — checkSend / checkReceive / checkAnswer /
+// checkRevoke и свёртка roomTransfers, режим «кто кому» — checkSettleMode; свод — roomSettlement на время
+// ответа (http.ts), не хранится. Повтор с тем же номером запроса — тот же ответ без новой записи; тот же
+// номер у другого действия, перевода, содержимого или от другого — 409
+
+type TransferEntry = Extract<LogEntry, { type: 'transfer.sent' | 'transfer.received' | 'transfer.rejected' | 'transfer.revoked' }>
+type SettleModeEntry = Extract<LogEntry, { type: 'room.settle-mode' }>
+
+function isTransferEntry(e: LogEntry): e is TransferEntry {
+  return e.type === 'transfer.sent' || e.type === 'transfer.received' || e.type === 'transfer.rejected' || e.type === 'transfer.revoked'
+}
+
+// Записи о переводах из журнала — записи правил (номер запроса правилам не нужен)
+export function logTransfers(log: readonly LogEntry[]): settle.TransferRecord[] {
+  return log.filter(isTransferEntry)
+}
+
+// Вход свода комнаты из журнала: события, пари, дела суда и переводы
+function settleInput(log: readonly LogEntry[], state: RoomState): settle.SettleInput {
+  const events = roomEvents(log)
+  const offers = logOffers(log)
+  return {
+    currency: state.currency,
+    members: state.members.map((m) => m.id),
+    events,
+    offers,
+    cases: appeal.logAppeals(log, { events, offers }),
+    transfers: logTransfers(log),
+  }
+}
+
+// Режим «кто кому» из журнала: при создании (нет поля — «по ставкам»), дальше — смены ведущим. Смена
+// действует, если её разрешает checkSettleMode на её место в журнале (свод на её время): сервер и
+// свёртка не расходятся
+export function logSettleMode(log: readonly LogEntry[]): settle.SettleMode {
+  const created = log.find((e) => e.type === 'room.created')
+  const initial = created?.type === 'room.created' ? created.settleMode : undefined
+  let mode = initial && settle.SETTLE_MODES.includes(initial) ? initial : settle.DEFAULT_SETTLE_MODE
+  log.forEach((e, i) => {
+    if (e.type !== 'room.settle-mode') return
+    const before = log.slice(0, i)
+    const state = foldLog(before)
+    if (!state) return
+    const settlement = settle.roomSettlement(settleInput(before, state), e.at, mode)
+    if (!settle.checkSettleMode(settlement, state, e.memberId, e.mode)) mode = e.mode
+  })
+  return mode
+}
+
+// Запись журнала с этим номером запроса, если она есть
+function byRequest(log: readonly LogEntry[], requestId: string): LogEntry | undefined {
+  return log.find((e) => 'requestId' in e && e.requestId === requestId)
+}
+
+type SettleCaller = Caller & { room: settle.TransferRoom; transfers: settle.Transfer[]; again: LogEntry | undefined }
+
+async function settleCaller(storage: RoomStorage, keyHash: string, requestId: string): Promise<SettleCaller | Failure> {
+  const c = await caller(storage, keyHash)
+  if (!c.ok) return c
+  const room: settle.TransferRoom = { currency: c.state.currency, members: c.state.members.map((m) => m.id) }
+  return { ...c, room, transfers: settle.roomTransfers(logTransfers(c.log), room), again: byRequest(c.log, requestId) }
+}
+
+// Отказ правил расчёта: «не вам» — 403, нет перевода — 404, «уже не то состояние» и комната на очки —
+// 409, кривое тело (кому, сумма, режим) — 400
+const SETTLE_FORBIDDEN: readonly string[] = [settle.ONLY_RECEIVER, settle.ONLY_OWN, settle.ONLY_HOST_MODE]
+const SETTLE_CONFLICT: readonly string[] = [
+  settle.NO_TRANSFERS,
+  settle.ALREADY_RECEIVED,
+  settle.ALREADY_REJECTED,
+  settle.TRANSFER_CANCELLED,
+  settle.RECEIVED_NO_REVOKE,
+  settle.NOTHING_TO_REVOKE,
+  settle.SAME_MODE,
+  settle.MODE_LOCKED,
+]
+
+function settleRefusal(error: string): Failure {
+  if (error === settle.NO_TRANSFER) return fail(404, error)
+  if (SETTLE_FORBIDDEN.includes(error)) return fail(403, error)
+  return fail(SETTLE_CONFLICT.includes(error) ? 409 : 400, error)
+}
+
+// Перевод, каким он стал после записей журнала (и новой записи, если есть)
+function transferAfter(c: SettleCaller, id: string, entry?: TransferEntry): ActionResult<'sendTransfer'> {
+  const transfers = entry ? settle.roomTransfers([...logTransfers(c.log), entry], c.room) : c.transfers
+  const transfer = transfers.find((t) => t.id === id)
+  return transfer ? ok({ transfer }) : fail(404, settle.NO_TRANSFER)
+}
+
+// «Перевёл» (должник: кому, сколько) или «Получил» сам (получатель: от кого, сколько); сумма — целое > 0,
+// долгом не ограничена. Перевод — сразу в своде: «ждёт подтверждения» или «получен»
+async function newTransfer(
+  storage: RoomStorage,
+  a: { keyHash: string; kind: 'send' | 'receive'; party: string; amount: number; requestId: string },
+  now: number,
+): Promise<ActionResult<'sendTransfer'>> {
+  const c = await settleCaller(storage, a.keyHash, a.requestId)
+  if (!c.ok) return c
+  if (c.again) {
+    const e = c.again
+    const same =
+      e.memberId === c.me &&
+      (a.kind === 'send'
+        ? e.type === 'transfer.sent' && e.to === a.party && e.amount === a.amount
+        : e.type === 'transfer.received' && 'from' in e && e.from === a.party && e.amount === a.amount)
+    return same ? transferAfter(c, e.id) : fail(409, REQUEST_USED)
+  }
+  const refused = a.kind === 'send' ? settle.checkSend(c.room, c.me, a.party, a.amount) : settle.checkReceive(c.room, c.me, a.party, a.amount)
+  if (refused) return settleRefusal(refused)
+  const base = { id: ulid(now), at: now, memberId: c.me, amount: a.amount, requestId: a.requestId }
+  const entry: TransferEntry =
+    a.kind === 'send' ? { ...base, type: 'transfer.sent', to: a.party } : { ...base, type: 'transfer.received', from: a.party }
+  await append(storage, [entry])
+  return transferAfter(c, entry.id, entry)
+}
+
+export type TransferAnswer = 'receive' | 'reject' | 'cancel'
+
+const ANSWER_TYPE = { receive: 'transfer.received', reject: 'transfer.rejected', cancel: 'transfer.revoked' } as const
+
+// «Получил» на «Перевёл» и «Не получал» — получатель, пока перевод ждёт подтверждения; отмена своей
+// отметки — новой записью (Р-11): должник — своё «Перевёл», пока не подтверждён; получатель — своё «Получил»
+async function answerTransfer(
+  storage: RoomStorage,
+  a: { keyHash: string; transfer: string; answer: TransferAnswer; requestId: string },
+  now: number,
+): Promise<ActionResult<'answerTransfer'>> {
+  const c = await settleCaller(storage, a.keyHash, a.requestId)
+  if (!c.ok) return c
+  const type = ANSWER_TYPE[a.answer]
+  if (c.again) {
+    const e = c.again
+    const same = e.type === type && e.memberId === c.me && 'transfer' in e && e.transfer === a.transfer
+    return same ? transferAfter(c, a.transfer) : fail(409, REQUEST_USED)
+  }
+  const t = c.transfers.find((x) => x.id === a.transfer) ?? null
+  const refused = a.answer === 'cancel' ? settle.checkRevoke(c.room, t, c.me) : settle.checkAnswer(c.room, t, c.me)
+  if (refused) return settleRefusal(refused)
+  const entry = { id: ulid(now), at: now, memberId: c.me, type, transfer: a.transfer, requestId: a.requestId } as TransferEntry
+  await append(storage, [entry])
+  return transferAfter(c, a.transfer, entry)
+}
+
+function settleModeAct(e: SettleModeEntry): SettleModeResponse['settleMode'] {
+  return { id: e.id, at: e.at, by: e.memberId, mode: e.mode }
+}
+
+// Смена режима «кто кому» ведущим (checkSettleMode на свод в нынешнем режиме на время сервера)
+async function setSettleMode(
+  storage: RoomStorage,
+  a: { keyHash: string; mode: settle.SettleMode; requestId: string },
+  now: number,
+): Promise<ActionResult<'setSettleMode'>> {
+  const c = await caller(storage, a.keyHash)
+  if (!c.ok) return c
+  const again = byRequest(c.log, a.requestId)
+  if (again) {
+    return again.type === 'room.settle-mode' && again.memberId === c.me && again.mode === a.mode
+      ? ok({ settleMode: settleModeAct(again) })
+      : fail(409, REQUEST_USED)
+  }
+  const settlement = settle.roomSettlement(settleInput(c.log, c.state), now, logSettleMode(c.log))
+  const refused = settle.checkSettleMode(settlement, c.state, c.me, a.mode)
+  if (refused) return settleRefusal(refused)
+  const entry: SettleModeEntry = { id: ulid(now), at: now, memberId: c.me, type: 'room.settle-mode', mode: a.mode, requestId: a.requestId }
+  await append(storage, [entry])
+  return ok({ settleMode: settleModeAct(entry) })
 }
