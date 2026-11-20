@@ -78,6 +78,13 @@ import {
   type JudgeResponse,
   type ReplaceJurorRequest,
   type ReplaceJurorResponse,
+  isSettleModeResponse,
+  isTransferResponse,
+  type SettleModeRequest,
+  type SettleModeResponse,
+  type TransferActRequest,
+  type TransferRequest,
+  type TransferResponse,
 } from './rules/protocol'
 
 export const OFFLINE = 'Нет связи с сервером'
@@ -359,4 +366,31 @@ export function replaceJuror(
   request: Omit<ReplaceJurorRequest, 'v'>,
 ): Promise<Result<ReplaceJurorResponse>> {
   return call(courtUrl(server, roomId, kind, target, 'replace'), post(request, key), isReplaceJurorResponse)
+}
+
+// Расчёт (Р-32, Р-33): повтор с тем же requestId — тот же ответ без второй записи (Р-13)
+
+// POST /rooms/<номер>/transfers — «Перевёл» { to, amount } (должник) или «Получил» сам { from, amount }
+export function createTransfer(server: string, roomId: string, key: string, request: Omit<TransferRequest, 'v'>): Promise<Result<TransferResponse>> {
+  return call(roomUrl(server, roomId, 'transfers'), post(request, key), isTransferResponse)
+}
+
+// Ответ на перевод: receive — «Получил», reject — «Не получал», cancel — отмена своей отметки
+export type TransferAct = 'receive' | 'reject' | 'cancel'
+
+// POST …/transfers/<перевод>/<действие>
+export function answerTransfer(
+  server: string,
+  roomId: string,
+  key: string,
+  transferId: string,
+  act: TransferAct,
+  request: Omit<TransferActRequest, 'v'>,
+): Promise<Result<TransferResponse>> {
+  return call(roomUrl(server, roomId, 'transfers/' + encodeURIComponent(transferId) + '/' + act), post(request, key), isTransferResponse)
+}
+
+// POST /rooms/<номер>/settle-mode — ведущий меняет режим «кто кому»
+export function changeSettleMode(server: string, roomId: string, key: string, request: Omit<SettleModeRequest, 'v'>): Promise<Result<SettleModeResponse>> {
+  return call(roomUrl(server, roomId, 'settle-mode'), post(request, key), isSettleModeResponse)
 }

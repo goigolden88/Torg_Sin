@@ -22,7 +22,7 @@ const BAD_DEVICE = 'Ссылка для другого устройства не
 // #/ — список, #/new — создать комнату, #/room/<номер> — открытая комната, #/settings;
 // #/room/<номер>/event/new — новое событие, #/room/<номер>/event/<номер события> — событие;
 // #/room/<номер>/offer/new — предложить пари, #/room/<номер>/offer/<номер пари> — пари;
-// #/join/<номер>/<токен>[?server=…] — ссылка-приглашение, #/device/<номер>/<токен>[?server=…] —
+// #/room/<номер>/settle — «Расчёт»; #/join/<номер>/<токен>[?server=…] — ссылка-приглашение, #/device/<номер>/<токен>[?server=…] —
 // ссылка для другого устройства (src/rules/link.ts)
 function routeFromHash(): Route {
   const hash = location.hash
@@ -38,6 +38,9 @@ function routeFromHash(): Route {
   }
   const room = /^#\/room\/([^/?]+)$/.exec(hash)
   if (room) return { tab: 'rooms', view: { kind: 'room', id: decodeURIComponent(room[1]) } }
+  // #/room/<номер>/settle — «Расчёт» (в комнате на очки — «Таблица очков»)
+  const settle = /^#\/room\/([^/?]+)\/settle$/.exec(hash)
+  if (settle) return { tab: 'rooms', view: { kind: 'settle', id: decodeURIComponent(settle[1]) } }
   // #/room/<номер>/event/new — новое событие, #/room/<номер>/event/<номер события> — событие
   const event = /^#\/room\/([^/?]+)\/event\/([^/?]+)$/.exec(hash)
   if (event) {
