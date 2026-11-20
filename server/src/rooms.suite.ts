@@ -196,12 +196,29 @@ import {
   WRONG_KEY,
   type RoomStorage,
 } from './room'
-import type { TestServer } from './testing'
+import { START_TIME, type TestServer } from './testing'
+import {
+  BACKUP_FORMAT,
+  BAD_BACKUP,
+  BAD_LOG,
+  BAD_STORE,
+  checkBackup,
+  LOG_ORDER,
+  NEED_FULL,
+  UNKNOWN_FORMAT,
+} from '../../src/rules/backup'
+import { BACKUP_OFF, OTHER_ROOM } from './http'
+import { ROOM_EXISTS } from './room'
 
 const PASSWORD = 'пароль-компании'
 const FORM = { v: PROTOCOL_VERSION, password: PASSWORD, name: 'Дача', currency: 'RUB', hostName: 'Аня' }
 
-export function roomsSuite(storageName: string, start: (password: string | undefined) => Promise<TestServer>): void {
+// peer — сервер другой обёртки: на него грузят копию в «круге» выгрузки и загрузки; нет — та же обёртка
+export function roomsSuite(
+  storageName: string,
+  start: (password: string | undefined) => Promise<TestServer>,
+  peer?: (password: string | undefined) => Promise<TestServer>,
+): void {
   describe(`сервер комнат, хранилище «${storageName}»`, () => {
     const started: TestServer[] = []
     afterEach(async () => {
@@ -3213,6 +3230,209 @@ export function roomsSuite(storageName: string, start: (password: string | undef
         expect(settlement.transfers).toEqual([])
         expect(settlement.suggestions).toEqual([])
         expect(await settleEntries(s, id)).toEqual([])
+      })
+    })
+
+    describe('копия комнаты: выгрузка и загрузка (этап 6)', () => {
+      const HOUR = 60 * 60 * 1000
+      const DAY = 24 * HOUR
+
+      // Пароль компании в заголовке: base64 из UTF-8 (кириллицу заголовок как есть не несёт)
+      function password(p: string): string {
+        return 'Password ' + btoa(String.fromCharCode(...new TextEncoder().encode(p)))
+      }
+
+      function exportOne(s: TestServer, roomId: string, authorization?: string): Promise<Response> {
+        return s.send(`/rooms/${roomId}/export`, { headers: authorization === undefined ? {} : { Authorization: authorization } })
+      }
+
+      function exportAll(s: TestServer, authorization?: string): Promise<Response> {
+        return s.send('/export', { headers: authorization === undefined ? {} : { Authorization: authorization } })
+      }
+
+      function importOne(s: TestServer, roomId: string, body: unknown, authorization = password(PASSWORD)): Promise<Response> {
+        return s.send(`/rooms/${roomId}/import`, { method: 'POST', headers: { Authorization: authorization }, body: JSON.stringify(body) })
+      }
+
+      // Полная копия комнаты — как её отдаёт сервер (с v)
+      async function fullCopy(s: TestServer, roomId: string): Promise<Record<string, unknown>> {
+        return ok<Record<string, unknown>>(exportOne(s, roomId, password(PASSWORD)))
+      }
+
+      // Сервер «другой обёртки» (peer): на него загружают; время — то же, что у первого
+      async function other(s: TestServer): Promise<TestServer> {
+        const t = await (peer ?? start)(PASSWORD)
+        started.push(t)
+        t.clock.now = s.clock.now
+        return t
+      }
+
+      it('с паролем компании — полная копия: журнал как в хранилище, служебные записи — как хранятся (хеши), ключей и токенов в открытом виде нет; ничего не пишет', async () => {
+        const s = await server()
+        const room = await create(s)
+        const borya = await member(s, room, 'Боря')
+        const device = await ok<DeviceLinkResponse>(send(s, room.roomId, 'device', { v: PROTOCOL_VERSION }, borya.key))
+        s.clock.now += 1000
+        const puts = s.puts(room.roomId).length
+        const r = await exportOne(s, room.roomId, password(PASSWORD))
+        expect(r.status).toBe(200)
+        expect(r.headers.get('Access-Control-Allow-Origin')).toBe('*')
+        const body = (await r.json()) as Record<string, unknown>
+        const log = await readLog(s.storage(room.roomId))
+        const store = body.store as Record<string, unknown>
+        expect(body).toEqual({ v: PROTOCOL_VERSION, format: BACKUP_FORMAT, roomId: room.roomId, exportedAt: s.clock.now, log, store })
+        const storage = s.storage(room.roomId)
+        const keys = [
+          'invite',
+          'secret',
+          'key:' + (await hashKey(room.key)),
+          'key:' + (await hashKey(borya.key)),
+          'device:' + (await hashKey(device.token)),
+        ]
+        expect(Object.keys(store).sort()).toEqual([...keys].sort())
+        for (const k of keys) expect(store[k]).toEqual(await storage.get(k))
+        expect(store.invite).toEqual({ token: room.invite, at: START_TIME })
+        const text = JSON.stringify(body)
+        for (const secret of [room.key, borya.key, device.token]) expect(text).not.toContain(secret)
+        expect(checkBackup(body, 'full').ok).toBe(true)
+        // Выгрузка ничего не пишет
+        expect(s.puts(room.roomId).length).toBe(puts)
+      })
+
+      it('с ключом участника — копия участника: тот же журнал без служебных записей; заявка, чужой ключ, без ключа — отказы, как у чтения', async () => {
+        const s = await server()
+        const room = await create(s)
+        const borya = await member(s, room, 'Боря')
+        const waiting = await join(s, room, 'Вера')
+        const copy = await ok<Record<string, unknown>>(exportOne(s, room.roomId, 'Bearer ' + borya.key))
+        expect(copy).toEqual({ v: PROTOCOL_VERSION, format: BACKUP_FORMAT, roomId: room.roomId, exportedAt: s.clock.now, log: await readLog(s.storage(room.roomId)) })
+        expect(checkBackup(copy).ok).toBe(true)
+        await refused(exportOne(s, room.roomId, 'Bearer ' + waiting.key), 403, WAITING, 'waiting')
+        await refused(exportOne(s, room.roomId, 'Bearer not-a-member-key'), 403, WRONG_KEY)
+        await refused(exportOne(s, room.roomId), 403, NEED_KEY)
+        await refused(exportOne(s, 'кривой', 'Bearer ' + borya.key), 404, NO_ROOM)
+        await refused(exportOne(s, ulid(s.clock.now), 'Bearer ' + borya.key), 404, NO_ROOM)
+        // Полная копия несуществующей комнаты и по кривому номеру — 404
+        await refused(exportOne(s, ulid(s.clock.now), password(PASSWORD)), 404, NO_ROOM)
+        await refused(exportOne(s, 'кривой', password(PASSWORD)), 404, NO_ROOM)
+      })
+
+      it('пароль: неверный, пустой, кривой или ключ участника вместо него — 403; на сервере не задан — 503 (выгрузка и загрузка выключены)', async () => {
+        const s = await server()
+        const room = await create(s)
+        const copy = await fullCopy(s, room.roomId)
+        const wrong = [password('не тот'), password(''), 'Password %%%', 'Password', 'Bearer ' + room.key, undefined]
+        for (const auth of wrong) {
+          await refused(exportAll(s, auth), 403, WRONG_PASSWORD)
+          await refused(importOne(s, ulid(s.clock.now), copy, auth ?? ''), 403, WRONG_PASSWORD)
+        }
+        for (const auth of wrong.slice(0, 4)) await refused(exportOne(s, room.roomId, auth), 403, WRONG_PASSWORD)
+        for (const p of [undefined, '']) {
+          const off = await server(p)
+          await refused(exportAll(off, password(PASSWORD)), 503, BACKUP_OFF)
+          await refused(exportOne(off, room.roomId, password(PASSWORD)), 503, BACKUP_OFF)
+          await refused(importOne(off, room.roomId, copy), 503, BACKUP_OFF)
+          expect(off.roomIds()).toEqual([])
+        }
+      })
+
+      it('GET /export — полные копии всех комнат одним файлом; комнат нет — пусто', async () => {
+        const s = await server()
+        expect(await ok(exportAll(s, password(PASSWORD)))).toEqual({ v: PROTOCOL_VERSION, exportedAt: s.clock.now, backups: [] })
+        const first = await create(s)
+        s.clock.now += 1000
+        const second = await create(s, { ...FORM, name: 'Работа' })
+        await member(s, second, 'Боря')
+        const all = await ok<{ v: number; exportedAt: number; backups: Record<string, unknown>[] }>(exportAll(s, password(PASSWORD)))
+        expect(all.v).toBe(PROTOCOL_VERSION)
+        expect(all.exportedAt).toBe(s.clock.now)
+        const byId = new Map(all.backups.map((b) => [b.roomId, b]))
+        expect([...byId.keys()].sort()).toEqual([first.roomId, second.roomId].sort())
+        for (const id of [first.roomId, second.roomId]) {
+          const one = await fullCopy(s, id)
+          delete one.v
+          expect(byId.get(id)).toEqual(one)
+        }
+      })
+
+      it('POST import: битая копия — 400, комната не тронута; копия участника, другой комнаты — 400; в комнату с данными — 409; загруженная — в списке комнат', async () => {
+        const s = await server()
+        const room = await create(s)
+        const borya = await member(s, room, 'Боря')
+        const copy = await fullCopy(s, room.roomId)
+        const log = copy.log as unknown[]
+        const t = await other(s)
+        const cases: [unknown, string][] = [
+          [null, BAD_BACKUP],
+          [{ ...copy, format: BACKUP_FORMAT + 1 }, UNKNOWN_FORMAT],
+          [{ ...copy, log: [log[1], log[0], ...log.slice(2)] }, BAD_LOG],
+          [{ ...copy, log: [...log, log[1]] }, LOG_ORDER],
+          [{ ...copy, store: { ...(copy.store as object), registry: { at: 1 } } }, BAD_STORE],
+          [await ok(exportOne(s, room.roomId, 'Bearer ' + borya.key)), NEED_FULL],
+        ]
+        for (const [body, error] of cases) await refused(importOne(t, room.roomId, body), 400, error)
+        expect((await t.send(`/rooms/${room.roomId}/import`, { method: 'POST', headers: { Authorization: password(PASSWORD) }, body: 'не JSON' })).status).toBe(400)
+        await refused(importOne(t, ulid(t.clock.now), copy), 400, OTHER_ROOM)
+        await refused(importOne(t, 'кривой', copy), 404, NO_ROOM)
+        expect(t.roomIds()).toEqual([])
+        // Годная — в пустую: журнал как есть, тот же ключ открывает комнату
+        expect(await ok(importOne(t, room.roomId, copy))).toEqual({ v: PROTOCOL_VERSION, roomId: room.roomId, entries: log.length })
+        expect(await readLog(t.storage(room.roomId))).toEqual(log)
+        expect(await members(t, room.roomId, borya.key)).toEqual(['Аня', 'Боря'])
+        // Второй раз и в исходную — комната уже есть
+        await refused(importOne(t, room.roomId, copy), 409, ROOM_EXISTS)
+        await refused(importOne(s, room.roomId, copy), 409, ROOM_EXISTS)
+        // Загруженная комната — в выгрузке всех комнат нового сервера
+        const all = await ok<{ backups: { roomId: string }[] }>(exportAll(t, password(PASSWORD)))
+        expect(all.backups.map((b) => b.roomId)).toEqual([room.roomId])
+      })
+
+      it('круг: событие, пари, суд и переводы — выгрузил на одной обёртке, загрузил в пустую на другой: ответ комнаты тем же ключам тот же', async () => {
+        const s = await server()
+        const room = await create(s)
+        const borya = await member(s, room, 'Боря')
+        const vera = await member(s, room, 'Вера')
+        const gosha = await member(s, room, 'Гоша')
+        await member(s, room, 'Даша')
+        const id = room.roomId
+        // Событие: Боря — 300 на «Да», Вера — 100 на «Нет»
+        const eventForm = { v: PROTOCOL_VERSION, condition: 'Вася пробежит 10 км', check: 'Скрин', closesAt: s.clock.now + HOUR, expectedAt: s.clock.now + 2 * HOUR }
+        const { event } = await ok<CreateEventResponse>(send(s, id, 'events', eventForm, borya.key))
+        await ok(send(s, id, `events/${event.id}/bets`, { v: PROTOCOL_VERSION, outcome: '1', amount: 300 }, borya.key))
+        await ok(send(s, id, `events/${event.id}/bets`, { v: PROTOCOL_VERSION, outcome: '2', amount: 100 }, vera.key))
+        // Пари Гоши «3 к 1», приняла Вера
+        const offerForm = { v: PROTOCOL_VERSION, condition: 'Вася бросит курить', check: 'Скажет сам', odds: { a: 3, b: 1 }, amount: 300, closesAt: s.clock.now + HOUR, expectedAt: s.clock.now + DAY }
+        const { offer } = await ok<CreateOfferResponse>(send(s, id, 'offers', offerForm, gosha.key))
+        await ok(send(s, id, `offers/${offer.id}/accept`, { v: PROTOCOL_VERSION }, vera.key))
+        // Исход: Боря предложил «Да», через сутки утверждён — Вера подала апелляцию, суд собран
+        s.clock.now = event.closesAt
+        await ok(send(s, id, `events/${event.id}/propose`, { v: PROTOCOL_VERSION, outcome: '1' }, borya.key))
+        s.clock.now += DAY
+        await ok<AppealResponse>(send(s, id, `events/${event.id}/appeal`, { v: PROTOCOL_VERSION, reason: 'Скрин чужой' }, vera.key))
+        // Переводы: Вера перевела Боре 50, Боря получил
+        const sent = await ok<TransferResponse>(send(s, id, 'transfers', { v: PROTOCOL_VERSION, to: borya.memberId, amount: 50 }, vera.key))
+        await ok(send(s, id, `transfers/${sent.transfer.id}/receive`, { v: PROTOCOL_VERSION }, borya.key))
+        s.clock.now += HOUR
+        const people = [room, borya, vera, gosha]
+        const states = async (x: TestServer) => Promise.all(people.map((p) => ok<RoomStateResponse>(get(x, id, p.key))))
+        const before = await states(s)
+        expect(before[0].events[0].outcome?.appeal).toBeTruthy()
+        expect(before[0].offers?.[0].status).toBe('accepted')
+        expect(before[0].settlement?.transfers).toHaveLength(1)
+        const copy = await fullCopy(s, id)
+        // Туда: на другой обёртке — тот же ответ тем же ключам, та же копия
+        const t = await other(s)
+        await ok(importOne(t, id, copy))
+        expect(await states(t)).toEqual(before)
+        expect(await fullCopy(t, id)).toEqual(copy)
+        // И обратно: копия другой обёртки грузится в пустую комнату первой
+        const back = await server()
+        back.clock.now = s.clock.now
+        await ok(importOne(back, id, await fullCopy(t, id)))
+        expect(await states(back)).toEqual(before)
+        // Действие после загрузки работает: журнал дописывается дальше
+        await ok(send(t, id, 'transfers', { v: PROTOCOL_VERSION, to: borya.memberId, amount: 10 }, vera.key))
+        expect((await readLog(t.storage(id))).length).toBe((copy.log as unknown[]).length + 1)
       })
     })
 

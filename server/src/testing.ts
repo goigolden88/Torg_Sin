@@ -1,7 +1,8 @@
 // Подделки для тестов: хранилище кладёт значения JSON-строкой (как настоящее — между
 // вызовами в памяти ничего не держится) и помнит каждую запись; комнаты — по номеру
 import { handle, type RoomsDeps } from './http'
-import { act, createRoom, roomState, type RoomStorage } from './room'
+import { addRoom, listRooms } from './registry'
+import { act, createRoom, exportRoom, importRoom, registerOnce, roomState, type RoomStorage } from './room'
 import { perKey } from './serial'
 
 export class FakeStorage implements RoomStorage {
@@ -46,8 +47,10 @@ export function testSeeds(): { seeds: string[]; next: () => string } {
   return { seeds, next: () => seeds.shift() ?? (++n).toString(16).padStart(32, '0') }
 }
 
-// Сервер в памяти: хранилище на каждый номер комнаты, время задаёт тест
-export function fakeServer(password: string | undefined): TestServer & { deps: RoomsDeps } {
+// Сервер в памяти, как на Cloudflare (index.ts): хранилище на каждый номер комнаты и реестр комнат —
+// комната отмечается в нём один раз (registerOnce); время задаёт тест. registered — номера комнат по
+// порядку вызовов реестра
+export function fakeServer(password: string | undefined): TestServer & { deps: RoomsDeps; registry: FakeStorage; registered: string[] } {
   const rooms = new Map<string, FakeStorage>()
   const clock = { now: START_TIME }
   const storage = (roomId: string) => {
@@ -57,15 +60,44 @@ export function fakeServer(password: string | undefined): TestServer & { deps: R
   }
   const serial = perKey() // как объект Room: вызовы комнаты по одному
   const random = testSeeds()
+  const registry = new FakeStorage()
+  const registered: string[] = []
+  const register = (roomId: string) =>
+    registerOnce(
+      storage(roomId),
+      async (entry) => {
+        registered.push(entry.roomId)
+        await addRoom(registry, entry)
+      },
+      clock.now,
+    )
+  // Вызов комнаты: старая комната сначала встаёт в реестр (как Room в index.ts)
+  const inRoom = <T>(roomId: string, run: (s: FakeStorage) => Promise<T>) =>
+    serial(roomId, async () => {
+      await register(roomId)
+      return run(storage(roomId))
+    })
+  // Создание и загрузка: комната — в реестр сразу после
+  const thenRegister = <T>(roomId: string, run: (s: FakeStorage) => Promise<T>) =>
+    serial(roomId, async () => {
+      const r = await run(storage(roomId))
+      await register(roomId)
+      return r
+    })
   const deps: RoomsDeps = {
     password,
     now: () => clock.now,
-    create: (input) => serial(input.roomId, () => createRoom(storage(input.roomId), input, clock.now)),
-    state: (roomId, keyHash) => serial(roomId, () => roomState(storage(roomId), keyHash, clock.now, random.next)),
-    act: (roomId, action) => serial(roomId, () => act(storage(roomId), action, clock.now, random.next)),
+    create: (input) => thenRegister(input.roomId, (s) => createRoom(s, input, clock.now)),
+    state: (roomId, keyHash) => inRoom(roomId, (s) => roomState(s, keyHash, clock.now, random.next)),
+    act: (roomId, action) => inRoom(roomId, (s) => act(s, action, clock.now, random.next)),
+    backup: (roomId, keyHash) => inRoom(roomId, (s) => exportRoom(s, keyHash, clock.now)),
+    restore: (roomId, backup) => thenRegister(roomId, (s) => importRoom(s, backup)),
+    roomIds: async () => (await listRooms(registry)).map((e) => e.roomId),
   }
   return {
     deps,
+    registry,
+    registered,
     send: (path, init) => handle(new Request('https://x' + path, init), deps),
     roomIds: () => [...rooms].filter(([, s]) => s.data.size > 0).map(([id]) => id),
     storage,

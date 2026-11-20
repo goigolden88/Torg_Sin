@@ -9,7 +9,16 @@ workers_dev = true
 name = "ROOMS"
 class_name = "Room"
 
+# Реестр комнат (этап 6): один объект на сервер — номера всех комнат для выгрузки
+[[durable_objects.bindings]]
+name = "REGISTRY"
+class_name = "Registry"
+
 # Бесплатный план — только объекты на SQLite
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["Room"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["Registry"]

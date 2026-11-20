@@ -10,6 +10,7 @@ import {
 import { checkAmount, checkClarification, checkEventInput, checkObjection, checkReason, eventView } from '../../src/rules/event'
 import { BAD_GUARANTOR, BAD_MARK, BAD_ODDS, checkOfferInput, MAX_ODDS, MIN_ODDS, NO_OFFER, offerView, type Odds } from '../../src/rules/offer'
 import { appealReason, caseOf, courtVote, NOT_SEAT, replaceReason } from '../../src/rules/appeal'
+import { checkBackup, type Backup } from '../../src/rules/backup'
 import { checkMemberName, checkRoomInput } from '../../src/rules/room'
 import {
   BAD_MODE,
@@ -29,9 +30,11 @@ import {
   NO_ROOM,
   type ActionResult,
   type ActionType,
+  type BackupResult,
   type CourtKind,
   type CreateInput,
   type CreateResult,
+  type RestoreResult,
   type RoomAction,
   type StateResult,
   type TransferAnswer,
@@ -54,6 +57,8 @@ export const BAD_REQUEST_ID = 'Неверный номер запроса'
 export const NEED_KEY = 'Нет доступа: нужен ключ телефона'
 export const NEED_CLOSE = 'Нужен срок «приём до»'
 export const NEED_PARTY = 'Укажите одно: кому перевели или от кого получили'
+export const BACKUP_OFF = 'Выгрузка и загрузка комнат выключены'
+export const OTHER_ROOM = 'Копия другой комнаты: номер в адресе и в копии разный'
 
 export function json(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -87,6 +92,11 @@ export type RoomsDeps = {
   state: (roomId: string, keyHash: string) => Promise<StateResult>
   // Остальные действия комнаты (room.ts, act) — по одному, в очереди комнаты
   act: <K extends ActionType>(roomId: string, action: Extract<RoomAction, { type: K }>) => Promise<ActionResult<K>>
+  // Копия комнаты (этап 6, room.ts): keyHash — копия участника, null — полная; загрузка — в пустую
+  backup: (roomId: string, keyHash: string | null) => Promise<BackupResult>
+  restore: (roomId: string, backup: Backup) => Promise<RestoreResult>
+  // Номера всех комнат сервера: Cloudflare — из реестра комнат, Node — из своей базы
+  roomIds: () => Promise<string[]>
 }
 
 type Reply<T> = { status: number; body: T | ErrorResponse }
@@ -108,6 +118,17 @@ export async function handle(request: Request, deps: RoomsDeps): Promise<Respons
   const match = /^\/rooms\/([^/]+)$/.exec(path)
   if (match && request.method === 'GET') {
     const r = await getRoom(match[1],request.headers.get('Authorization'), deps)
+    return json(r.status, r.body)
+  }
+  // Копия комнаты (этап 6): GET /export — все комнаты, GET /rooms/<номер>/export, POST /rooms/<номер>/import
+  if (path === '/export' && request.method === 'GET') {
+    const r = await exportAll(request.headers.get('Authorization'), deps)
+    return json(r.status, r.body)
+  }
+  const copy = /^\/rooms\/([^/]+)\/(export|import)$/.exec(path)
+  if (copy && request.method === (copy[2] === 'export' ? 'GET' : 'POST')) {
+    const authorization = request.headers.get('Authorization')
+    const r = copy[2] === 'export' ? await exportOne(copy[1], authorization, deps) : await importOne(copy[1], authorization, request, deps)
     return json(r.status, r.body)
   }
   const sub = /^\/rooms\/([^/]+)\/(preview|join|requests|admit|reject|invite|device|device\/claim)$/.exec(path)
@@ -561,6 +582,79 @@ export async function claimDevice(roomId: string, raw: unknown, deps: RoomsDeps)
   if (typeof token !== 'string' || !token || !ULID_PATTERN.test(roomId)) return failure(403, BAD_DEVICE_LINK)
   const key = randomToken(32)
   return reply(await deps.act(roomId, { type: 'claimDevice', tokenHash: await hashKey(token), keyHash: await hashKey(key) }), { key })
+}
+
+// --- Копия комнаты (этап 6, Р-02; формат — src/rules/backup.ts). Пароль компании — в заголовке
+// Authorization: Password <пароль в base64 из UTF-8> (кириллицу заголовок как есть не несёт); ключ
+// участника — как у чтения: Bearer <ключ>
+
+// Пароль из заголовка; другой способ или кривой base64 — undefined
+function passwordOf(authorization: string | null): string | undefined {
+  const encoded = /^Password\s+(\S+)$/i.exec(authorization ?? '')?.[1]
+  if (encoded === undefined) return undefined
+  try {
+    const bytes = Uint8Array.from(atob(encoded), (c) => c.charCodeAt(0))
+    return new TextDecoder('utf-8', { fatal: true, ignoreBOM: false }).decode(bytes)
+  } catch {
+    return undefined
+  }
+}
+
+// Пароль компании для выгрузки и загрузки — до всего остального: на сервере не задан — 503 (как у
+// создания комнаты), неверный, пустой или его нет — 403. Годен — null
+function passwordRefusal(authorization: string | null, deps: RoomsDeps): Reply<never> | null {
+  if (!deps.password) return failure(503, BACKUP_OFF)
+  const given = passwordOf(authorization)
+  if (given === undefined || !samePassword(given, deps.password)) return failure(403, WRONG_PASSWORD)
+  return null
+}
+
+// Копия в ответе — сами поля копии и версия протокола: тело ответа годится для загрузки как есть
+function backupReply(r: BackupResult): Reply<unknown> {
+  if (!r.ok) return failure(r.status, r.error, r.join)
+  return { status: 200, body: { v: PROTOCOL_VERSION, ...r.backup } }
+}
+
+// GET /export с паролем компании → { v, exportedAt, backups: [полная копия…] } — все комнаты сервера
+// (номера — из реестра или базы); номер без комнаты пропускается
+export async function exportAll(authorization: string | null, deps: RoomsDeps): Promise<Reply<unknown>> {
+  const refused = passwordRefusal(authorization, deps)
+  if (refused) return refused
+  const backups: Backup[] = []
+  for (const roomId of await deps.roomIds()) {
+    if (!ULID_PATTERN.test(roomId)) continue
+    const r = await deps.backup(roomId, null)
+    if (r.ok) backups.push(r.backup)
+  }
+  return { status: 200, body: { v: PROTOCOL_VERSION, exportedAt: deps.now(), backups } }
+}
+
+// GET /rooms/<номер>/export: с паролем компании — полная копия, с ключом участника — копия участника
+// (только журнал; не участник и заявка — отказы, как у чтения)
+export async function exportOne(roomId: string, authorization: string | null, deps: RoomsDeps): Promise<Reply<unknown>> {
+  if (/^Password(\s|$)/i.test(authorization ?? '')) {
+    const refused = passwordRefusal(authorization, deps)
+    if (refused) return refused
+    if (!ULID_PATTERN.test(roomId)) return failure(404, NO_ROOM)
+    return backupReply(await deps.backup(roomId, null))
+  }
+  return withKey(roomId, authorization, async (keyHash) => backupReply(await deps.backup(roomId, keyHash)))
+}
+
+// POST /rooms/<номер>/import с паролем компании, тело — полная копия → { v, roomId, entries } (сколько
+// записей журнала). Битая копия (checkBackup) — 400, комнату не трогаем; копия другой комнаты — 400;
+// в комнате уже что-то есть — 409. Версию протокола тела не сверяем: копию старого сервера тоже грузим
+export async function importOne(roomId: string, authorization: string | null, request: Request, deps: RoomsDeps): Promise<Reply<unknown>> {
+  const refused = passwordRefusal(authorization, deps)
+  if (refused) return refused
+  if (!ULID_PATTERN.test(roomId)) return failure(404, NO_ROOM)
+  const raw: unknown = await request.json().catch(() => null)
+  const checked = checkBackup(raw, 'full')
+  if (!checked.ok) return failure(400, checked.error)
+  if (checked.backup.roomId !== roomId) return failure(400, OTHER_ROOM)
+  const r = await deps.restore(roomId, checked.backup)
+  if (!r.ok) return failure(r.status, r.error, r.join)
+  return { status: 200, body: { v: PROTOCOL_VERSION, roomId: r.roomId, entries: r.entries } }
 }
 
 // POST /rooms: пароль компании → проверка формы → комната. Пароль проверяется до всего

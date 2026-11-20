@@ -5,7 +5,7 @@ import type { Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { handle } from '../src/http'
 import { randomSeed } from '../src/keys'
-import { act, createRoom, roomState, type RoomStorage } from '../src/room'
+import { act, createRoom, exportRoom, importRoom, roomState, type RoomStorage } from '../src/room'
 import { perKey } from '../src/serial'
 import { Alarms } from './alarms'
 import { listen } from './listen'
@@ -66,6 +66,10 @@ export async function startServer(options: NodeServerOptions): Promise<NodeServe
           create: (input) => serial(input.roomId, () => createRoom(storage(input.roomId), input, now())),
           state: (roomId, keyHash) => serial(roomId, () => roomState(storage(roomId), keyHash, now(), seed)),
           act: (roomId, action) => serial(roomId, () => act(storage(roomId), action, now(), seed)),
+          backup: (roomId, keyHash) => serial(roomId, () => exportRoom(storage(roomId), keyHash, now())),
+          restore: (roomId, backup) => serial(roomId, () => importRoom(storage(roomId), backup)),
+          // Реестр комнат не нужен: список — из своей базы (этап 6)
+          roomIds: async () => rooms.roomIds(),
         }),
       options.port,
       options.host,
