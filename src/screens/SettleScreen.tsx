@@ -153,13 +153,18 @@ export function SettleScreen({ room, onUpdate }: { room: SavedRoom; onUpdate: (r
         )}
 
         {!points && <ModeLine settlement={s} change={change} online={online} onChange={() => setAsk({ kind: 'mode' })} />}
-
-        {!empty && <MembersTable room={room} settlement={s} points={points} />}
       </div>
 
       {!points && (
         <div className="event-side">
           <Transfers room={room} settlement={s} online={online} onAct={(transfer, button) => setAsk({ kind: 'act', transfer, button })} />
+        </div>
+      )}
+
+      {/* Таблица — под обеими колонками: пять столбцов в одной колонке переносили бы суммы */}
+      {!empty && (
+        <div className="settle-all">
+          <MembersTable room={room} settlement={s} points={points} />
         </div>
       )}
 
@@ -273,7 +278,7 @@ function MembersTable({ room, settlement, points }: { room: SavedRoom; settlemen
               <td data-label="В игре">{cell(sumText(m.inPlay.amount, room.currency), basisText(m.inPlay))}</td>
               {!points && (
                 <td data-label="Баланс" className={tone(m.balance)}>
-                  {signedSum(m.balance, room.currency)}
+                  <span>{signedSum(m.balance, room.currency)}</span>
                 </td>
               )}
             </tr>
@@ -474,8 +479,8 @@ function ModeWindow({
       : { form: formKey(room.id, 'settle-mode', mode), run: (requestId) => changeSettleMode(room.server, room.id, room.key, { mode, requestId }) }
   return (
     <Window question="Кто кому переводит?" button="Сменить режим" busyLabel="Меняю…" busy={busy} roomId={room.id} prepare={prepare} onClose={onClose} onDone={onDone} focusButton={false}>
-      <fieldset className="field">
-        <legend className="hint">Режим видят все; когда отмечены переводы, меняется, только когда все в расчёте.</legend>
+      <p className="hint">Режим видят все; когда отмечены переводы, меняется, только когда все в расчёте.</p>
+      <fieldset className="field" aria-label="Режим «кто кому»">
         {MODES.map((m) => (
           <label key={m} className="check">
             <input type="radio" name="settle-mode" value={m} checked={mode === m} onChange={() => setMode(m)} autoFocus={m === mode} />

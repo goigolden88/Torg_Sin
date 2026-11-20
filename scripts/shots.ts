@@ -26,6 +26,7 @@ import { offers } from './shots/offers.ts'
 import { outcomes } from './shots/outcomes.ts'
 import { pasteLink } from './shots/paste-link.ts'
 import { points } from './shots/points.ts'
+import { settle } from './shots/settle.ts'
 import { scenario } from './shots/start.ts'
 import { subjects } from './shots/subjects.ts'
 
@@ -98,6 +99,11 @@ const SCENARIOS: Scenario[] = [
   { name: 'paste-link', about: '«Вставить ссылку» и заметка про экран «Домой» на iPhone (64–68)', perSize: (c, size) => pasteLink(c.cdp, size, c.startServer) },
   { name: 'subjects', about: 'предмет спора: событие и пари о ком-то, пометки (91–98)', perSize: (c, size) => subjects(c.cdp, size, c.startServer) },
   { name: 'known', about: '«Исход уже известен»: досрочно в событии и в пари (99–106)', perSize: (c, size) => known(c.cdp, size, c.startServer) },
+  {
+    name: 'settle',
+    about: '«Расчёт»: пусто, блок в комнате, по ставкам и меньше переводов, «Перевёл», смена режима, создание, таблица очков, карточки (110–118)',
+    perSize: (c, size) => settle(c.cdp, size, c.startServer),
+  },
   {
     name: 'layout',
     about: 'раскладка компьютера на 1280 и 1920 px: меню развёрнуто и свёрнуто (21–23)',
