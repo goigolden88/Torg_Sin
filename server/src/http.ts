@@ -21,6 +21,7 @@ import {
   type SettleMode,
 } from '../../src/rules/settle'
 import { ulid } from '../../src/rules/ulid'
+import { collectBackups } from './backup'
 import { deriveCreation, hashKey, randomToken, sameText, ULID_PATTERN } from './keys'
 import {
   BAD_DEVICE_LINK,
@@ -616,16 +617,11 @@ function backupReply(r: BackupResult): Reply<unknown> {
 }
 
 // GET /export с паролем компании → { v, exportedAt, backups: [полная копия…] } — все комнаты сервера
-// (номера — из реестра или базы); номер без комнаты пропускается
+// (номера — из реестра или базы; collectBackups — та же, что у суточной копии); номер без комнаты пропускается
 export async function exportAll(authorization: string | null, deps: RoomsDeps): Promise<Reply<unknown>> {
   const refused = passwordRefusal(authorization, deps)
   if (refused) return refused
-  const backups: Backup[] = []
-  for (const roomId of await deps.roomIds()) {
-    if (!ULID_PATTERN.test(roomId)) continue
-    const r = await deps.backup(roomId, null)
-    if (r.ok) backups.push(r.backup)
-  }
+  const backups = await collectBackups(deps)
   return { status: 200, body: { v: PROTOCOL_VERSION, exportedAt: deps.now(), backups } }
 }
 
