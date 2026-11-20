@@ -117,6 +117,17 @@ import {
   type VoteOutcomeResponse,
 } from '../../src/rules/protocol'
 import * as A from '../../src/rules/appeal'
+import * as T from '../../src/rules/settle'
+import {
+  isSettlementView,
+  isSettleModeResponse,
+  isTransferResponse,
+  type MemberSettlementView,
+  type SettlementView,
+  type SettleModeResponse,
+  type TransferResponse,
+  type TransferView,
+} from '../../src/rules/protocol'
 import {
   isAppealResponse,
   isJoinAppealResponse,
@@ -129,7 +140,7 @@ import {
 } from '../../src/rules/protocol'
 import { BAD_CURRENCY, LONG_MEMBER_NAME, LONG_ROOM_NAME, NAME_TAKEN, NEED_MEMBER_NAME, NEED_ROOM_NAME } from '../../src/rules/room'
 import { ulid } from '../../src/rules/ulid'
-import { BAD_REQUEST_ID, CREATION_OFF, NEED_CLOSE, NEED_KEY, WRONG_PASSWORD } from './http'
+import { BAD_REQUEST_ID, CREATION_OFF, NEED_CLOSE, NEED_KEY, NEED_PARTY, WRONG_PASSWORD } from './http'
 import { hashKey } from './keys'
 import {
   AGREE_BETTORS_ONLY,
@@ -380,6 +391,22 @@ export function roomsSuite(storageName: string, start: (password: string | undef
           me: created.memberId,
           events: [],
           offers: [],
+          settlement: {
+            mode: 'stakes',
+            members: [
+              {
+                memberId: created.memberId,
+                total: { amount: 0, events: 0, offers: 0 },
+                pending: { amount: 0, events: 0, offers: 0 },
+                inPlay: { amount: 0, events: 0, offers: 0 },
+                sent: 0,
+                received: 0,
+                balance: 0,
+              },
+            ],
+            transfers: [],
+            suggestions: [],
+          },
           now: s.clock.now,
         })
       })
@@ -2786,6 +2813,406 @@ export function roomsSuite(storageName: string, start: (password: string | undef
         }
         await refused(appeal(vera.key, late.id, { reason: 'а', requestId: 'abc' }), 400, BAD_REQUEST_ID)
         expect(await courtEntries(s, room.roomId)).toEqual([])
+      })
+    })
+
+    describe('расчёт и переводы (Р-32)', () => {
+      const HOUR = 60 * 60 * 1000
+      const DAY = 24 * HOUR
+      const SEED = 'cd'.repeat(16)
+      const ZERO = { amount: 0, events: 0, offers: 0 }
+
+      // Комната: Аня — ведущая, Боря, Вера и Гоша — участники
+      async function room4(s: TestServer, form: unknown = FORM) {
+        const room = await create(s, form)
+        const borya = await member(s, room, 'Боря')
+        const vera = await member(s, room, 'Вера')
+        const gosha = await member(s, room, 'Гоша')
+        return { room, borya, vera, gosha }
+      }
+
+      function transfer(s: TestServer, roomId: string, key: string | undefined, body: Record<string, unknown>) {
+        return send(s, roomId, 'transfers', { v: PROTOCOL_VERSION, ...body }, key)
+      }
+
+      function transferAct(s: TestServer, roomId: string, key: string | undefined, id: string, action: string, body: Record<string, unknown> = {}) {
+        return send(s, roomId, `transfers/${id}/${action}`, { v: PROTOCOL_VERSION, ...body }, key)
+      }
+
+      async function moved(r: Promise<Response>): Promise<TransferView> {
+        const body = await ok<TransferResponse>(r)
+        expect(isTransferResponse(body)).toBe(true)
+        return body.transfer
+      }
+
+      function setMode(s: TestServer, roomId: string, key: string, body: Record<string, unknown>) {
+        return send(s, roomId, 'settle-mode', { v: PROTOCOL_VERSION, ...body }, key)
+      }
+
+      async function settlementOf(s: TestServer, roomId: string, key: string): Promise<SettlementView> {
+        const state = await ok<RoomStateResponse>(get(s, roomId, key))
+        expect(isRoomStateResponse(state)).toBe(true)
+        expect(isSettlementView(state.settlement)).toBe(true)
+        return state.settlement as SettlementView
+      }
+
+      function row(memberId: string, change: Partial<MemberSettlementView> = {}): MemberSettlementView {
+        return { memberId, total: ZERO, pending: ZERO, inPlay: ZERO, sent: 0, received: 0, balance: 0, ...change }
+      }
+
+      async function settleEntries(s: TestServer, roomId: string): Promise<string[]> {
+        return (await readLog(s.storage(roomId))).map((e) => e.type).filter((t) => t.startsWith('transfer.') || t === 'room.settle-mode')
+      }
+
+      // Пари «3 к 1», 300 автора и 100 соперника; гарант — ведущая; обе стороны отметили winner —
+      // окончательное сразу. Прав автор — автору +100; прав соперник — сопернику +300
+      async function finalOffer(s: TestServer, roomId: string, author: JoinRoomResponse, taker: JoinRoomResponse, winner: 'author' | 'taker') {
+        const form = { v: PROTOCOL_VERSION, condition: 'Вася бросит курить', check: 'Скажет сам', odds: { a: 3, b: 1 }, amount: 300, closesAt: s.clock.now + HOUR, expectedAt: s.clock.now + DAY }
+        const { offer } = await ok<CreateOfferResponse>(send(s, roomId, 'offers', form, author.key))
+        await ok(send(s, roomId, `offers/${offer.id}/accept`, { v: PROTOCOL_VERSION }, taker.key))
+        for (const side of [author, taker]) await ok(send(s, roomId, `offers/${offer.id}/mark`, { v: PROTOCOL_VERSION, winner }, side.key))
+        return offer
+      }
+
+      it('«Перевёл» → «Получил»: записи журнала transfer.*, перевод и свод — у всех участников', async () => {
+        const s = await server()
+        const { room, borya, vera, gosha } = await room4(s)
+        await finalOffer(s, room.roomId, borya, vera, 'taker')
+        const before = await settlementOf(s, room.roomId, gosha.key)
+        expect(before.suggestions).toEqual([{ from: borya.memberId, to: vera.memberId, amount: 300 }])
+        // Боря — «Перевёл» Вере 300: ждёт подтверждения, в балансе уже считается
+        s.clock.now += 1000
+        const sentAt = s.clock.now
+        const sent = await moved(transfer(s, room.roomId, borya.key, { to: vera.memberId, amount: 300 }))
+        expect(sent).toEqual({ id: expect.stringMatching(/^[0-9A-HJKMNP-TV-Z]{26}$/), at: sentAt, from: borya.memberId, to: vera.memberId, amount: 300, by: 'sender', status: 'pending', changedAt: sentAt })
+        const log = await readLog(s.storage(room.roomId))
+        expect(log.at(-1)).toEqual({ id: sent.id, at: sentAt, memberId: borya.memberId, type: 'transfer.sent', to: vera.memberId, amount: 300, requestId: expect.any(String) })
+        const settled = {
+          mode: 'stakes',
+          members: [
+            row(room.memberId),
+            row(borya.memberId, { total: { amount: -300, events: 0, offers: 1 }, sent: 300 }),
+            row(vera.memberId, { total: { amount: 300, events: 0, offers: 1 }, received: 300 }),
+            row(gosha.memberId),
+          ],
+          transfers: [sent],
+          suggestions: [],
+        }
+        for (const key of [room.key, borya.key, vera.key, gosha.key]) expect(await settlementOf(s, room.roomId, key)).toEqual(settled)
+        // Вера — «Получил»: перевод получен
+        s.clock.now += 1000
+        const received = await moved(transferAct(s, room.roomId, vera.key, sent.id, 'receive'))
+        expect(received).toEqual({ ...sent, status: 'received', changedAt: s.clock.now })
+        expect((await readLog(s.storage(room.roomId))).at(-1)).toEqual({ id: expect.any(String), at: s.clock.now, memberId: vera.memberId, type: 'transfer.received', transfer: sent.id, requestId: expect.any(String) })
+        expect(await settlementOf(s, room.roomId, borya.key)).toEqual({ ...settled, transfers: [received] })
+        expect(await settleEntries(s, room.roomId)).toEqual(['transfer.sent', 'transfer.received'])
+      })
+
+      it('«Не получал», отмена своей отметки и «Получил» сам — новыми записями; из неподходящего состояния — 409', async () => {
+        const s = await server()
+        const { room, borya, vera } = await room4(s)
+        const id = room.roomId
+        // «Не получал» — перевод отклонён и в балансе не считается; отменять его нечего
+        const t1 = await moved(transfer(s, id, borya.key, { to: vera.memberId, amount: 100 }))
+        expect(await moved(transferAct(s, id, vera.key, t1.id, 'reject'))).toMatchObject({ status: 'rejected' })
+        await refused(transferAct(s, id, borya.key, t1.id, 'cancel'), 409, T.ALREADY_REJECTED)
+        await refused(transferAct(s, id, vera.key, t1.id, 'receive'), 409, T.ALREADY_REJECTED)
+        // Должник отменил своё «Перевёл» — перевод отменён
+        const t2 = await moved(transfer(s, id, borya.key, { to: vera.memberId, amount: 50 }))
+        expect(await moved(transferAct(s, id, borya.key, t2.id, 'cancel'))).toMatchObject({ status: 'cancelled' })
+        await refused(transferAct(s, id, borya.key, t2.id, 'cancel'), 409, T.TRANSFER_CANCELLED)
+        await refused(transferAct(s, id, vera.key, t2.id, 'receive'), 409, T.TRANSFER_CANCELLED)
+        // Получатель подтвердил — должник уже не отменяет; получатель отменил своё «Получил» — снова ждёт
+        const t3 = await moved(transfer(s, id, borya.key, { to: vera.memberId, amount: 70 }))
+        await refused(transferAct(s, id, vera.key, t3.id, 'cancel'), 409, T.NOTHING_TO_REVOKE)
+        await moved(transferAct(s, id, vera.key, t3.id, 'receive'))
+        await refused(transferAct(s, id, vera.key, t3.id, 'receive'), 409, T.ALREADY_RECEIVED)
+        await refused(transferAct(s, id, borya.key, t3.id, 'cancel'), 409, T.RECEIVED_NO_REVOKE)
+        expect(await moved(transferAct(s, id, vera.key, t3.id, 'cancel'))).toMatchObject({ status: 'pending' })
+        // «Получил» сам, без «Перевёл»: сразу получен; отмена — отменён
+        const t4 = await moved(transfer(s, id, vera.key, { from: borya.memberId, amount: 30 }))
+        expect(t4).toMatchObject({ from: borya.memberId, to: vera.memberId, amount: 30, by: 'receiver', status: 'received' })
+        expect((await readLog(s.storage(id))).at(-1)).toMatchObject({ type: 'transfer.received', memberId: vera.memberId, from: borya.memberId, amount: 30 })
+        expect(await moved(transferAct(s, id, vera.key, t4.id, 'cancel'))).toMatchObject({ status: 'cancelled' })
+        // Свод: в балансе — только «ждёт подтверждения» (t3)
+        const settlement = await settlementOf(s, id, room.key)
+        expect(settlement.transfers.map((t) => [t.id, t.status])).toEqual([
+          [t1.id, 'rejected'],
+          [t2.id, 'cancelled'],
+          [t3.id, 'pending'],
+          [t4.id, 'cancelled'],
+        ])
+        expect(settlement.members.find((m) => m.memberId === borya.memberId)).toMatchObject({ sent: 70, balance: 70 })
+        expect(settlement.members.find((m) => m.memberId === vera.memberId)).toMatchObject({ received: 70, balance: -70 })
+        expect(await settleEntries(s, id)).toEqual([
+          'transfer.sent',
+          'transfer.rejected',
+          'transfer.sent',
+          'transfer.revoked',
+          'transfer.sent',
+          'transfer.received',
+          'transfer.revoked',
+          'transfer.received',
+          'transfer.revoked',
+        ])
+      })
+
+      it('отказы: не участник, не своя сторона, сам себе, кривое тело, нет перевода — без записи', async () => {
+        const s = await server()
+        const { room, borya, vera, gosha } = await room4(s)
+        const id = room.roomId
+        const t = await moved(transfer(s, id, borya.key, { to: vera.memberId, amount: 100 }))
+        const waiting = await join(s, room, 'Даша')
+        const before = await logSnapshot(s.storage(id))
+        // Не своя сторона: «Получил» и «Не получал» — только получатель; отменить — только своё
+        await refused(transferAct(s, id, gosha.key, t.id, 'receive'), 403, T.ONLY_RECEIVER)
+        await refused(transferAct(s, id, borya.key, t.id, 'receive'), 403, T.ONLY_RECEIVER)
+        await refused(transferAct(s, id, gosha.key, t.id, 'reject'), 403, T.ONLY_RECEIVER)
+        await refused(transferAct(s, id, gosha.key, t.id, 'cancel'), 403, T.ONLY_OWN)
+        // Сам себе и не участник комнаты
+        await refused(transfer(s, id, borya.key, { to: borya.memberId, amount: 100 }), 400, T.SELF_TRANSFER)
+        await refused(transfer(s, id, borya.key, { from: borya.memberId, amount: 100 }), 400, T.SELF_TRANSFER)
+        await refused(transfer(s, id, borya.key, { to: ulid(s.clock.now), amount: 100 }), 400, T.NOT_MEMBER)
+        await refused(transfer(s, id, borya.key, { from: 'кто-то', amount: 100 }), 400, T.NOT_MEMBER)
+        await refused(transfer(s, id, borya.key, { to: 5, amount: 100 }), 400, T.NOT_MEMBER)
+        // Ключ не участника: заявка, которую не впустили, чужой ключ, без ключа
+        await refused(transfer(s, id, waiting.key, { to: vera.memberId, amount: 100 }), 403, WAITING, 'waiting')
+        await refused(transfer(s, id, 'not-a-member-key', { to: vera.memberId, amount: 100 }), 403, WRONG_KEY)
+        await refused(transferAct(s, id, 'not-a-member-key', t.id, 'receive'), 403, WRONG_KEY)
+        await refused(transfer(s, id, undefined, { to: vera.memberId, amount: 100 }), 403, NEED_KEY)
+        // Кривое тело: кому и от кого — одно; сумма — целое > 0; номер запроса
+        await refused(transfer(s, id, borya.key, { to: vera.memberId, from: gosha.memberId, amount: 100 }), 400, NEED_PARTY)
+        await refused(transfer(s, id, borya.key, { amount: 100 }), 400, NEED_PARTY)
+        for (const amount of [0, -5, 1.5, '100', undefined]) await refused(transfer(s, id, borya.key, { to: vera.memberId, amount }), 400, BAD_AMOUNT)
+        await refused(transfer(s, id, borya.key, { to: vera.memberId, amount: 100, requestId: 'abc' }), 400, BAD_REQUEST_ID)
+        await refused(transferAct(s, id, vera.key, t.id, 'receive', { requestId: 'abc' }), 400, BAD_REQUEST_ID)
+        expect((await transfer(s, id, borya.key, { to: vera.memberId, amount: 100, v: PROTOCOL_VERSION + 1 })).status).toBe(400)
+        // Нет перевода — 404; чужой адрес — 404
+        await refused(transferAct(s, id, vera.key, ulid(s.clock.now), 'receive'), 404, T.NO_TRANSFER)
+        await refused(transferAct(s, id, vera.key, 'abc', 'receive'), 404, T.NO_TRANSFER)
+        expect((await transferAct(s, id, vera.key, t.id, 'delete')).status).toBe(404)
+        expect((await s.send(`/rooms/${id}/transfers`, { headers: { Authorization: 'Bearer ' + borya.key } })).status).toBe(404)
+        // Без тела ответ на перевод можно — пустой запрос (номер запроса — новый)
+        const r = await s.send(`/rooms/${id}/transfers/${t.id}/reject`, { method: 'POST', headers: { Authorization: 'Bearer ' + vera.key } })
+        expect(r.status).toBe(200)
+        const after = await logSnapshot(s.storage(id))
+        expect([...after].slice(0, before.size)).toEqual([...before])
+        expect(after.size).toBe(before.size + 1)
+      })
+
+      it('повтор с тем же requestId — тот же перевод без второй записи; другое содержимое или действие — 409', async () => {
+        const s = await server()
+        const { room, borya, vera, gosha } = await room4(s)
+        const id = room.roomId
+        const requestId = ulid(s.clock.now)
+        const first = await moved(transfer(s, id, borya.key, { to: vera.memberId, amount: 100, requestId }))
+        s.clock.now += 1000
+        expect(await moved(transfer(s, id, borya.key, { to: vera.memberId, amount: 100, requestId }))).toEqual(first)
+        await refused(transfer(s, id, borya.key, { to: vera.memberId, amount: 200, requestId }), 409, REQUEST_USED)
+        await refused(transfer(s, id, borya.key, { to: gosha.memberId, amount: 100, requestId }), 409, REQUEST_USED)
+        await refused(transfer(s, id, vera.key, { from: borya.memberId, amount: 100, requestId }), 409, REQUEST_USED)
+        await refused(transferAct(s, id, vera.key, first.id, 'receive', { requestId }), 409, REQUEST_USED)
+        // Ответ на перевод: повтор — перевод, каким он сейчас; тот же номер у другого ответа — 409
+        const answer = ulid(s.clock.now)
+        const received = await moved(transferAct(s, id, vera.key, first.id, 'receive', { requestId: answer }))
+        s.clock.now += 1000
+        expect(await moved(transferAct(s, id, vera.key, first.id, 'receive', { requestId: answer }))).toEqual(received)
+        await refused(transferAct(s, id, vera.key, first.id, 'reject', { requestId: answer }), 409, REQUEST_USED)
+        await refused(transferAct(s, id, vera.key, first.id, 'cancel', { requestId: answer }), 409, REQUEST_USED)
+        // «Получил» сам — повтор так же
+        const direct = ulid(s.clock.now)
+        const own = await moved(transfer(s, id, gosha.key, { from: vera.memberId, amount: 40, requestId: direct }))
+        expect(await moved(transfer(s, id, gosha.key, { from: vera.memberId, amount: 40, requestId: direct }))).toEqual(own)
+        await refused(transfer(s, id, gosha.key, { to: vera.memberId, amount: 40, requestId: direct }), 409, REQUEST_USED)
+        // Номер запроса другого действия комнаты (пари) — тоже занят
+        const offer = await finalOffer(s, id, borya, vera, 'author')
+        const offerRequest = (await readLog(s.storage(id))).find((e) => e.type === 'offer.created' && e.id === offer.id)
+        await refused(transfer(s, id, borya.key, { to: vera.memberId, amount: 1, requestId: (offerRequest as { requestId: string }).requestId }), 409, REQUEST_USED)
+        expect(await settleEntries(s, id)).toEqual(['transfer.sent', 'transfer.received', 'transfer.received'])
+        // Два одинаковых запроса одновременно — одна запись
+        const twice = ulid(s.clock.now)
+        const [a, b] = await Promise.all([
+          transfer(s, id, borya.key, { to: gosha.memberId, amount: 10, requestId: twice }),
+          transfer(s, id, borya.key, { to: gosha.memberId, amount: 10, requestId: twice }),
+        ])
+        expect([a.status, b.status]).toEqual([200, 200])
+        expect(await b.json()).toEqual(await a.json())
+        expect(await settleEntries(s, id)).toEqual(['transfer.sent', 'transfer.received', 'transfer.received', 'transfer.sent'])
+      })
+
+      it('свод: окончательное событие — в итоге, утверждённое — ждёт окончательности, без исхода — в игре; подсказка «по ставкам»', async () => {
+        const s = await server()
+        const { room, borya, vera, gosha } = await room4(s)
+        const id = room.roomId
+        const eventForm = { v: PROTOCOL_VERSION, condition: 'Вася пробежит 10 км', check: 'Скрин', closesAt: s.clock.now + HOUR, expectedAt: s.clock.now + 2 * HOUR }
+        const e1 = (await ok<CreateEventResponse>(send(s, id, 'events', eventForm, borya.key))).event
+        const e2 = (await ok<CreateEventResponse>(send(s, id, 'events', eventForm, gosha.key))).event
+        await ok(send(s, id, `events/${e1.id}/bets`, { v: PROTOCOL_VERSION, outcome: '1', amount: 300 }, borya.key))
+        await ok(send(s, id, `events/${e1.id}/bets`, { v: PROTOCOL_VERSION, outcome: '2', amount: 100 }, vera.key))
+        await ok(send(s, id, `events/${e2.id}/bets`, { v: PROTOCOL_VERSION, outcome: '1', amount: 200 }, gosha.key))
+        await ok(send(s, id, `events/${e2.id}/bets`, { v: PROTOCOL_VERSION, outcome: '2', amount: 100 }, vera.key))
+        // Ставки без исхода — в игре
+        expect((await settlementOf(s, id, room.key)).members).toEqual([
+          row(room.memberId),
+          row(borya.memberId, { inPlay: { amount: 300, events: 1, offers: 0 } }),
+          row(vera.memberId, { inPlay: { amount: 200, events: 2, offers: 0 } }),
+          row(gosha.memberId, { inPlay: { amount: 200, events: 1, offers: 0 } }),
+        ])
+        // Первое — досрочно «Да», Вера согласна: окончательное сразу (Р-21, Р-27); второе — «Да» после
+        // «приём до», сутки без возражения: утверждено, окончательное через 7 дней
+        await ok(send(s, id, `events/${e1.id}/propose`, { v: PROTOCOL_VERSION, outcome: '1' }, borya.key))
+        await ok(send(s, id, `events/${e1.id}/agree`, { v: PROTOCOL_VERSION }, vera.key))
+        s.clock.now = e2.closesAt
+        await ok(send(s, id, `events/${e2.id}/propose`, { v: PROTOCOL_VERSION, outcome: '1' }, gosha.key))
+        s.clock.now += DAY
+        const settlement = await settlementOf(s, id, vera.key)
+        expect(settlement).toEqual({
+          mode: 'stakes',
+          members: [
+            row(room.memberId),
+            row(borya.memberId, { total: { amount: 100, events: 1, offers: 0 }, balance: 100 }),
+            row(vera.memberId, { total: { amount: -100, events: 1, offers: 0 }, pending: { amount: -100, events: 1, offers: 0 }, balance: -100 }),
+            row(gosha.memberId, { pending: { amount: 100, events: 1, offers: 0 } }),
+          ],
+          transfers: [],
+          suggestions: [{ from: vera.memberId, to: borya.memberId, amount: 100 }],
+        })
+        // Через 7 дней второе окончательное — в итоге и в подсказке
+        s.clock.now += 7 * DAY
+        const later = await settlementOf(s, id, vera.key)
+        expect(later.members.find((m) => m.memberId === vera.memberId)).toEqual(row(vera.memberId, { total: { amount: -200, events: 2, offers: 0 }, balance: -200 }))
+        expect(later.suggestions).toHaveLength(2)
+        expect(later.suggestions).toEqual(
+          expect.arrayContaining([
+            { from: vera.memberId, to: borya.memberId, amount: 100 },
+            { from: vera.memberId, to: gosha.memberId, amount: 100 },
+          ]),
+        )
+      })
+
+      it('свод после решения суда по пари: до решения — в игре, «прав соперник» судом — в итоге', async () => {
+        const s = await server()
+        const { room, borya, vera, gosha } = await room4(s)
+        const dasha = await member(s, room, 'Даша')
+        const zhenya = await member(s, room, 'Женя')
+        const people = [room, borya, vera, gosha, dasha, zhenya]
+        const keyOf = (memberId: string) => people.find((p) => p.memberId === memberId)?.key ?? 'no-key'
+        const id = room.roomId
+        const form = { v: PROTOCOL_VERSION, condition: 'Вася бросит курить', check: 'Скажет сам', odds: { a: 3, b: 1 }, amount: 300, closesAt: s.clock.now + HOUR, expectedAt: s.clock.now + DAY }
+        const { offer } = await ok<CreateOfferResponse>(send(s, id, 'offers', form, borya.key))
+        const act = (key: string, action: string, body: Record<string, unknown> = {}) => send(s, id, `offers/${offer.id}/${action}`, { v: PROTOCOL_VERSION, ...body }, key)
+        await ok(act(vera.key, 'accept'))
+        // Гарант отказался, стороны не сошлись на новом 3 дня — суд сам (Р-31)
+        await ok(act(room.key, 'decline'))
+        const due = s.clock.now + NEED_GUARANTOR_TIME
+        await ok(act(borya.key, 'nominate', { guarantor: gosha.memberId }))
+        await ok(act(vera.key, 'nominate', { guarantor: dasha.memberId }))
+        s.clock.now = due
+        s.seeds.push(SEED)
+        const inPlay = await settlementOf(s, id, zhenya.key)
+        expect(inPlay.members.find((m) => m.memberId === borya.memberId)).toEqual(row(borya.memberId, { inPlay: { amount: 300, events: 0, offers: 1 } }))
+        expect(inPlay.members.find((m) => m.memberId === vera.memberId)).toEqual(row(vera.memberId, { inPlay: { amount: 100, events: 0, offers: 1 } }))
+        expect(inPlay.suggestions).toEqual([])
+        const order = A.drawCourt(SEED, [gosha.memberId, dasha.memberId, zhenya.memberId], room.memberId)
+        await ok(act(keyOf(order[0]), 'judge', { verdict: 'change', winner: 'taker' }))
+        await ok(act(keyOf(order[1]), 'judge', { verdict: 'change', winner: 'taker' }))
+        await ok(act(keyOf(order[2]), 'judge', { verdict: 'cancel' }))
+        const decided = await settlementOf(s, id, zhenya.key)
+        expect(decided.members.find((m) => m.memberId === borya.memberId)).toEqual(row(borya.memberId, { total: { amount: -300, events: 0, offers: 1 }, balance: -300 }))
+        expect(decided.members.find((m) => m.memberId === vera.memberId)).toEqual(row(vera.memberId, { total: { amount: 300, events: 0, offers: 1 }, balance: 300 }))
+        expect(decided.suggestions).toEqual([{ from: borya.memberId, to: vera.memberId, amount: 300 }])
+      })
+
+      it('режим при создании: с полем — в записи room.created и в своде; без поля — «по ставкам»; кривой — 400', async () => {
+        const s = await server()
+        const fewest = await create(s, { ...FORM, settleMode: 'fewest' })
+        expect((await readLog(s.storage(fewest.roomId)))[0]).toMatchObject({ type: 'room.created', settleMode: 'fewest' })
+        expect((await settlementOf(s, fewest.roomId, fewest.key)).mode).toBe('fewest')
+        const plain = await create(s)
+        expect('settleMode' in (await readLog(s.storage(plain.roomId)))[0]).toBe(false)
+        expect((await settlementOf(s, plain.roomId, plain.key)).mode).toBe('stakes')
+        const stakes = await create(s, { ...FORM, settleMode: 'stakes' })
+        expect((await settlementOf(s, stakes.roomId, stakes.key)).mode).toBe('stakes')
+        const rooms = s.roomIds()
+        for (const settleMode of ['меньше', null, 1]) {
+          const r = await post(s, { ...FORM, settleMode })
+          expect(r.status).toBe(400)
+          expect(await r.json()).toEqual({ v: PROTOCOL_VERSION, error: T.BAD_MODE })
+        }
+        expect(s.roomIds()).toEqual(rooms)
+        // Повтор создания: тот же режим — та же комната; другой — 409
+        const requestId = ulid(s.clock.now)
+        const first = await create(s, { ...FORM, requestId, settleMode: 'fewest' })
+        expect(await create(s, { ...FORM, requestId, settleMode: 'fewest' })).toEqual(first)
+        const other = await post(s, { ...FORM, requestId })
+        expect(other.status).toBe(409)
+        expect(await other.json()).toEqual({ v: PROTOCOL_VERSION, error: REQUEST_TAKEN })
+      })
+
+      it('смена режима: ведущий, пока переводов нет; не ведущий, тот же, кривой — отказ; после перевода — только когда все рассчитались', async () => {
+        const s = await server()
+        const { room, borya, vera, gosha } = await room4(s)
+        const id = room.roomId
+        // Боря должен Вере 100, Вера — Гоше 100: «по ставкам» — два перевода, «меньше переводов» — один
+        await finalOffer(s, id, vera, borya, 'author')
+        await finalOffer(s, id, gosha, vera, 'author')
+        const stakes = await settlementOf(s, id, borya.key)
+        expect(stakes.mode).toBe('stakes')
+        expect(stakes.suggestions).toHaveLength(2)
+        expect(stakes.suggestions).toEqual(
+          expect.arrayContaining([
+            { from: borya.memberId, to: vera.memberId, amount: 100 },
+            { from: vera.memberId, to: gosha.memberId, amount: 100 },
+          ]),
+        )
+        await refused(setMode(s, id, borya.key, { mode: 'fewest' }), 403, T.ONLY_HOST_MODE)
+        await refused(setMode(s, id, room.key, { mode: 'stakes' }), 409, T.SAME_MODE)
+        await refused(setMode(s, id, room.key, { mode: 'меньше' }), 400, T.BAD_MODE)
+        await refused(setMode(s, id, room.key, {}), 400, T.BAD_MODE)
+        expect(await settleEntries(s, id)).toEqual([])
+        // Ведущая сменила — запись room.settle-mode, режим и подсказка — у всех; повтор — без второй записи
+        const requestId = ulid(s.clock.now)
+        const changed = await ok<SettleModeResponse>(setMode(s, id, room.key, { mode: 'fewest', requestId }))
+        expect(isSettleModeResponse(changed)).toBe(true)
+        expect(changed.settleMode).toEqual({ id: expect.any(String), at: s.clock.now, by: room.memberId, mode: 'fewest' })
+        expect((await readLog(s.storage(id))).at(-1)).toEqual({ id: changed.settleMode.id, at: s.clock.now, memberId: room.memberId, type: 'room.settle-mode', mode: 'fewest', requestId })
+        s.clock.now += 1000
+        expect(await ok<SettleModeResponse>(setMode(s, id, room.key, { mode: 'fewest', requestId }))).toEqual(changed)
+        await refused(setMode(s, id, room.key, { mode: 'stakes', requestId }), 409, REQUEST_USED)
+        for (const key of [room.key, borya.key, vera.key, gosha.key]) {
+          const fewest = await settlementOf(s, id, key)
+          expect(fewest.mode).toBe('fewest')
+          expect(fewest.suggestions).toEqual([{ from: borya.memberId, to: gosha.memberId, amount: 100 }])
+        }
+        // Первый перевод — режим не меняется, пока не все рассчитались и перевод ждёт подтверждения
+        const t = await moved(transfer(s, id, borya.key, { to: gosha.memberId, amount: 100 }))
+        await refused(setMode(s, id, room.key, { mode: 'stakes' }), 409, T.MODE_LOCKED)
+        await moved(transferAct(s, id, gosha.key, t.id, 'receive'))
+        const settled = await settlementOf(s, id, room.key)
+        expect(settled.members.every((m) => m.balance === 0)).toBe(true)
+        expect(settled.suggestions).toEqual([])
+        // Все рассчитались — можно; «по ставкам» переводы пары вычитаются из долгов пары
+        await ok(setMode(s, id, room.key, { mode: 'stakes' }))
+        const back = await settlementOf(s, id, vera.key)
+        expect(back.mode).toBe('stakes')
+        expect(back.suggestions).toHaveLength(3)
+        expect(await settleEntries(s, id)).toEqual(['room.settle-mode', 'transfer.sent', 'transfer.received', 'room.settle-mode'])
+      })
+
+      it('комната на очки: переводы и смена режима — отказ правил; три числа в своде есть, подсказки нет', async () => {
+        const s = await server()
+        const { room, borya, vera } = await room4(s, { ...FORM, currency: 'PTS' })
+        const id = room.roomId
+        await finalOffer(s, id, borya, vera, 'taker')
+        await refused(transfer(s, id, borya.key, { to: vera.memberId, amount: 300 }), 409, T.NO_TRANSFERS)
+        await refused(transfer(s, id, vera.key, { from: borya.memberId, amount: 300 }), 409, T.NO_TRANSFERS)
+        await refused(transferAct(s, id, vera.key, ulid(s.clock.now), 'receive'), 409, T.NO_TRANSFERS)
+        await refused(setMode(s, id, room.key, { mode: 'fewest' }), 409, T.NO_TRANSFERS)
+        const settlement = await settlementOf(s, id, borya.key)
+        expect(settlement.members.find((m) => m.memberId === vera.memberId)).toEqual(row(vera.memberId, { total: { amount: 300, events: 0, offers: 1 }, balance: 300 }))
+        expect(settlement.transfers).toEqual([])
+        expect(settlement.suggestions).toEqual([])
+        expect(await settleEntries(s, id)).toEqual([])
       })
     })
 
