@@ -1,8 +1,9 @@
 // Сервер комнат на Cloudflare (Р-01): Worker принимает запросы, объект Room — одна комната, объект
-// Registry — реестр комнат (этап 6). Логика — в http.ts, room.ts, registry.ts и правилах src/rules/;
-// здесь только привязка к Cloudflare
+// Registry — реестр комнат (этап 6), scheduled — суточная копия комнат. Логика — в http.ts, room.ts,
+// registry.ts, backup.ts и правилах src/rules/; здесь только привязка к Cloudflare
 import { DurableObject } from 'cloudflare:workers'
 import type { Backup } from '../../src/rules/backup'
+import { dailyBackup } from './backup'
 import { handle } from './http'
 import { addRoom, listRooms } from './registry'
 import * as room from './room'
@@ -11,6 +12,9 @@ export type Env = {
   ROOMS: DurableObjectNamespace<Room>
   REGISTRY: DurableObjectNamespace<Registry>
   ROOM_PASSWORD?: string
+  // Суточная копия в репо данных (backup.ts): оба — секреты Worker'а в панели Cloudflare
+  DATA_TOKEN?: string
+  DATA_REPO?: string
 }
 
 export default {
@@ -23,11 +27,30 @@ export default {
       // Вызов объекта не сохраняет связь «действие → ответ» в типах — её держит room.act
       act: async <K extends room.ActionType>(roomId: string, action: Extract<room.RoomAction, { type: K }>) =>
         (await roomStub(env, roomId).act(action)) as room.ActionResult<K>,
-      backup: (roomId, keyHash) => roomStub(env, roomId).backup(keyHash),
       restore: (roomId, backup) => roomStub(env, roomId).restore(backup),
-      roomIds: async () => (await registryStub(env).list()).map((e) => e.roomId),
+      ...copies(env),
     })
   },
+
+  // Суточная копия по расписанию (server/wrangler.toml, [triggers]); ключей нет — строка в лог и всё
+  async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
+    await dailyBackup({
+      token: env.DATA_TOKEN,
+      repo: env.DATA_REPO,
+      now: () => Date.now(),
+      fetch: (url, init) => fetch(url, init),
+      log: (line) => console.log(line),
+      ...copies(env),
+    })
+  },
+}
+
+// Копии комнат — для GET /export и суточной копии: номера из реестра, копия — вызовом объекта комнаты
+function copies(env: Env) {
+  return {
+    backup: (roomId: string, keyHash: string | null) => roomStub(env, roomId).backup(keyHash),
+    roomIds: async () => (await registryStub(env).list()).map((e) => e.roomId),
+  }
 }
 
 // Объект комнаты — по её номеру

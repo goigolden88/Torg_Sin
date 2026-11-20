@@ -1,7 +1,8 @@
 // Запуск запасного сервера: npm run server:node.
 // Переменные окружения: ROOM_PASSWORD — пароль компании (как секрет Worker'а); PORT — порт
 // (по умолчанию 8787); HOST — адрес (по умолчанию все); ROOMS_DB — файл SQLite
-// (по умолчанию server/node/data.sqlite)
+// (по умолчанию server/node/data.sqlite); DATA_TOKEN и DATA_REPO — суточная копия комнат в репо
+// данных, как у Worker'а (server/src/backup.ts); не задан хоть один — копии нет
 import { DEFAULT_DB, DEFAULT_PORT, startServer } from './app'
 
 const port = process.env.PORT ? Number(process.env.PORT) : DEFAULT_PORT
@@ -12,9 +13,13 @@ if (!Number.isInteger(port) || port < 0 || port > 65535) {
 const file = process.env.ROOMS_DB || DEFAULT_DB
 const password = process.env.ROOM_PASSWORD || undefined
 
-const server = await startServer({ file, password, port, host: process.env.HOST || undefined })
+const dataToken = process.env.DATA_TOKEN || undefined
+const dataRepo = process.env.DATA_REPO || undefined
+
+const server = await startServer({ file, password, port, host: process.env.HOST || undefined, dataToken, dataRepo })
 console.log(`Сервер комнат ТоргСина: ${server.url} (файл ${file})`)
 if (!password) console.log('ROOM_PASSWORD не задан — создание комнат выключено')
+console.log(dataToken && dataRepo ? 'Суточная копия комнат — в 21:17 UTC' : 'DATA_TOKEN и DATA_REPO не заданы — суточной копии нет')
 
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.once(signal, () => {
