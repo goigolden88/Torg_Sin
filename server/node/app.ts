@@ -3,6 +3,7 @@
 // Ответы — handle из server/src/http.ts, комната — server/src/room.ts; здесь только привязка
 import type { Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
+import { dailyBackup, nextBackupAt, type DailyBackupDeps } from '../src/backup'
 import { handle } from '../src/http'
 import { randomSeed } from '../src/keys'
 import { act, createRoom, exportRoom, importRoom, roomState, type RoomStorage } from '../src/room'
@@ -25,6 +26,11 @@ export type NodeServerOptions = {
   onAlarm?: (roomId: string, storage: RoomStorage) => Promise<void>
   // Для тестов: подменить хранилище комнаты (например, следить за записями)
   wrapStorage?: (roomId: string, storage: RoomStorage) => RoomStorage
+  // Суточная копия в репо данных (server/src/backup.ts): заданы оба — таймер раз в сутки, иначе его нет
+  dataToken?: string
+  dataRepo?: string
+  fetch?: DailyBackupDeps['fetch'] // запрос к GitHub; для тестов — подделка
+  log?: (line: string) => void // строка суточной копии в лог; по умолчанию — console.log
 }
 
 export type NodeServer = {
@@ -55,6 +61,9 @@ export async function startServer(options: NodeServerOptions): Promise<NodeServe
     onError: (alarm, error) => console.error('Будильник комнаты', alarm.roomId, 'упал — повтор', error),
   })
   rooms.onAlarmSet = (alarm) => alarms.set(alarm)
+  // Копии комнат — для GET /export и суточной копии; реестр комнат не нужен: список — из своей базы (этап 6)
+  const backup = (roomId: string, keyHash: string | null) => serial(roomId, () => exportRoom(storage(roomId), keyHash, now()))
+  const roomIds = async () => rooms.roomIds()
 
   let server: Server
   try {
@@ -66,10 +75,9 @@ export async function startServer(options: NodeServerOptions): Promise<NodeServe
           create: (input) => serial(input.roomId, () => createRoom(storage(input.roomId), input, now())),
           state: (roomId, keyHash) => serial(roomId, () => roomState(storage(roomId), keyHash, now(), seed)),
           act: (roomId, action) => serial(roomId, () => act(storage(roomId), action, now(), seed)),
-          backup: (roomId, keyHash) => serial(roomId, () => exportRoom(storage(roomId), keyHash, now())),
-          restore: (roomId, backup) => serial(roomId, () => importRoom(storage(roomId), backup)),
-          // Реестр комнат не нужен: список — из своей базы (этап 6)
-          roomIds: async () => rooms.roomIds(),
+          backup,
+          restore: (roomId, copy) => serial(roomId, () => importRoom(storage(roomId), copy)),
+          roomIds,
         }),
       options.port,
       options.host,
@@ -80,6 +88,7 @@ export async function startServer(options: NodeServerOptions): Promise<NodeServe
   }
   // Сервер поднялся — будильники из файла; просроченные (сервер лежал в срок) звенят сразу
   for (const alarm of rooms.alarms()) alarms.set(alarm)
+  const daily = dailyTimer(options, { now, backup, roomIds })
 
   const { port } = server.address() as AddressInfo
   const host = !options.host || options.host === '0.0.0.0' || options.host === '::' ? 'localhost' : options.host
@@ -89,6 +98,7 @@ export async function startServer(options: NodeServerOptions): Promise<NodeServe
     storage,
     close: async () => {
       alarms.stop()
+      daily.stop()
       await new Promise<void>((resolve, reject) => {
         server.close((error) => (error ? reject(error) : resolve()))
         server.closeAllConnections()
@@ -96,6 +106,35 @@ export async function startServer(options: NodeServerOptions): Promise<NodeServe
       // Дождаться работы комнат, начатой до остановки, — потом закрыть файл
       await serial.idle()
       rooms.close()
+    },
+  }
+}
+
+// Суточная копия по таймеру — в тот же миг, что у Worker'а (nextBackupAt). Ключей нет — таймера нет.
+// Сервер лежал в срок — копия на следующую ночь: она полная, догонять нечего. Остановка не ждёт
+// начатой копии: комната после закрытия файла не прочтётся — копия не сделается, строка в лог
+function dailyTimer(options: NodeServerOptions, copies: Pick<DailyBackupDeps, 'now' | 'backup' | 'roomIds'>): { stop: () => void } {
+  const { dataToken: token, dataRepo: repo } = options
+  if (!token || !repo) return { stop: () => {} }
+  const log = options.log ?? ((line: string) => console.log(line))
+  const fetcher = options.fetch ?? ((url: string, init: RequestInit) => fetch(url, init))
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let stopped = false
+  // after — миг прошлой копии: таймер может сработать на миг раньше — второй копии в ту же ночь не будет
+  const schedule = (after: number) => {
+    if (stopped) return
+    const at = nextBackupAt(Math.max(after, copies.now()))
+    timer = setTimeout(() => {
+      void dailyBackup({ ...copies, token, repo, fetch: fetcher, log })
+        .catch((error: unknown) => console.error('Суточная копия упала', error))
+        .finally(() => schedule(at))
+    }, at - copies.now())
+  }
+  schedule(copies.now())
+  return {
+    stop: () => {
+      stopped = true
+      clearTimeout(timer)
     },
   }
 }

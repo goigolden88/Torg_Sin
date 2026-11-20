@@ -15,6 +15,13 @@ name = "REGISTRY"
 class_name = "Registry"
 
 # Бесплатный план — только объекты на SQLite
+# Суточная копия комнат в приватный репо данных (этап 6, server/src/backup.ts): ночь по Екатеринбургу —
+# 21:17 UTC, там 02:17; то же время — BACKUP_HOUR_UTC и BACKUP_MINUTE_UTC в backup.ts.
+# Токен DATA_TOKEN и репо DATA_REPO — оба секретами Worker'а в панели Cloudflare, не [vars]: переменные
+# панели выкатка стирает, секреты переживают. Не заданы — копия пропускается, сервер работает как раньше
+[triggers]
+crons = ["17 21 * * *"]
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["Room"]

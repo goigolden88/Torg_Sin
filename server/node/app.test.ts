@@ -161,3 +161,52 @@ describe('будильник комнаты на Node', () => {
     }
   })
 })
+
+// Суточная копия на Node (server/src/backup.ts) — таймером в тот же миг, что у Worker'а; GitHub — подделка
+describe('суточная копия на Node', () => {
+  const AT = Date.UTC(2026, 10, 20, 21, 17) // 21:17 UTC
+  // Комната в файле — с прошлого запуска; новый запуск — за 50 мс до копии
+  async function roomInFile(): Promise<{ file: string; roomId: string }> {
+    const file = newFile()
+    const first = await start({ file })
+    const r = await fetch(first.url + '/rooms', { method: 'POST', body: JSON.stringify({ ...FORM, requestId: ulid() }) })
+    const { roomId } = (await r.json()) as CreateRoomResponse
+    await stop(first)
+    return { file, roomId }
+  }
+
+  it('заданы DATA_TOKEN и DATA_REPO — в 21:17 UTC копия комнат из своей базы', async () => {
+    const { file, roomId } = await roomInFile()
+    const calls: { method: string; body?: string }[] = []
+    const lines: string[] = []
+    await start({
+      file,
+      now: () => AT - 50,
+      dataToken: 'выдуманный-токен',
+      dataRepo: 'someone/Torg_Sin_Data',
+      log: (line) => lines.push(line),
+      fetch: async (_url, init) => {
+        calls.push({ method: init.method ?? 'GET', body: typeof init.body === 'string' ? init.body : undefined })
+        return init.method === 'PUT' ? Response.json({}, { status: 201 }) : Response.json({ message: 'Not Found' }, { status: 404 })
+      },
+    })
+    await vi.waitFor(() => expect(lines).toEqual(['Суточная копия записана: «Копия 21.11.2026, комнат: 1»']))
+    expect(calls.map((c) => c.method)).toEqual(['GET', 'PUT'])
+    const content = (JSON.parse(calls[1].body!) as { content: string }).content
+    const text = new TextDecoder().decode(Uint8Array.from(atob(content), (c) => c.charCodeAt(0)))
+    expect((JSON.parse(text) as { roomId: string }[]).map((b) => b.roomId)).toEqual([roomId])
+  })
+
+  it('ключей нет — таймера нет, к GitHub ни одного запроса', async () => {
+    const { file } = await roomInFile()
+    const calls: string[] = []
+    const fake = async (url: string) => {
+      calls.push(url)
+      return Response.json({}, { status: 404 })
+    }
+    await start({ file, now: () => AT - 20, dataToken: 'выдуманный-токен', fetch: fake })
+    await start({ file: newFile(), now: () => AT - 20, dataRepo: 'someone/Torg_Sin_Data', fetch: fake })
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    expect(calls).toEqual([])
+  })
+})
