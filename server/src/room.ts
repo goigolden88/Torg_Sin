@@ -9,6 +9,21 @@
 //   secret         — секрет комнаты: из него и номера запроса выводится ключ по заявке
 //   device:<хеш>   — ссылка для другого устройства: чья, до когда, отвязать ли прежние,
 //                    использована ли; токена в открытом виде нет
+//   registry       — комната отмечена в реестре комнат (только Cloudflare, index.ts); в копию не идёт
+//
+// Копия комнаты (этап 6, src/rules/backup.ts) — журнал и записи key:, device:, invite, secret как есть
+import {
+  BACKUP_FORMAT,
+  STORE_DEVICE,
+  STORE_INVITE,
+  STORE_KEY,
+  STORE_SECRET,
+  type Backup,
+  type DeviceRecord,
+  type InviteRecord,
+  type KeyRecord,
+  type SecretRecord,
+} from '../../src/rules/backup'
 import {
   foldLog,
   joinRequests,
@@ -181,22 +196,11 @@ export const NO_COURT = 'Суда по этому спору нет'
 export const DEVICE_LINK_TTL = 24 * 60 * 60 * 1000
 
 const LOG = 'log:'
-const KEY = 'key:'
-const INVITE = 'invite'
-const SECRET = 'secret'
-const DEVICE = 'device:'
-
-type KeyRecord = { memberId: string; at: number; unlinkedAt?: number }
-type InviteRecord = { token: string; at: number }
-type SecretRecord = { secret: string; at: number }
-type DeviceRecord = {
-  member: string
-  unlink: boolean
-  expiresAt: number
-  at: number
-  usedAt?: number // использована — второй раз не сработает
-  revokedAt?: number // прежние ключи участника отвязаны — неиспользованные ссылки тоже гаснут
-}
+const KEY = STORE_KEY
+const INVITE = STORE_INVITE
+const SECRET = STORE_SECRET
+const DEVICE = STORE_DEVICE
+const REGISTERED = 'registry'
 
 // Номер записи — по порядку: 8 цифр, ключи сортируются как числа
 function logKey(n: number): string {
@@ -358,6 +362,59 @@ export async function drawDueCourts(storage: RoomStorage, now: number, seed: () 
     entries.push({ id: ulid(now), at: now, memberId: state.hostId, type: 'court.drawn', target, seed: seed(), candidates })
   }
   if (entries.length > 0) await append(storage, entries)
+}
+
+// --- Копия комнаты (этап 6, Р-02; формат и проверка — src/rules/backup.ts)
+
+export const ROOM_EXISTS = 'Комната уже есть — загрузка только в пустую'
+
+export type BackupResult = { ok: true; backup: Backup } | Failure
+export type RestoreResult = { ok: true; roomId: string; entries: number } | Failure
+
+// Выгрузить комнату. keyHash — ключ участника: копия участника (только журнал; заявка и чужой ключ —
+// отказы, как у чтения); null — полная копия (пароль компании проверил Worker). Ничего не пишет:
+// суд по «ждёт суда» не собирается
+export async function exportRoom(storage: RoomStorage, keyHash: string | null, now: number): Promise<BackupResult> {
+  if (keyHash !== null) {
+    const c = await caller(storage, keyHash)
+    if (!c.ok) return c
+    return { ok: true, backup: { format: BACKUP_FORMAT, roomId: c.state.id, exportedAt: now, log: c.log } }
+  }
+  const log = await readLog(storage)
+  const state = foldLog(log)
+  if (!state) return fail(404, NO_ROOM)
+  // Служебные записи — как хранятся: хеши ключей и ссылок, приглашение, секрет; новых секретов нет
+  const store: Record<string, unknown> = {}
+  for (const k of [INVITE, SECRET]) {
+    const v = await storage.get(k)
+    if (v !== undefined) store[k] = v
+  }
+  for (const prefix of [KEY, DEVICE]) for (const [k, v] of await storage.list({ prefix })) store[k] = v
+  return { ok: true, backup: { format: BACKUP_FORMAT, roomId: state.id, exportedAt: now, log, store } }
+}
+
+// Загрузить полную копию (уже проверенную checkBackup) — только в пустую комнату: в хранилище нет ни
+// одной записи. Служебные записи — до журнала (журнал есть — значит, комната поднята целиком, как у
+// создания); журнал пишется как есть, по порядку (Р-11)
+export async function importRoom(storage: RoomStorage, backup: Backup): Promise<RestoreResult> {
+  if ((await storage.list({ prefix: '' })).size > 0) return fail(409, ROOM_EXISTS)
+  for (const [k, v] of Object.entries(backup.store ?? {})) await storage.put(k, v)
+  await append(storage, backup.log)
+  return { ok: true, roomId: backup.roomId, entries: backup.log.length }
+}
+
+// Запись реестра комнат (Cloudflare, registry.ts): номер и миг создания
+export type RegistryEntry = { roomId: string; createdAt: number }
+
+// Отметить комнату в реестре один раз: уже отмечена (пометка registry) или комнаты нет — ничего;
+// иначе — вызов реестра и пометка. Новая комната — сразу после создания или загрузки, старая — при
+// первом запросе после выкатки. Реестр упал — пометки нет, следующий запрос попробует снова
+export async function registerOnce(storage: RoomStorage, register: (entry: RegistryEntry) => Promise<void>, now: number): Promise<void> {
+  if ((await storage.get(REGISTERED)) !== undefined) return
+  const state = foldLog(await readLog(storage))
+  if (!state) return
+  await register({ roomId: state.id, createdAt: state.createdAt })
+  await storage.put(REGISTERED, { at: now })
 }
 
 // Действия комнаты, кроме создания и чтения состояния. Токены и ключи, которые выдаёт сервер,

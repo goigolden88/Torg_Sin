@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { afterAll } from 'vitest'
 import type { RoomStorage } from '../src/room'
 import { roomsSuite } from '../src/rooms.suite'
-import { START_TIME, testSeeds, type TestServer } from '../src/testing'
+import { fakeServer, START_TIME, testSeeds, type TestServer } from '../src/testing'
 import { startServer } from './app'
 
 const dir = mkdtempSync(join(tmpdir(), 'torgsin-'))
@@ -56,4 +56,9 @@ async function sqliteServer(password: string | undefined): Promise<TestServer> {
   }
 }
 
-roomsSuite('SQLite (Node)', (password) => sqliteServer(password))
+// «Круг» выгрузки и загрузки — между обёртками: копия с SQLite грузится на Cloudflare-подделку и обратно
+roomsSuite(
+  'SQLite (Node)',
+  (password) => sqliteServer(password),
+  async (password) => fakeServer(password),
+)
