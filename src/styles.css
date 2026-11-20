@@ -1205,6 +1205,11 @@ h3 {
   margin-top: 1rem;
 }
 
+/* «Скачать копию комнаты» — в самом низу комнаты (#100) */
+.backup {
+  margin-top: 1.5rem;
+}
+
 .history .win {
   color: var(--ok);
   font-weight: 600;

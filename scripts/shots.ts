@@ -16,6 +16,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { build, preview, runnerImport } from 'vite'
 import { Cdp, launchChrome, OUT, PASSWORD, PORT, SIZES, WIDE, type RoomsServer, type ServerModule, type Size } from './shots/common.ts'
+import { backup } from './shots/backup.ts'
 import { courts } from './shots/courts.ts'
 import { crash } from './shots/crash.ts'
 import { eventWidth } from './shots/event-width.ts'
@@ -110,6 +111,7 @@ const SCENARIOS: Scenario[] = [
     about: '«История»: пусто, строка «История · N» в комнате, итоги и прошедшее, «С моим участием», «Назад» из пари (120–123)',
     perSize: (c, size) => history(c.cdp, size, c.startServer),
   },
+  { name: 'backup', about: '«Скачать копию комнаты»: кнопка, файл, сервер не отдал копию (124–126)', perSize: (c, size) => backup(c.cdp, size, c.startServer) },
   {
     name: 'layout',
     about: 'раскладка компьютера на 1280 и 1920 px: меню развёрнуто и свёрнуто (21–23)',

@@ -86,6 +86,7 @@ import {
   type TransferRequest,
   type TransferResponse,
 } from './rules/protocol'
+import { checkBackup, type Backup } from './rules/backup'
 
 export const OFFLINE = 'Нет связи с сервером'
 export const VERSION_MISMATCH = 'Версия сайта и сервера разная — обновите страницу'
@@ -145,6 +146,18 @@ export function previewRoom(server: string, roomId: string, invite: string): Pro
 // POST /rooms/<номер>/join — заявка; повтор с тем же requestId — та же заявка и тот же ключ
 export function joinRoom(server: string, roomId: string, request: Omit<JoinRoomRequest, 'v'>): Promise<Result<JoinRoomResponse>> {
   return call(roomUrl(server, roomId, 'join'), post(request), isJoinRoomResponse)
+}
+
+// Копия участника — годная копия (checkBackup) без служебных записей
+function isMemberBackup(x: unknown): x is Backup & { v: number } {
+  const r = checkBackup(x)
+  return r.ok && r.backup.store === undefined
+}
+
+// GET /rooms/<номер>/export — копия комнаты по ключу телефона: журнал целиком, без служебных записей.
+// Старый сервер без адреса — отказ «Нет такого адреса»
+export function fetchBackup(server: string, roomId: string, key: string): Promise<Result<Backup>> {
+  return call(roomUrl(server, roomId, 'export'), bearer(key), isMemberBackup)
 }
 
 // GET /rooms/<номер>/requests — ждущие заявки, ведущему
