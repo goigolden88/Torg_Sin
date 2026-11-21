@@ -52,6 +52,7 @@ export function CourtBlock({
   online,
   changes,
   label,
+  why,
   onAsk,
 }: {
   room: SavedRoom
@@ -63,6 +64,9 @@ export function CourtBlock({
   online: boolean
   changes: CourtVerdict[] // все «изменить на …» спора: исходы события / стороны пари — правила отберут
   label: (v: CourtVerdict) => string // «оставить „Да“», «изменить на „Нет“», «отменить — вернуть ставки»
+  // Почему суд без апелляции, если не как обычно: у пари без гаранта (Р-36) — «Стороны разошлись»,
+  // «Вера промолчал(а) 3 дня»; нет — «3 дня без общего гаранта» у пари, «Исход ждал суда» у события
+  why?: string
   onAsk: (ask: CourtAsk) => void
 }) {
   const [form, setForm] = useState<Form>(null)
@@ -210,7 +214,7 @@ export function CourtBlock({
         <section className="court-box" aria-label="Суд">
           <h4>Суд</h4>
           <p className="hint">
-            {c.appeal ? 'По апелляции' : kind === 'offer' ? `${capital(spanText(times.silence))} без общего гаранта — решает суд` : 'Исход ждал суда'}, собран {formatDateTime(c.drawnAt)}. У каждого места — {seatSpan}; нет голоса — место переходит
+            {c.appeal ? 'По апелляции' : why ? `${capital(why)} — решает суд` : kind === 'offer' ? `${capital(spanText(times.silence))} без общего гаранта — решает суд` : 'Исход ждал суда'}, собран {formatDateTime(c.drawnAt)}. У каждого места — {seatSpan}; нет голоса — место переходит
             следующему по жребию. Решает большинство поданных голосов, решение окончательное.
           </p>
           <ol className="seats" aria-label="Места суда">

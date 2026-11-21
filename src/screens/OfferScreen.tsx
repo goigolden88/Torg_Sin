@@ -47,6 +47,7 @@ import {
   sideLabel,
   stakesLine,
   stakesOf,
+  guarantorLabel,
   toLabel,
   validOdds,
   who,
@@ -111,7 +112,11 @@ export function OfferScreen({ room, offerId, onUpdate }: { room: SavedRoom; offe
         stakes
           ? `Вы ставите ${sum(stakes.taker)} против ${sum(stakes.author)} — кэф ${oddsLabel(o.odds)}, банк ${sum(stakes.bank)}.`
           : `Кэф ${oddsLabel(o.odds)}.`,
-        `Ваша сторона — „${takerSide}“, у ${nameOf(room, o.authorId)} — „${sideLabel(o.side)}“. Гарант — ${nameOf(room, o.guarantorId)}, исход к ${formatDateTime(o.expectedAt)}.`,
+        `Ваша сторона — „${takerSide}“, у ${nameOf(room, o.authorId)} — „${sideLabel(o.side)}“. ${
+          o.guarantorId === null
+            ? `Исход к ${formatDateTime(o.expectedAt)}. Гаранта нет: отметите одинаково — окончательно сразу, разойдётесь — решит суд`
+            : `Гарант — ${nameOf(room, o.guarantorId)}, исход к ${formatDateTime(o.expectedAt)}`
+        }.`,
         'Принятое пари не отзывается.',
       ],
       button: 'Принять',
@@ -180,7 +185,7 @@ export function OfferScreen({ room, offerId, onUpdate }: { room: SavedRoom; offe
           </li>
           <li>
             <span className="hint">Гарант</span>
-            <span>{who(room, offer.guarantorId)}</span>
+            <span>{guarantorLabel(room, offer)}</span>
           </li>
           {offer.subjectId !== null && (
             <li>

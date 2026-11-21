@@ -6,13 +6,13 @@
 // «окончательно: +100 ₽ Аня»). Пари — последнее известное с сервера (у комнаты на устройстве),
 // статус и отсчёт — по времени сервера. На экране пари — тот же список рядом, открытое отмечено.
 // Участник — член суда по пари и ещё не голосовал — значок «вы в суде» (Р-24). Предмет спора —
-// сторона пари — пометка (Р-26)
+// сторона пари — пометка (Р-26). Пари без гаранта (Р-36) — строка «Гарант: нет — спор решит суд»
 import { offerStatus } from '../rules/offer'
 import type { OfferView } from '../rules/protocol'
 import { savedOffers, type SavedRoom } from '../store/db'
 import { awaitsMyVote } from './courtParts'
 import { offerPastNow } from './historyParts'
-import { offerHref, offerState, OfferStatusLine, OfferSubjectFlag, stakesLine, toLabel, who } from './offerParts'
+import { NO_GUARANTOR_LABEL, offerHref, offerState, OfferStatusLine, OfferSubjectFlag, stakesLine, toLabel, who } from './offerParts'
 import { useServerNow, type Clock } from './useRoom'
 
 export function OfferList({ room, clock, current }: { room: SavedRoom; clock: Clock | null; current?: string }) {
@@ -74,6 +74,7 @@ function Group({
                   {o.counterTo !== null ? 'встречное · ' : ''}автор — {who(room, o.authorId)}, кому — {toLabel(room, o)}
                 </span>
                 <span className="hint">{stakesLine(room, o)}</span>
+                {o.guarantorId === null && <span className="hint">Гарант: {NO_GUARANTOR_LABEL}</span>}
                 <OfferStatusLine room={room} offer={o} now={now} />
                 <OfferSubjectFlag room={room} offer={o} />
                 {waiting && <span className="hint">встречное ждёт ответа автора</span>}
