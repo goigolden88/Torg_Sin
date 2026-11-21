@@ -26,6 +26,7 @@ import { layout } from './shots/layout.ts'
 import { offerOutcomes } from './shots/offer-outcomes.ts'
 import { offers } from './shots/offers.ts'
 import { outcomes } from './shots/outcomes.ts'
+import { pace } from './shots/pace.ts'
 import { pasteLink } from './shots/paste-link.ts'
 import { points } from './shots/points.ts'
 import { settle } from './shots/settle.ts'
@@ -112,6 +113,11 @@ const SCENARIOS: Scenario[] = [
     perSize: (c, size) => history(c.cdp, size, c.startServer),
   },
   { name: 'backup', about: '«Скачать копию комнаты»: кнопка, файл, сервер не отдал копию (124–126)', perSize: (c, size) => backup(c.cdp, size, c.startServer) },
+  {
+    name: 'pace',
+    about: 'темп комнаты: создание со «Своим», строка темпа, смена ведущим, сроки на «Новом событии», исход в быстрой комнате (127–132)',
+    perSize: (c, size) => pace(c.cdp, size, c.startServer),
+  },
   {
     name: 'layout',
     about: 'раскладка компьютера на 1280 и 1920 px: меню развёрнуто и свёрнуто (21–23)',

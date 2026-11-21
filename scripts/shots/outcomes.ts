@@ -79,7 +79,7 @@ export async function outcomes(cdp: Cdp, size: Size, startServer: ServerModule['
     await borya.waitText('Исход ещё не предложен')
     await borya.click('Да')
     await borya.click('Предложить исход')
-    await borya.waitText('Ставившие смогут согласиться или возразить в течение суток')
+    await borya.waitText('На согласие или возражение у ставивших — сутки')
     await borya.shot('24-predlozhit-iskhod')
     await confirmTwice(borya, 'возразить до')
     await borya.waitIn(POSITION, 'если выиграет — получите') // не утверждён — прикидка, как прежде
