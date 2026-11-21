@@ -66,10 +66,22 @@ import {
   subjectStake,
   YES,
   yesNoOutcomes,
+  objectionOver,
+  proposerOnly,
 } from './event'
 import { FAST_TIMES, NORMAL_TIMES, type Times } from './pace'
 import type { CourtVerdict } from './protocol'
 import type { LogEntry } from './room'
+
+describe('отказы со сроком — из сроков события (Р-35)', () => {
+  it('обычный темп — «сутки» и «3 дня»; быстрый — «2 ч» и «12 ч»; запись до темпа — обычный', () => {
+    expect(objectionOver({})).toBe('Срок возражения — сутки — прошёл')
+    expect(objectionOver({ times: NORMAL_TIMES })).toBe('Срок возражения — сутки — прошёл')
+    expect(objectionOver({ times: FAST_TIMES })).toBe('Срок возражения — 2 ч — прошёл')
+    expect(proposerOnly({})).toBe('Исход предлагает автор события, а если он молчит 3 дня после «исход ожидается к» — ведущий')
+    expect(proposerOnly({ times: FAST_TIMES })).toBe('Исход предлагает автор события, а если он молчит 12 ч после «исход ожидается к» — ведущий')
+  })
+})
 
 const FORM = {
   condition: 'Вася пробежит 10 км до конца месяца',
