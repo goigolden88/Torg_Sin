@@ -8,7 +8,18 @@ import {
   type RoomStateResponse,
 } from '../../src/rules/protocol'
 import { checkAmount, checkClarification, checkEventInput, checkObjection, checkReason, eventView } from '../../src/rules/event'
-import { BAD_GUARANTOR, BAD_MARK, BAD_ODDS, checkOfferInput, MAX_ODDS, MIN_ODDS, NO_OFFER, offerView, type Odds } from '../../src/rules/offer'
+import {
+  BAD_GUARANTOR,
+  BAD_MARK,
+  BAD_ODDS,
+  checkOfferInput,
+  MAX_ODDS,
+  MIN_ODDS,
+  NO_GUARANTOR_CHOSEN,
+  NO_OFFER,
+  offerView,
+  type Odds,
+} from '../../src/rules/offer'
 import { appealReason, caseOf, courtVote, NOT_SEAT, replaceReason } from '../../src/rules/appeal'
 import { checkBackup, type Backup } from '../../src/rules/backup'
 import { checkPace, timesOf, type PaceInput } from '../../src/rules/pace'
@@ -242,8 +253,9 @@ function settleModeOf(x: unknown): SettleMode | null {
 }
 
 // POST /rooms/<номер>/offers { condition, check, side?, odds: { a, b }, amount, to?, closesAt,
-// expectedAt, guarantor?, subject?, requestId? } — предложить; …/offers/<пари>/accept | revoke { requestId? };
-// …/offers/<пари>/counter { odds?, amount?, closesAt, requestId? } — встречное; исход (Р-23):
+// expectedAt, guarantor?, noGuarantor?, subject?, requestId? } — предложить; …/offers/<пари>/accept |
+// revoke { requestId? }; …/offers/<пари>/counter { odds?, amount?, closesAt, guarantor?, noGuarantor?,
+// requestId? } — встречное (noGuarantor — без гаранта, Р-36); исход (Р-23):
 // …/mark | decide { winner: "author" | "taker", requestId? }, …/decline { requestId? },
 // …/nominate { guarantor, requestId? }; апелляция и суд (Р-25) — courtAction
 async function offerAction(
@@ -276,6 +288,7 @@ async function offerAction(
         closesAt: b.closesAt,
         expectedAt: b.expectedAt,
         guarantor: b.guarantor,
+        noGuarantor: b.noGuarantor,
         subject: b.subject,
       })
       if (!checked.ok) return failure(400, checked.error)
@@ -288,6 +301,12 @@ async function offerAction(
       const amount = b.amount === undefined ? null : checkAmount(b.amount)
       if (amount && !amount.ok) return failure(400, amount.error)
       if (!Number.isSafeInteger(b.closesAt)) return failure(400, NEED_CLOSE)
+      // Гарант встречного (Р-36): участник, «без гаранта» или не задан — гарант исходного
+      const guarantor = b.guarantor === undefined || b.guarantor === null ? undefined : b.guarantor
+      if (guarantor !== undefined && (typeof guarantor !== 'string' || !guarantor)) return failure(400, BAD_GUARANTOR)
+      const none = b.noGuarantor === undefined || b.noGuarantor === null ? false : b.noGuarantor
+      if (typeof none !== 'boolean') return failure(400, BAD_GUARANTOR)
+      if (none && guarantor !== undefined) return failure(400, NO_GUARANTOR_CHOSEN)
       if (!requestId) return failure(400, BAD_REQUEST_ID)
       return reply(
         await deps.act(roomId, {
@@ -297,6 +316,8 @@ async function offerAction(
           odds,
           amount: amount ? amount.value : null,
           closesAt: b.closesAt as number,
+          ...(guarantor !== undefined && { guarantor }),
+          ...(none && { noGuarantor: true }),
           requestId,
         }),
       )

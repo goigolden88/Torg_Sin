@@ -57,6 +57,8 @@ import {
   NEED_REASON,
   NOT_YET,
   objectionOut,
+  objectionOver,
+  proposerOnly,
   roomEvents,
   sameEvent,
   subjectBetError,
@@ -86,6 +88,7 @@ import {
   GUARANTOR_TAKES,
   isOfferEntry,
   logOffers,
+  NO_GUARANTOR_CHOSEN,
   NO_OFFER,
   NOT_ADDRESSEE,
   NOT_MEMBER,
@@ -165,7 +168,8 @@ export const EVENT_TAKEN = 'Этот номер запроса уже занят
 export const BET_TAKEN = 'Этот номер запроса уже занят другой ставкой'
 export const BANK_FULL = 'Банк события слишком велик для такой ставки'
 // Исход события
-export const PROPOSER_ONLY = 'Исход предлагает автор события, а если он молчит 3 дня после «исход ожидается к» — ведущий'
+// Отказы со сроком — из сроков события (proposerOnly, objectionOver); константы — у обычного темпа
+export const PROPOSER_ONLY = proposerOnly({})
 export const SUBJECT_SILENT = 'Предмет спора не объявляет исход'
 export const ALREADY_PROPOSED = 'Исход уже предложен'
 export const NOT_PROPOSED = 'Исход ещё не предложен'
@@ -177,7 +181,7 @@ export const OWN_AGREEMENT = 'Своё предложение не подтве�
 export const AGREE_BETTORS_ONLY = 'Согласиться может только тот, кто ставил'
 export const ALREADY_AGREED = 'Вы уже согласились'
 export const AGREEMENT_CLOSED = 'Есть возражение — согласия больше не принимаются'
-export const OBJECTION_OVER = 'Сутки на возражение прошли'
+export const OBJECTION_OVER = objectionOver({})
 export const ALREADY_APPROVED = 'Исход уже утверждён'
 export const NO_OBJECTION = 'Возражений нет — решать нечего'
 export const HOST_INTERESTED = 'Ведущий ставил или он предмет спора — исход решает голосование'
@@ -467,7 +471,17 @@ export type RoomAction =
   // Пари (Р-22): форма уже проверена (offer.ts, checkOfferInput); сроки, гарант и адресат — здесь.
   // Встречное: odds и amount не заданы (null) — исходного
   | { type: 'createOffer'; keyHash: string; input: OfferInput; requestId: string }
-  | { type: 'counterOffer'; keyHash: string; offer: string; odds: Odds | null; amount: number | null; closesAt: number; requestId: string }
+  | {
+      type: 'counterOffer'
+      keyHash: string
+      offer: string
+      odds: Odds | null
+      amount: number | null
+      closesAt: number
+      guarantor?: string // выбор автора встречного (Р-36); нет — гарант исходного
+      noGuarantor?: boolean
+      requestId: string
+    }
   | { type: 'acceptOffer'; keyHash: string; offer: string; requestId: string }
   | { type: 'revokeOffer'; keyHash: string; offer: string; requestId: string }
   // Исход пари (Р-23): фазы — по времени сервера в момент запроса (будильника нет)
@@ -996,7 +1010,7 @@ async function proposeOutcome(storage: RoomStorage, a: OutcomeAction, now: numbe
   const { event } = live
   if (event.proposal && withdrawnAt(event, now) === null) return fail(409, ALREADY_PROPOSED)
   if (c.me === event.subjectId) return fail(403, SUBJECT_SILENT)
-  if (!mayPropose(event, c.me, now)) return fail(403, PROPOSER_ONLY)
+  if (!mayPropose(event, c.me, now)) return fail(403, proposerOnly(event))
   if (!event.outcomes.some((o) => o.id === a.outcome)) return fail(400, NO_OUTCOME)
   const proposal: OutcomeMark = { id: ulid(now), at: now, by: c.me, outcome: a.outcome }
   await append(storage, [{ id: proposal.id, at: now, memberId: c.me, type: 'outcome.proposed', event: event.id, outcome: a.outcome, requestId: a.requestId }])
@@ -1025,7 +1039,7 @@ async function objectOutcome(
   if (event.agreements.some((x) => x.by === c.me)) return fail(409, ALREADY_AGREED)
   const view = eventOutcome(event, now)
   if (view?.status === 'withdrawn') return fail(409, PROPOSAL_WITHDRAWN)
-  if (view && now >= view.objectionUntil) return fail(409, OBJECTION_OVER)
+  if (view && now >= view.objectionUntil) return fail(409, objectionOver(event))
   if (view?.approved) return fail(409, ALREADY_APPROVED)
   const objection: Objection = { id: ulid(now), at: now, by: c.me, reason: a.reason }
   await append(storage, [{ id: objection.id, at: now, memberId: c.me, type: 'outcome.objected', event: event.id, reason: a.reason, requestId: a.requestId }])
@@ -1055,7 +1069,7 @@ async function agreeOutcome(
   if (event.objections.some((o) => o.by === c.me)) return fail(409, ALREADY_OBJECTED)
   if (event.objections.length > 0) return fail(409, AGREEMENT_CLOSED)
   const view = eventOutcome(event, now)
-  if (view && now >= view.objectionUntil) return fail(409, OBJECTION_OVER)
+  if (view && now >= view.objectionUntil) return fail(409, objectionOver(event))
   if (view?.approved) return fail(409, ALREADY_APPROVED)
   const agreement: Agreement = { id: ulid(now), at: now, by: c.me }
   await append(storage, [{ id: agreement.id, at: now, memberId: c.me, type: 'outcome.agreed', event: event.id, requestId: a.requestId }])
@@ -1140,7 +1154,7 @@ const OFFER_FORBIDDEN: readonly string[] = [
   ONLY_GUARANTOR,
   SUBJECT_TAKES,
 ]
-const OFFER_BAD_BODY: readonly string[] = [BAD_MARK, BAD_GUARANTOR, SUBJECT_GUARANTOR]
+const OFFER_BAD_BODY: readonly string[] = [BAD_MARK, BAD_GUARANTOR, SUBJECT_GUARANTOR, NO_GUARANTOR_CHOSEN]
 
 function offerRefusal(error: string): Failure {
   if (error === EXPIRED) return fail(409, OFFER_CLOSED)
@@ -1203,7 +1217,8 @@ async function writeOffer(
 }
 
 // Предложить пари: любой участник; адресное — другому участнику, открытое — всем. Гарант не выбран —
-// ведущий (ведущий — сторона — отказ). «Приём до» прошёл — 409
+// ведущий (ведущий — сторона — отказ); «без гаранта» (Р-36) — guarantor null, если судить есть кому
+// (offerGuarantor). «Приём до» прошёл — 409
 async function createOffer(
   storage: RoomStorage,
   a: { keyHash: string; input: OfferInput; requestId: string },
@@ -1224,28 +1239,45 @@ async function createOffer(
         e.to === input.to &&
         e.expectedAt === input.expectedAt &&
         (e.subject ?? null) === input.subject &&
-        e.guarantor === (input.guarantor ?? c.state.hostId),
+        e.guarantor === (input.noGuarantor ? null : (input.guarantor ?? c.state.hostId)),
     )
   }
   return writeOffer(storage, c, input, null, a.requestId, now)
 }
 
 // Встречное: новое пари автору исходного со своими кэфом, суммой и «приём до» (counterInput); делает
-// тот, кто мог бы принять исходное. Автор принял встречное — исходное закрыто встречным (roomOffers)
+// тот, кто мог бы принять исходное. Автор принял встречное — исходное закрыто встречным (roomOffers).
+// Гарант — выбор автора встречного (Р-36): guarantor, noGuarantor или, не выбрал, — гарант исходного
 async function counterOffer(
   storage: RoomStorage,
-  a: { keyHash: string; offer: string; odds: Odds | null; amount: number | null; closesAt: number; requestId: string },
+  a: {
+    keyHash: string
+    offer: string
+    odds: Odds | null
+    amount: number | null
+    closesAt: number
+    guarantor?: string
+    noGuarantor?: boolean
+    requestId: string
+  },
   now: number,
 ): Promise<ActionResult<'counterOffer'>> {
   const c = await offerCaller(storage, a.keyHash, a.requestId)
   if (!c.ok) return c
   const original = c.offers.find((o) => o.id === a.offer)
-  const terms = original && { odds: a.odds ?? original.odds, amount: a.amount ?? original.amount, closesAt: a.closesAt }
-  if (c.again) return repeatedOffer(c, (e) => e.counterTo === a.offer && !!terms && sameTerms(e, terms))
-  if (!original || !terms) return fail(404, NO_OFFER)
+  const terms = original && {
+    odds: a.odds ?? original.odds,
+    amount: a.amount ?? original.amount,
+    closesAt: a.closesAt,
+    ...(a.guarantor !== undefined && { guarantor: a.guarantor }),
+    ...(a.noGuarantor === true && { noGuarantor: true }),
+  }
+  const input = original && terms && counterInput(original, terms)
+  if (c.again) return repeatedOffer(c, (e) => e.counterTo === a.offer && !!input && sameTerms(e, input) && e.guarantor === (input.noGuarantor ? null : input.guarantor))
+  if (!original || !input) return fail(404, NO_OFFER)
   const refused = checkCounter(original, c.me, c.roles, now)
   if (refused) return offerRefusal(refused)
-  const checked = checkOfferInput(counterInput(original, terms))
+  const checked = checkOfferInput(input)
   if (!checked.ok) return fail(400, checked.error)
   return writeOffer(storage, c, checked.value, original.id, a.requestId, now)
 }

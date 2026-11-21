@@ -3388,7 +3388,10 @@ export function roomsSuite(
           approved: { how: 'unopposed', at: proposedAt + 2 * HOUR },
           finalAt: proposedAt + 2 * HOUR + DAY,
         })
-        await refused(send(s, id, `events/${after.id}/object`, { reason: 'Поздно' }, vera.key), 409, OBJECTION_OVER)
+        // Отказ называет срок события — «2 ч», а не «сутки» обычного темпа
+        await refused(send(s, id, `events/${after.id}/object`, { reason: 'Поздно' }, vera.key), 409, 'Срок возражения — 2 ч — прошёл')
+        await refused(send(s, id, `events/${after.id}/agree`, {}, vera.key), 409, 'Срок возражения — 2 ч — прошёл')
+        expect(OBJECTION_OVER).toBe('Срок возражения — сутки — прошёл')
         expect((await outcome(before.id))?.status).toBe('proposed')
         // Смена темпа обратно закреплённых сроков не трогает: апелляция нового — сутки, старого — 7 дней
         await ok(setPace(s, id, room.key, { pace: 'normal' }))

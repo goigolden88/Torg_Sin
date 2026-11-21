@@ -331,7 +331,9 @@ describe('пари (Р-22)', () => {
   it('ответы на действия с пари', () => {
     expect(isCreateOfferResponse({ v, offer })).toBe(true)
     expect(isCreateOfferResponse({ v, offer: { ...offer, counterTo: 'O0', to: 'A0', side: 'no' } })).toBe(true)
-    expect(isCreateOfferResponse({ v, offer: { ...offer, guarantorId: null } })).toBe(false)
+    // Без гаранта (Р-36) — null; не строка и не null — нет
+    expect(isCreateOfferResponse({ v, offer: { ...offer, guarantorId: null } })).toBe(true)
+    expect(isCreateOfferResponse({ v, offer: { ...offer, guarantorId: 5 } })).toBe(false)
     expect(isCreateOfferResponse({ offer })).toBe(false)
     expect(isAcceptOfferResponse({ v, accepted: act, offer })).toBe(true)
     expect(isAcceptOfferResponse({ v, accepted: act })).toBe(false)
