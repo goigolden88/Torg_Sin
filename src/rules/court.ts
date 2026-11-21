@@ -3,11 +3,12 @@
 // кто кому подаёт и кого судят — appeal.ts; учёт решения в исходе — eventOutcome (event.ts) и
 // offerOutcome (offer.ts). Отдельным модулем, чтобы event.ts и offer.ts не зависели от appeal.ts.
 // Ни DOM, ни Cloudflare
+import { NORMAL_TIMES } from './pace'
 import type { AppealView, CourtSeat, CourtVerdict, CourtView, CourtVote } from './protocol'
 
-const HOUR = 60 * 60 * 1000
-// У места — 72 часа с жребия (у заменившего — с замены)
-export const SEAT_TIME = 72 * HOUR
+// У места — срок суда с жребия (у заменившего — с замены): 72 часа у обычного темпа. Срок дела —
+// seatTime (Р-35: срок court события или пари); константа — для экранов, пока они не знают темпа
+export const SEAT_TIME = NORMAL_TIMES.court
 // Мест в суде: ведущий + 2 присяжных или 3 присяжных
 export const COURT_SIZE = 3
 
@@ -17,8 +18,10 @@ export type { CourtSeat, CourtVerdict, CourtView, CourtVote }
 export type CourtReplace = { id: string; at: number; by: string; member: string; reason: string }
 
 // Дело суда: апелляция (null — суд по «ждёт суда» без апелляции, Р-17) и жребий; acts — принятые
-// голоса и досрочные замены по порядку журнала. Собирает roomAppeals (appeal.ts)
+// голоса и досрочные замены по порядку журнала; seatTime — срок места (срок суда события или пари,
+// Р-35; нет — SEAT_TIME). Собирает roomAppeals (appeal.ts)
 export type CourtCase = {
+  seatTime?: number
   target: string // событие или пари
   appeal: {
     id: string
@@ -77,16 +80,18 @@ function seatDone(s: CourtSeat, now: number): number | null {
   return s.replaced && now >= s.until ? s.until : null
 }
 
-// Места суда на now. Член суда молчит 72 часа — место переходит к следующему по порядку запасному
-// (одна замена на место; досрочная ведущим — тоже замена), у него свои 72 часа; запасные кончились —
+// Места суда на now. Член суда молчит срок места (seatTime; 72 часа у обычного темпа) — место
+// переходит к следующему по порядку запасному (одна замена на место; досрочная ведущим — тоже
+// замена), у него свой такой же срок; запасные кончились —
 // место пустое. Замены по срокам — по времени, равные — по номеру места; запись (голос, досрочная
 // замена) применяется после замен по срокам на её время
 export function courtState(c: CourtCase, now: number): CourtState {
   const order = drawCourt(c.seed, c.candidates, c.hostId)
+  const seatTime = c.seatTime ?? SEAT_TIME
   const seats: CourtSeat[] = order.slice(0, COURT_SIZE).map((member) => ({
     member,
     since: c.drawnAt,
-    until: c.drawnAt + SEAT_TIME,
+    until: c.drawnAt + seatTime,
     replaced: null,
     vote: null,
   }))
@@ -96,7 +101,7 @@ export function courtState(c: CourtCase, now: number): CourtState {
     s.replaced = { member: s.member as string, at, by, reason }
     s.member = member
     s.since = at
-    s.until = member === null ? at : at + SEAT_TIME
+    s.until = member === null ? at : at + seatTime
   }
   const decided = (t: number) => seats.every((s) => seatDone(s, t) !== null)
   const advance = (t: number) => {

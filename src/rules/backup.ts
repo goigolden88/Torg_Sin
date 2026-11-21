@@ -49,6 +49,7 @@ export const BAD_STORE = 'Служебные записи копии битые'
 const LOG_TYPES: Record<LogEntry['type'], true> = {
   'room.created': true,
   'room.settle-mode': true,
+  'room.pace': true,
   'member.added': true,
   'join.requested': true,
   'join.rejected': true,

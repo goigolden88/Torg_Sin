@@ -16,15 +16,16 @@ import type {
   OutcomeMark,
   OutcomeView,
 } from './protocol'
+import { NORMAL_TIMES, recordTimes, timesOf, type Times } from './pace'
 import type { LogEntry } from './room'
 
-const HOUR = 60 * 60 * 1000
-const DAY = 24 * HOUR
-// Сроки исхода (Архитектура, «Правила» — «Исход пула», «Окончательность»; Р-17)
-export const OBJECTION_TIME = DAY // на возражение после предложения
-export const AUTHOR_SILENCE = 3 * DAY // после «исход ожидается к» — предложить может ведущий
-export const VOTING_TIME = 72 * HOUR // голосование не ставивших
-export const FINAL_TIME = 7 * DAY // после утверждения без апелляции — окончательный
+// Сроки исхода (Архитектура, «Правила» — «Исход пула», «Окончательность»; Р-17) — обычного темпа
+// (Р-35). Правила берут сроки события (times — закреплённые при создании, timesOf); константы — для
+// экранов, пока они не знают темпа
+export const OBJECTION_TIME = NORMAL_TIMES.objection // на возражение после предложения
+export const AUTHOR_SILENCE = NORMAL_TIMES.silence // после «исход ожидается к» — предложить может ведущий
+export const VOTING_TIME = NORMAL_TIMES.court // голосование не ставивших
+export const FINAL_TIME = NORMAL_TIMES.appeal // после утверждения без апелляции — окончательный
 
 export const MAX_EVENT_TEXT = 300 // условие, «как проверяем», уточнение, причина отмены и возражения
 export const MAX_OUTCOME = 40
@@ -204,9 +205,11 @@ type Round = {
 // Событие из журнала. requestId — только для сервера (узнать повтор), наружу не идёт.
 // hostId — ведущий комнаты. Поля хода исхода — нынешнего предложения; withdrawn — снятые
 // «ещё не известно» (Р-27), по порядку. closedAt — миг досрочного закрытия приёма: первое
-// предложение раньше «приём до» (Р-27); нет — null
+// предложение раньше «приём до» (Р-27); нет — null. times — сроки, закреплённые при создании (Р-35);
+// нет — обычный набор (timesOf)
 export type EventState = EventInfo &
   Round & {
+    times?: Times
     requestId: string
     clarifications: Clarification[]
     bets: Requested<BetInfo>[]
@@ -246,9 +249,11 @@ export function roomEvents(log: readonly LogEntry[]): EventState[] {
     if (e.type === 'member.added' && !members.includes(e.member)) members.push(e.member)
     if (e.type === 'event.created') {
       if (!events.has(e.id)) {
+        const times = recordTimes(e.times)
         events.set(e.id, {
           ...eventInfo(e),
           ...emptyRound(),
+          ...(times && { times }),
           requestId: e.requestId,
           clarifications: [],
           bets: [],
@@ -379,20 +384,22 @@ export function earlyProposal(e: { closesAt: number; proposal: { at: number } | 
 
 // Ставки за сутки до досрочного предложения (Р-27 и уточнение): запрета нет, но всем видно основание
 // возразить. Событие закрыто досрочно (closedAt — первое предложение раньше «приём до») — ставки с at
-// в [closedAt − сутки, closedAt], по времени; before — за сколько мс до closedAt; proposer — ставка
-// того, кто предложил исход (proposer — его номер, нет — null). Закрыто в срок или ещё идёт — пусто
-export const LATE_BET_TIME = DAY
+// в [closedAt − срок возражения, closedAt] (сутки у обычного темпа; Р-35 — срок события), по времени;
+// before — за сколько мс до closedAt; proposer — ставка того, кто предложил исход (proposer — его номер,
+// нет — null). Закрыто в срок или ещё идёт — пусто
+export const LATE_BET_TIME = NORMAL_TIMES.objection
 
 export type LateBet = { id: string; memberId: string; outcome: string; amount: number; at: number; before: number; proposer: boolean }
 
 export function lateBets(
-  e: { closedAt?: number | null; bets: readonly { id: string; memberId: string; outcome: string; amount: number; at: number }[] },
+  e: { closedAt?: number | null; times?: Times; bets: readonly { id: string; memberId: string; outcome: string; amount: number; at: number }[] },
   proposer: string | null = null,
 ): LateBet[] {
   const closedAt = e.closedAt
   if (closedAt === undefined || closedAt === null) return []
+  const window = timesOf(e).objection
   return e.bets
-    .filter((b) => b.at >= closedAt - LATE_BET_TIME && b.at <= closedAt)
+    .filter((b) => b.at >= closedAt - window && b.at <= closedAt)
     .sort((a, b) => a.at - b.at)
     .map((b) => ({ id: b.id, memberId: b.memberId, outcome: b.outcome, amount: b.amount, at: b.at, before: closedAt - b.at, proposer: b.memberId === proposer }))
 }
@@ -416,7 +423,7 @@ export function eventRefunds(e: EventState, outcome: OutcomeView | null = null):
 // Кто есть кто в событии — поля, по которым решается, кому что можно. Есть и у EventState сервера,
 // и у EventView сайта (ведущий — из комнаты): экран зовёт те же функции, что сервер
 type WithBets = { bets: readonly { memberId: string }[] }
-type EventRoles = WithBets & { authorId: string; subjectId: string | null; hostId: string; expectedAt: number }
+type EventRoles = WithBets & { authorId: string; subjectId: string | null; hostId: string; expectedAt: number; times?: Times }
 
 // Ставил ли участник на событие
 export function betOn(e: WithBets, memberId: string): boolean {
@@ -481,15 +488,15 @@ export function eventVoters(e: EventState): string[] {
 
 // Может ли участник предложить исход на now — и после «приём до», и раньше («Исход уже известен»:
 // приём закроется в миг предложения, Р-27); есть ли уже предложение — проверяет вызывающий:
-// автор, если он не предмет спора; ведущий — если автор предмет спора или молчит 3 дня после
-// «исход ожидается к»; предмет спора — никогда. Ведущий завёл событие о себе (он и автор, и
+// автор, если он не предмет спора; ведущий — если автор предмет спора или молчит после «исход
+// ожидается к» срок молчания (3 дня у обычного темпа; Р-35 — срок события); предмет спора — никогда. Ведущий завёл событие о себе (он и автор, и
 // предмет) — любой участник, кроме предмета спора: первое предложение — единственное (Р-19;
 // снятое «ещё не известно» — не в счёт, Р-27)
 export function mayPropose(e: Omit<EventRoles, 'bets'>, memberId: string, now: number): boolean {
   if (memberId === e.subjectId) return false
   if (e.authorId === e.hostId && e.subjectId === e.hostId) return true
   if (memberId === e.authorId) return true
-  return memberId === e.hostId && (e.authorId === e.subjectId || now >= e.expectedAt + AUTHOR_SILENCE)
+  return memberId === e.hostId && (e.authorId === e.subjectId || now >= e.expectedAt + timesOf(e).silence)
 }
 
 export function markOut(m: OutcomeMark): OutcomeMark {
@@ -514,11 +521,12 @@ export function voteWinner(votes: readonly OutcomeMark[]): string | null {
 }
 
 // Голосование по возражению на now: голоса в срок, срок, конец (проголосовали все или некому —
-// сразу; иначе через 72 часа; ещё идёт — null) и победитель (voteWinner; не кончилось — null)
+// сразу; иначе через срок суда — 72 часа у обычного темпа, Р-35; ещё идёт — null) и победитель
+// (voteWinner; не кончилось — null)
 function voting(e: EventState, now: number) {
   const voters = eventVoters(e)
   const start = e.objections[0]?.at ?? 0
-  const until = start + VOTING_TIME
+  const until = start + timesOf(e).court
   const votes = e.votes.filter((v) => voters.includes(v.by) && v.at < until).map(markOut)
   const end = votes.length === voters.length ? (votes.at(-1)?.at ?? start) : now >= until ? until : null
   return { voters, until, votes, end, winner: end === null ? null : voteWinner(votes) }
@@ -535,16 +543,18 @@ export function withdrawnAt(e: EventState, now: number): number | null {
 
 // Исход события на now (время сервера) — из журнала, без будильника: согласились все ставившие
 // (кроме предложившего) до возражения — утверждён и окончательный в миг последнего согласия (никто,
-// кроме предложившего, не ставил — в миг предложения; Р-21); иначе «утверждён сам» через сутки
-// без возражения, голосование кончается через 72 часа или когда проголосовали все, «окончательный» —
-// через 7 дней после утверждения. Не предложен — null. Отменённое событие — статус «отменено» на
+// кроме предложившего, не ставил — в миг предложения; Р-21); иначе «утверждён сам» через срок
+// возражения без возражения, голосование кончается через срок суда или когда проголосовали все,
+// «окончательный» — через срок апелляции после утверждения. Сроки — события (Р-35; обычный темп:
+// сутки, 72 часа, 7 дней). Не предложен — null. Отменённое событие — статус «отменено» на
 // любом шаге, без выплат и без finalAt: окончательным не станет (возврат — eventRefunds; Р-19).
 // Досрочное предложение снято «ещё не известно» — статус «снято», исход предложат снова (Р-27).
 // court — дело суда по событию (roomAppeals в appeal.ts; Р-24), нет — null
 export function eventOutcome(e: EventState, now: number, court: CourtCase | null = null): OutcomeView | null {
   const p = e.proposal
   if (!p) return null
-  const objectionUntil = p.at + OBJECTION_TIME
+  const times = timesOf(e)
+  const objectionUntil = p.at + times.objection
   const voters = eventVoters(e)
   const early = earlyProposal(e)
   // Чьё согласие нужно: ставившие, кроме предложившего (он согласен, если ставил). Согласие —
@@ -579,7 +589,7 @@ export function eventOutcome(e: EventState, now: number, court: CourtCase | null
   }
   let settled: ReturnType<typeof settlePool> | null = null
   // Согласием всех — окончательный сразу: апелляцию подают ставившие, а они согласны (Р-21)
-  let finalAt = approved ? approved.at + (approved.how === 'agreed' ? 0 : FINAL_TIME) : null
+  let finalAt = approved ? approved.at + (approved.how === 'agreed' ? 0 : times.appeal) : null
   // Суд (Р-24): апелляция подана до окончательности — окончательный с решения суда; «изменить» —
   // утверждён судом; «отменить» — отменено с возвратом. Суд по «ждёт суда» — «изменить» или отмена
   let courtCancels = false

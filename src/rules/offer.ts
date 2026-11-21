@@ -6,16 +6,19 @@
 // статусы считаются, не хранятся. Ни DOM, ни Cloudflare
 import { checkAmount, FINAL_TIME, MAX_EVENT_TEXT, NEED_CHECK, NEED_CONDITION, LONG_CHECK, LONG_CONDITION } from './event'
 import { appealView, courtVerdict, courtView, type CourtCase } from './court'
+import { NORMAL_TIMES, recordTimes, timesOf, type Times } from './pace'
 import type { AppealView, CourtView, OfferInfo, OfferView } from './protocol'
 import { foldLog, type LogEntry, type RoomState } from './room'
 
-const DAY = 24 * 60 * 60 * 1000
+// Сроки пари — обычного темпа (Р-35): все три — срок молчания (silence), окончательность — срок
+// апелляции (FINAL_TIME). Правила берут сроки пари (times — закреплённые при создании, timesOf);
+// константы — для экранов, пока они не знают темпа.
 // Сторона молчит 3 дня после первой отметки (не отметил никто — после «исход к») — решает гарант (Р-27)
-export const SIDE_SILENCE = 3 * DAY
+export const SIDE_SILENCE = NORMAL_TIMES.silence
 // Гарант молчит 3 дня с мига, как решение перешло к нему, — нужен другой гарант
-export const GUARANTOR_SILENCE = 3 * DAY
+export const GUARANTOR_SILENCE = NORMAL_TIMES.silence
 // Правило гаранта (Р-31): стороны 3 дня не сходятся на новом гаранте — дело уходит в суд само
-export const NEED_GUARANTOR_TIME = 3 * DAY
+export const NEED_GUARANTOR_TIME = NORMAL_TIMES.silence
 export { FINAL_TIME }
 
 export const MIN_ODDS = 1
@@ -63,11 +66,11 @@ export const BAD_MARK = 'Отметка — «прав автор» или «п�
 export const AGREED = 'Исход уже утверждён согласием сторон'
 export const DECIDED = 'Гарант уже решил'
 export const ONLY_GUARANTOR = 'Это может только гарант пари'
-export const NOT_TURN = 'Стороны ещё отмечают исход — гарант решает, когда они разошлись или одна молчит 3 дня'
-export const GUARANTOR_LAPSED = 'Гарант не решил за 3 дня или отказался — стороны выбирают другого'
+export const NOT_TURN = 'Стороны ещё отмечают исход — гарант решает, когда они разошлись или одна молчит дольше срока'
+export const GUARANTOR_LAPSED = 'Гарант не решил в срок или отказался — стороны выбирают другого'
 export const GUARANTOR_PRESENT = 'Гарант на месте — выбирать другого не нужно'
 // Правило гаранта (Р-31): суд собран по «ждёт суда» — решает только он
-export const IN_COURT = 'Пари решает суд: 3 дня без общего гаранта прошли — назвать гаранта и отметить исход уже нельзя'
+export const IN_COURT = 'Пари решает суд: срок выбрать общего гаранта прошёл — назвать гаранта и отметить исход уже нельзя'
 
 type Checked<T> = { ok: true; value: T } | { ok: false; error: string }
 
@@ -243,6 +246,8 @@ export type OfferCreated = {
   // Правило гаранта (Р-31): часы гаранта — с «исход к», без общего гаранта — суд. Нет (у пари до
   // выкатки) — прежние часы и без суда
   guarantorRule?: boolean
+  // Сроки (Р-35), закреплённые при создании; нет (у пари до темпа) — обычный набор
+  times?: Times
 }
 type OfferAct<T extends string, X = object> = { type: T; id: string; at: number; memberId: string; offer: string } & X
 export type OfferRecord =
@@ -258,7 +263,7 @@ export type OfferRecord =
 
 export type OfferMark = { by: OfferSide; winner: OfferSide; at: number }
 
-// Пари из записей
+// Пари из записей; times — сроки пари (Р-35), нет — обычный набор (timesOf)
 export type OfferState = Omit<OfferCreated, 'type' | 'memberId' | 'guarantor' | 'guarantorRule'> & {
   guarantorRule: boolean // правило гаранта (Р-31)
   courtAt: number | null // суд по «ждёт суда» собран (Р-31); нет — null
@@ -372,16 +377,18 @@ export function currentMarks(o: OfferState): Record<OfferSide, OfferSide | null>
   return m
 }
 
-// С какого мига решает гарант. Прежние пари (Р-27): отметки разошлись или одна сторона молчит 3 дня
-// после первой отметки — и раньше «исход к»; не отметил никто — 3 дня после «исход к». Правило
-// гаранта (Р-31): раньше «исход к» исход утверждают только совпавшие отметки — молчание — 3 дня с
-// max(первая отметка, «исход к»), расхождение — с max(миг расхождения, «исход к»); что раньше
+// С какого мига решает гарант. Прежние пари (Р-27): отметки разошлись или одна сторона молчит срок
+// молчания после первой отметки — и раньше «исход к»; не отметил никто — срок молчания после «исход
+// к». Правило гаранта (Р-31): раньше «исход к» исход утверждают только совпавшие отметки — молчание —
+// срок с max(первая отметка, «исход к»), расхождение — с max(миг расхождения, «исход к»); что раньше.
+// Срок молчания — пари (Р-35; 3 дня у обычного темпа)
 export function guarantorTurn(o: OfferState): number {
+  const wait = timesOf(o).silence
   if (!o.guarantorRule) {
-    const silence = (o.marks[0]?.at ?? o.expectedAt) + SIDE_SILENCE
+    const silence = (o.marks[0]?.at ?? o.expectedAt) + wait
     return o.disagreedAt === null ? silence : Math.min(o.disagreedAt, silence)
   }
-  const silence = Math.max(o.marks[0]?.at ?? o.expectedAt, o.expectedAt) + SIDE_SILENCE
+  const silence = Math.max(o.marks[0]?.at ?? o.expectedAt, o.expectedAt) + wait
   return o.disagreedAt === null ? silence : Math.min(Math.max(o.disagreedAt, o.expectedAt), silence)
 }
 
@@ -389,15 +396,17 @@ export function guarantorTurn(o: OfferState): number {
 // court — «ждёт суда» (Р-31): суд по пари собран, решает он
 export type OfferPhase = 'marking' | 'guarantor' | 'need-guarantor' | 'court' | 'approved' | 'final' | 'cancelled'
 
-// Ход исхода на now без суда: решение у гаранта — 3 дня с мига, как перешло к нему (назначен
-// сторонами позже — с назначения); не решил или отказался — нужен другой гарант
+// Ход исхода на now без суда: решение у гаранта — срок молчания с мига, как перешло к нему (назначен
+// сторонами позже — с назначения); не решил или отказался — нужен другой гарант. Окончательно — через
+// срок апелляции после решения гаранта. Сроки — пари (Р-35)
 function basePhase(o: OfferState, now: number) {
+  const times = timesOf(o)
   const turnAt = guarantorTurn(o)
-  const until = Math.max(turnAt, o.guarantorSince ?? turnAt) + GUARANTOR_SILENCE
+  const until = Math.max(turnAt, o.guarantorSince ?? turnAt) + times.silence
   let phase: OfferPhase = 'marking'
   let needSince: number | null = null
   if (o.agreed) phase = 'final'
-  else if (o.decision) phase = now >= o.decision.at + FINAL_TIME ? 'final' : 'approved'
+  else if (o.decision) phase = now >= o.decision.at + times.appeal ? 'final' : 'approved'
   else if (o.declinedAt !== null) [phase, needSince] = ['need-guarantor', o.declinedAt]
   else if (now >= until) [phase, needSince] = ['need-guarantor', until]
   else if (now >= turnAt) phase = 'guarantor'
@@ -411,12 +420,12 @@ function phaseOf(o: OfferState, now: number) {
   return base.phase === 'need-guarantor' && o.courtAt !== null && now >= o.courtAt ? { ...base, phase: 'court' as const } : base
 }
 
-// С какого мига дело уходит в суд (Р-31): 3 дня с мига, как нужен другой гарант. Правила нет или
-// другой гарант не нужен — null
+// С какого мига дело уходит в суд (Р-31): срок молчания пари (3 дня у обычного темпа; Р-35) с мига,
+// как нужен другой гарант. Правила нет или другой гарант не нужен — null
 export function courtFrom(o: OfferState, now: number): number | null {
   if (!o.guarantorRule || !o.accepted) return null
   const { phase, needSince } = basePhase(o, now)
-  return phase === 'need-guarantor' && needSince !== null ? needSince + NEED_GUARANTOR_TIME : null
+  return phase === 'need-guarantor' && needSince !== null ? needSince + timesOf(o).silence : null
 }
 
 // Пора ли суду по пари (Р-31, как «ждёт суда» у пула): правило есть, общего гаранта 3 дня не назвали.
@@ -474,7 +483,9 @@ export function roomOffers(records: readonly OfferRecord[], room: RoomRoles): Of
       }
       const g = offerGuarantor({ to: r.to, guarantor: r.guarantor, subject: r.subject }, r.memberId, room)
       if (!g.ok || g.value !== r.guarantor || checkOfferTimes(r, r.at) || checkOfferSubject(r, r.memberId, room)) continue
+      const times = recordTimes(r.times)
       offers.set(r.id, {
+        ...(times && { times }),
         id: r.id,
         at: r.at,
         authorId: r.memberId,
@@ -567,7 +578,7 @@ export type OfferOutcome = {
   needSince: number | null // с какого мига нужен другой гарант
   nominations: Partial<Record<OfferSide, string>>
   approved: { winner: OfferSide; at: number; how: 'agreement' | 'guarantor' | 'court'; by: string | null } | null
-  finalAt: number | null // согласием — сразу; гарантом — через 7 дней; апелляция — с решения суда (Р-24)
+  finalAt: number | null // согласием — сразу; гарантом — через срок апелляции пари (7 дней у обычного, Р-35); апелляция — с решения суда (Р-24)
   // Суда нет — полей нет: ответ как до этапа 4 (всегда — с подъёмом версии протокола, задача сервера)
   appeal?: AppealView | null
   court?: CourtView | null
@@ -588,7 +599,7 @@ export function offerOutcome(o: OfferState, now: number, court: CourtCase | null
     : o.decision
       ? { winner: o.decision.winner, at: o.decision.at, how: 'guarantor' as const, by: o.decision.by }
       : null
-  let finalAt = approved ? (approved.how === 'agreement' ? approved.at : approved.at + FINAL_TIME) : null
+  let finalAt = approved ? (approved.how === 'agreement' ? approved.at : approved.at + timesOf(o).appeal) : null
   if (court?.appeal && approved) {
     const decision = courtVerdict(court, now)
     phase = 'approved'
@@ -685,6 +696,8 @@ export function offerRecord(e: OfferEntry): OfferRecord {
         subject: e.subject ?? null,
         // Правило гаранта (Р-31): у пари до выкатки поля нет — и в записи правил его нет
         ...(e.guarantorRule === 1 && { guarantorRule: true }),
+        // Сроки (Р-35): у пари до темпа поля нет — и в записи правил его нет
+        ...(e.times !== undefined && { times: e.times }),
       }
   }
 }
