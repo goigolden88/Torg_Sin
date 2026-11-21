@@ -40,6 +40,13 @@ describe('checkBackup', () => {
     expect(checkBackup(member)).toEqual({ ok: true, backup: member })
   })
 
+  it('темп комнаты (Р-35): поле room.created и запись room.pace — годные', () => {
+    const paced: LogEntry = { ...created, pace: 'fast' } as LogEntry
+    const change: LogEntry = { id: 'E4', at: 400, memberId: 'M1', type: 'room.pace', pace: 'normal', requestId: 'Q2' }
+    const log = [paced, host, bet, change]
+    expect(checkBackup({ ...member, log })).toEqual({ ok: true, backup: { ...member, log } })
+  })
+
   it('лишние поля сверху (версия протокола ответа) в копию не попадают', () => {
     expect(checkBackup({ v: 6, ...full })).toEqual({ ok: true, backup: full })
   })

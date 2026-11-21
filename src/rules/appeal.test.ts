@@ -57,6 +57,7 @@ import {
 } from './appeal'
 import { eventOutcome, eventView, FINAL_TIME, OBJECTION_TIME, roomEvents, VOTING_TIME, type EventState } from './event'
 import { checkNominate, NEED_GUARANTOR_TIME, offerOutcome, offerResult, offerView, roomOffers, type OfferRecord, type OfferState } from './offer'
+import { FAST_TIMES, type Times } from './pace'
 import { isEventView, isOfferView, type CourtVerdict } from './protocol'
 import { foldLog, type LogEntry, type RoomState } from './room'
 
@@ -893,4 +894,73 @@ describe('журнал комнаты (logAppeals, Р-25)', () => {
     expect(logAppeals(withCourt.slice(1))).toEqual([])
     expect(courtRoomOf(foldLog(withCourt) as RoomState)).toEqual(courtRoom(MEMBERS))
   })
+})
+
+describe('сроки апелляции и суда — из события и пари (темп комнаты, Р-35)', () => {
+  const CUSTOM: Times = { objection: 6 * HOUR, appeal: 3 * DAY, silence: 2 * DAY, court: 5 * DAY }
+  const SETS: [string, Times][] = [
+    ['быстрый', FAST_TIMES],
+    ['свой', CUSTOM],
+  ]
+  const REASON = 'Скрин смонтирован'
+
+  it('дело по записи без times — срок места обычный (SEAT_TIME)', () => {
+    const c = poolCase([filed('B', FILED)]) as CourtCase
+    expect(c.seatTime).toBeUndefined()
+    expect(courtState(c, FILED).seats.every((s) => s.until === FILED + SEAT_TIME)).toBe(true)
+  })
+
+  for (const [name, t] of SETS) {
+    describe(name, () => {
+      const log = [...roomLog(MEMBERS), { ...created(), times: t } as LogEntry, bet('A', '1', 300), bet('B', '2', 100), bet('C', '2', 100), propose('A', '1')]
+      const approved = P + t.objection
+      const target = (): AppealTarget => ({ kind: 'event', event: eventOf(log) })
+
+      it('апелляция пула — до срока апелляции после утверждения', () => {
+        expect(checkAppeal(target(), null, 'B', REASON, ROOM, approved - 1)).toBe(NOT_APPROVED)
+        expect(checkAppeal(target(), null, 'B', REASON, ROOM, approved)).toBeNull()
+        expect(checkAppeal(target(), null, 'B', REASON, ROOM, approved + t.appeal - 1)).toBeNull()
+        expect(checkAppeal(target(), null, 'B', REASON, ROOM, approved + t.appeal)).toBe(FINAL)
+        // Подана ровно в срок — не действует
+        expect(poolCase([filed('B', approved + t.appeal)], log)).toBeNull()
+      })
+
+      it('место в суде — срок суда события; молчал — замена, у заменившего тот же срок', () => {
+        const at = approved + HOUR
+        const c = poolCase([filed('B', at)], log) as CourtCase
+        expect(c.seatTime).toBe(t.court)
+        expect(courtState(c, at).seats.map((s) => s.until)).toEqual([at + t.court, at + t.court, at + t.court])
+        expect(checkCourtVote(target(), c, J1, { verdict: 'keep' }, at + t.court - 1)).toBeNull()
+        expect(checkCourtVote(target(), c, J1, { verdict: 'keep' }, at + t.court)).not.toBeNull()
+        const after = courtState(c, at + t.court)
+        expect(after.seats.find((s) => s.member === SPARE)).toMatchObject({ since: at + t.court, until: at + 2 * t.court })
+        // Все промолчали — «оставить» без большинства, исход окончательный с решения суда
+        expect(courtVerdict(c, at + 2 * t.court)).toEqual({ at: at + 2 * t.court, majority: false, verdict: 'keep' })
+        expect(eventOutcome(eventOf(log), at + 2 * t.court, c)).toMatchObject({ status: 'final', finalAt: at + 2 * t.court })
+      })
+
+      it('пари: апелляция — до срока апелляции после решения гаранта; срок места — суда пари', () => {
+        const o = offerOf(offerRecords().map((r) => (r.type === 'offer.created' ? { ...r, times: t } : r)))
+        expect(checkAppeal(of(o), null, 'b', REASON, OFFER_ROOM, DECIDED + t.appeal - 1)).toBeNull()
+        expect(checkAppeal(of(o), null, 'b', REASON, OFFER_ROOM, DECIDED + t.appeal)).toBe(FINAL)
+        const c = offerCase([offerFiled('b', DECIDED + 1)], o) as CourtCase
+        expect(c.seatTime).toBe(t.court)
+        expect(courtState(c, DECIDED + 1).seats.every((s) => s.until === DECIDED + 1 + t.court)).toBe(true)
+      })
+
+      it('пари без общего гаранта: суд сам через срок молчания, место — срок суда', () => {
+        const [createdOffer, accepted] = offerRecords()
+        const declined = T + 20
+        const o = offerOf([
+          { ...createdOffer, guarantorRule: true, times: t } as OfferRecord,
+          accepted,
+          { type: 'offer.declined', id: 'r5', at: declined, memberId: 'h', offer: 'o1' },
+        ])
+        expect(checkCourtDraw(of(o), null, declined + t.silence - 1)).toBe(NOT_COURT)
+        expect(checkCourtDraw(of(o), null, declined + t.silence)).toBeNull()
+        const c = offerCase([drawn(declined + t.silence, ['c', 'g', 'n'], 'o1')], o) as CourtCase
+        expect(c).toMatchObject({ appeal: null, seatTime: t.court })
+      })
+    })
+  }
 })

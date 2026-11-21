@@ -72,6 +72,7 @@ import {
   type OfferState,
 } from './offer'
 import { LONG_CONDITION, NEED_CHECK, NEED_CONDITION, BAD_AMOUNT } from './event'
+import { FAST_TIMES, NORMAL_TIMES, type Times } from './pace'
 import type { LogEntry } from './room'
 
 const DAY = 24 * 60 * 60 * 1000
@@ -738,4 +739,89 @@ describe('о ком спор у пари (Р-26)', () => {
     expect(subjectIsSide(view('b', { by: 'b' }))).toBe(true)
     expect(subjectIsSide(view('c', { by: 'b' }))).toBe(false)
   })
+})
+
+describe('сроки пари — из записи (темп комнаты, Р-35)', () => {
+  const HOUR = 60 * 60 * 1000
+  const CUSTOM: Times = { objection: 6 * HOUR, appeal: 3 * DAY, silence: 2 * DAY, court: 5 * DAY }
+  const SETS: [string, Times][] = [
+    ['быстрый', FAST_TIMES],
+    ['свой', CUSTOM],
+  ]
+
+  it('запись без times — обычный набор', () => {
+    const o = accepted([mark('a', 'author', T + 20), mark('b', 'taker', T + 30), decide('h', 'taker', T + 40)])
+    expect(o.times).toBeUndefined()
+    expect(offerOutcome(o, T + 40)?.finalAt).toBe(T + 40 + NORMAL_TIMES.appeal)
+    expect(offerOutcome(accepted(), EXPECT)?.turnAt).toBe(EXPECT + NORMAL_TIMES.silence)
+  })
+
+  it('сроки — поле записи журнала: в правилах есть, в ответе — нет', () => {
+    const { type: _type, subject: _subject, ...c } = created({ times: FAST_TIMES })
+    void _type
+    void _subject
+    const e: LogEntry = { ...c, type: 'offer.created', requestId: 'q' }
+    expect(isOfferEntry(e) && offerRecord(e)).toEqual(created({ times: FAST_TIMES }))
+    const roomLog: LogEntry[] = [
+      { id: 'r', at: 0, memberId: 'h', type: 'room.created', roomId: 'R', name: 'Дача', currency: 'RUB' },
+      ...['h', 'a', 'b'].map((m): LogEntry => ({ id: 'm' + m, at: 0, memberId: 'h', type: 'member.added', member: m, name: m })),
+    ]
+    const [o] = logOffers([...roomLog, e])
+    expect(o.times).toEqual(FAST_TIMES)
+    expect('times' in offerInfo(o)).toBe(false)
+  })
+
+  for (const [name, t] of SETS) {
+    describe(name, () => {
+      const timed = (more: OfferRecord[] = [], over: Partial<OfferCreated> = {}) =>
+        one([created({ times: t, ...over }), act('offer.accepted', 'b', T + 10), ...more])
+
+      it('сроки закреплены в пари', () => {
+        expect(timed().times).toEqual(t)
+      })
+
+      it('молчание второй стороны — срок молчания с первой отметки', () => {
+        const first = T + 20
+        const o = timed([mark('a', 'author', first)])
+        expect(offerOutcome(o, first + t.silence - 1)?.phase).toBe('marking')
+        expect(checkDecide(o, 'h', 'author', first + t.silence - 1)).toBe(NOT_TURN)
+        expect(offerOutcome(o, first + t.silence)).toMatchObject({ phase: 'guarantor', turnAt: first + t.silence })
+        // Никто не отметил — срок молчания после «исход к»
+        expect(offerOutcome(timed(), EXPECT + t.silence - 1)?.phase).toBe('marking')
+        expect(offerOutcome(timed(), EXPECT + t.silence)?.phase).toBe('guarantor')
+      })
+
+      it('правило гаранта: молчание — с max(первая отметка, «исход к»)', () => {
+        const o = timed([mark('a', 'author', T + 20)], { guarantorRule: true })
+        expect(offerOutcome(o, EXPECT + t.silence - 1)).toMatchObject({ phase: 'marking', turnAt: EXPECT + t.silence })
+        expect(offerOutcome(o, EXPECT + t.silence)?.phase).toBe('guarantor')
+      })
+
+      it('часы гаранта — срок молчания; не решил — нужен другой', () => {
+        const turn = T + 30
+        const o = timed([mark('a', 'author', T + 20), mark('b', 'taker', turn)])
+        expect(offerOutcome(o, turn)).toMatchObject({ phase: 'guarantor', guarantorUntil: turn + t.silence })
+        expect(checkDecide(o, 'h', 'author', turn + t.silence - 1)).toBeNull()
+        expect(offerOutcome(o, turn + t.silence)).toMatchObject({ phase: 'need-guarantor', needSince: turn + t.silence })
+        expect(checkDecide(o, 'h', 'author', turn + t.silence)).toBe(GUARANTOR_LAPSED)
+      })
+
+      it('«нужен другой гарант» — срок молчания до суда', () => {
+        const declined = T + 20
+        const o = timed([act('offer.declined', 'h', declined)], { guarantorRule: true })
+        expect(courtFrom(o, declined)).toBe(declined + t.silence)
+        expect(courtDue(o, declined + t.silence - 1)).toBe(false)
+        expect(courtDue(o, declined + t.silence)).toBe(true)
+      })
+
+      it('решение гаранта окончательно через срок апелляции', () => {
+        const d = timed([mark('a', 'author', T + 20), mark('b', 'taker', T + 30), decide('h', 'taker', T + 40)])
+        expect(offerOutcome(d, T + 40)).toMatchObject({ phase: 'approved', finalAt: T + 40 + t.appeal })
+        expect(offerOutcome(d, T + 40 + t.appeal - 1)?.phase).toBe('approved')
+        expect(offerResult(d, T + 40 + t.appeal - 1)).toEqual([])
+        expect(offerOutcome(d, T + 40 + t.appeal)?.phase).toBe('final')
+        expect(offerResult(d, T + 40 + t.appeal)).toHaveLength(2)
+      })
+    })
+  }
 })
