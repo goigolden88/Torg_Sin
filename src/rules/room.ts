@@ -2,6 +2,7 @@
 // Общее для экрана и сервера: ни DOM, ни Cloudflare
 import { CURRENCIES, isCurrencyCode, type CurrencyCode } from './currency'
 import type { AuthorSide, Odds, OfferSide } from './offer'
+import type { Pace, Times } from './pace'
 import type { CourtVerdict } from './protocol'
 import type { SettleMode } from './settle'
 
@@ -20,10 +21,22 @@ type EntryBase = { id: string; at: number; memberId: string }
 
 export type LogEntry =
   // Комната создана; автор — ведущий. settleMode — режим «кто кому» (Р-32), если выбран при создании:
-  // нет поля — «по ставкам» (у старых комнат и у старого сайта)
-  | (EntryBase & { type: 'room.created'; roomId: string; name: string; currency: CurrencyCode; settleMode?: SettleMode })
+  // нет поля — «по ставкам» (у старых комнат и у старого сайта). pace — темп комнаты (Р-35, pace.ts), times
+  // — его сроки, только у «своего»; нет поля — обычный
+  | (EntryBase & {
+      type: 'room.created'
+      roomId: string
+      name: string
+      currency: CurrencyCode
+      settleMode?: SettleMode
+      pace?: Pace
+      times?: Times
+    })
   // Ведущий сменил режим «кто кому» (Р-32, checkSettleMode в settle.ts); requestId — номер запроса
   | (EntryBase & { type: 'room.settle-mode'; mode: SettleMode; requestId: string })
+  // Ведущий сменил темп комнаты (Р-35, checkPaceChange в pace.ts): только для новых событий и пари;
+  // times — только у «своего»; requestId — номер запроса
+  | (EntryBase & { type: 'room.pace'; pace: Pace; times?: Times; requestId: string })
   // Участник впущен; автор — кто впустил (ведущего при создании «впускает» он сам).
   // Впущен по заявке — номер участника тот же, что у заявки
   | (EntryBase & { type: 'member.added'; member: string; name: string })
@@ -52,6 +65,8 @@ export type LogEntry =
       // Правило предмета (Р-26): предмет ставит только на «Да», в событии со своими исходами — не
       // ставит. Пишется у событий с предметом, заведённых после выкатки; у старых поля нет — правила нет
       subjectRule?: 1
+      // Сроки исхода, апелляции и суда (Р-35) — темп комнаты на миг создания; нет поля — обычный набор
+      times?: Times
       requestId: string
     })
   // Ставка участника (автор) на исход события; отменить нельзя
@@ -92,6 +107,8 @@ export type LogEntry =
       // Правило гаранта (Р-31): часы гаранта — с «исход к», 3 дня без общего гаранта — суд. Пишется у
       // пари, предложенных после выкатки; у старых поля нет — прежние часы, без суда
       guarantorRule?: 1
+      // Сроки исхода, апелляции и суда (Р-35) — темп комнаты на миг создания; нет поля — обычный набор
+      times?: Times
       requestId: string
     })
   // Пари принято; автор записи — принявший (соперник)
@@ -188,6 +205,9 @@ export function applyEntry(state: RoomState | null, e: LogEntry): RoomState | nu
     case 'court.drawn':
     case 'court.voted':
     case 'court.replaced':
+      return state
+    // Темп комнаты считает logPace (pace.ts)
+    case 'room.pace':
       return state
     // Режим «кто кому» и переводы считает сервер с правилами расчёта (settle.ts)
     case 'room.settle-mode':

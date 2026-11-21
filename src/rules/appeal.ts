@@ -20,7 +20,7 @@ export const NOT_SIDE = 'Апелляцию подаёт сторона пари
 export const APPEAL_EXISTS = 'Апелляция уже подана — присоединитесь к ней'
 export const NOT_APPROVED = 'Исход ещё не утверждён — апелляция после утверждения'
 export const AGREED_FINAL = 'Исход утверждён согласием — он окончательный, апелляции нет'
-export const FINAL = 'Исход уже окончательный: 7 дней на апелляцию прошли'
+export const FINAL = 'Исход уже окончательный: срок апелляции прошёл'
 export const CANCELLED = 'Событие отменено — апелляции нет'
 export const NO_JUDGES = 'В комнате некому судить: все участники заинтересованы'
 // Присоединиться
@@ -29,7 +29,7 @@ export const OWN_APPEAL = 'Апелляцию подали вы — присое
 export const ALREADY_JOINED = 'Вы уже присоединились к апелляции'
 export const COURT_DECIDED = 'Суд уже решил — решение окончательное'
 // Суд без апелляции
-export const NOT_COURT = 'Суд без апелляции собирается, только когда исход «ждёт суда» или у пари 3 дня нет общего гаранта'
+export const NOT_COURT = 'Суд без апелляции собирается, только когда исход «ждёт суда» или стороны пари в срок не сошлись на новом гаранте'
 export const COURT_EXISTS = 'Суд уже собран'
 export const BAD_SEED = 'Зерно жребия — шестнадцатеричные цифры'
 export const BAD_CANDIDATES = 'Кандидаты в суд — участники комнаты без заинтересованных'
@@ -147,6 +147,13 @@ function targetId(t: AppealTarget): string {
   return t.kind === 'event' ? t.event.id : t.offer.id
 }
 
+// Срок места в суде — срок суда цели, закреплённый при создании (Р-35); у записей до темпа поля нет —
+// и у дела нет: SEAT_TIME
+function seatTimeOf(t: AppealTarget): { seatTime?: number } {
+  const times = t.kind === 'event' ? t.event.times : t.offer.times
+  return times ? { seatTime: times.court } : {}
+}
+
 // Кандидаты в суд на миг at: участники комнаты, впущенные к этому мигу, кроме заинтересованных — у
 // пула: ставившие, автор, предмет спора, ведущий, решивший возражение; у пари: стороны и нынешний
 // гарант; и кроме also — подавшего и присоединившихся (они и так ставившие или стороны). Голосовавшие
@@ -156,8 +163,8 @@ export function courtCandidates(t: AppealTarget, room: CourtRoom, at: number, al
   return [...new Set(room.members.filter((m) => m.addedAt <= at).map((m) => m.id))].filter((m) => !out.has(m))
 }
 
-// Подать апелляцию на now: исход утверждён, но не согласием и ещё не окончательный (7 дней с
-// утверждения); у пула — ставивший, кроме согласившихся (Р-21), у пари — сторона; одна на событие или
+// Подать апелляцию на now: исход утверждён, но не согласием и ещё не окончательный (срок апелляции
+// цели с утверждения: 7 дней у обычного темпа, Р-35); у пула — ставивший, кроме согласившихся (Р-21), у пари — сторона; одна на событие или
 // пари; причина — не пустая, ≤ 300 знаков; есть кому судить. existing — дело суда по цели или null
 export function checkAppeal(
   t: AppealTarget,
@@ -294,6 +301,7 @@ export function roomAppeals(
         if (checkDraw(r.seed, r.candidates, courtCandidates(t, room, r.at, [r.memberId]))) break
         const reason = appealReason(r.reason) as { ok: true; value: string }
         cases.set(targetId(t), {
+          ...seatTimeOf(t),
           target: targetId(t),
           appeal: { id: r.id, at: r.at, by: r.memberId, reason: reason.value, joined: [] },
           seed: r.seed,
@@ -307,6 +315,7 @@ export function roomAppeals(
       case 'court.drawn':
         if (checkCourtDraw(t, c, r.at) || checkDraw(r.seed, r.candidates, courtCandidates(t, room, r.at))) break
         cases.set(targetId(t), {
+          ...seatTimeOf(t),
           target: targetId(t),
           appeal: null,
           seed: r.seed,

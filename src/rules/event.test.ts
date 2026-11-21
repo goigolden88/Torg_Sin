@@ -67,6 +67,7 @@ import {
   YES,
   yesNoOutcomes,
 } from './event'
+import { FAST_TIMES, NORMAL_TIMES, type Times } from './pace'
 import type { CourtVerdict } from './protocol'
 import type { LogEntry } from './room'
 
@@ -761,6 +762,83 @@ describe('исход события', () => {
       const yes = [...voting, vote('C', '1', E + 2 * HOUR), vote('D', '1', E + 3 * HOUR)]
       expect(outcomeAt(yes, E + 3 * HOUR)).toMatchObject({ status: 'approved', approved: { outcome: '1', how: 'vote' } })
     })
+  })
+
+  describe('сроки события — из записи (темп комнаты, Р-35)', () => {
+    // «Свой» набор — из списков pace.ts, у каждого срока не как у обычного и быстрого
+    const CUSTOM: Times = { objection: 6 * HOUR, appeal: 3 * DAY, silence: 2 * DAY, court: 5 * DAY }
+    const SETS: [string, Times][] = [
+      ['быстрый', FAST_TIMES],
+      ['свой', CUSTOM],
+    ]
+    const withTimes = (times: Times, subject: string | null = null): LogEntry => ({ ...created(subject), times } as LogEntry)
+
+    it('запись без times — обычный набор: старые события не меняются', () => {
+      const e = roomEvents([...base, propose('A', '1')])[0]
+      expect(e.times).toBeUndefined()
+      expect(eventOutcome(e, P)).toMatchObject({ objectionUntil: P + NORMAL_TIMES.objection })
+      expect(eventOutcome(e, P + DAY)?.finalAt).toBe(P + DAY + NORMAL_TIMES.appeal)
+      // Битое поле — тоже обычный набор
+      const broken = roomEvents([...room, { ...created(), times: { objection: 0 } } as unknown as LogEntry])[0]
+      expect(broken.times).toBeUndefined()
+    })
+
+    for (const [name, t] of SETS) {
+      describe(name, () => {
+        const log = [...room, withTimes(t), bet('A', '1', 300), bet('B', '2', 100)]
+
+        it('сроки закреплены в событии', () => {
+          expect(roomEvents(log)[0].times).toEqual(t)
+        })
+
+        it('возражение: за 1 мс до срока — предложен, ровно в срок — утверждён сам', () => {
+          const proposed = [...log, propose('A', '1')]
+          expect(outcomeAt(proposed, P + t.objection - 1)).toMatchObject({ status: 'proposed', objectionUntil: P + t.objection })
+          expect(outcomeAt(proposed, P + t.objection)).toMatchObject({ status: 'approved', approved: { at: P + t.objection, how: 'unopposed' } })
+          // Возражение за 1 мс до срока — спор, сам не утверждается
+          expect(outcomeAt([...proposed, object('B', P + t.objection - 1)], P + t.objection)?.status).toBe('disputed')
+        })
+
+        it('окончательность — через срок апелляции после утверждения', () => {
+          const approved = P + t.objection
+          const proposed = [...log, propose('A', '1')]
+          expect(outcomeAt(proposed, approved)?.finalAt).toBe(approved + t.appeal)
+          expect(outcomeAt(proposed, approved + t.appeal - 1)?.status).toBe('approved')
+          expect(outcomeAt(proposed, approved + t.appeal)?.status).toBe('final')
+          // Решение ведущего — тоже через срок апелляции
+          const decided = [...proposed, object('B', P + HOUR), decide('H', '2', P + 2 * HOUR)]
+          expect(outcomeAt(decided, P + 2 * HOUR)?.finalAt).toBe(P + 2 * HOUR + t.appeal)
+        })
+
+        it('голосование не ставивших — срок суда с первого возражения', () => {
+          const voting = [...log, bet('H', '1', 50), propose('A', '1'), object('B', P), vote('C', '2', P + 1)]
+          expect(outcomeAt(voting, P)).toMatchObject({ votingUntil: P + t.court })
+          expect(outcomeAt(voting, P + t.court - 1)?.status).toBe('voting')
+          expect(outcomeAt(voting, P + t.court)).toMatchObject({ status: 'approved', approved: { outcome: '2', at: P + t.court, how: 'vote' } })
+          // Голос ровно в срок не считается
+          const late = [...log, bet('H', '1', 50), propose('A', '1'), object('B', P), vote('C', '2', P + t.court)]
+          expect(outcomeAt(late, P + t.court)).toMatchObject({ status: 'court', votes: [] })
+        })
+
+        it('молчание автора: ведущий предлагает через срок молчания после «исход ожидается к»', () => {
+          const e = roomEvents(log)[0]
+          expect(mayPropose(e, 'H', 3_000 + t.silence - 1)).toBe(false)
+          expect(mayPropose(e, 'H', 3_000 + t.silence)).toBe(true)
+        })
+
+        it('поздние ставки — в окне срока возражения до досрочного предложения', () => {
+          const E = 1_000 + 3 * DAY
+          const early: LogEntry = { ...withTimes(t), closesAt: 1_000 + 7 * DAY, expectedAt: 1_000 + 8 * DAY } as LogEntry
+          const at = (who: string, when: number): LogEntry => ({ id: 'B' + who, at: when, memberId: who, type: 'bet.placed', event: 'E1', outcome: '1', amount: 100, requestId: 'QB' + who })
+          const bets = [at('B', E - t.objection - 1), at('C', E - t.objection), at('D', E)]
+          const e = roomEvents([...room, early, ...bets, propose('A', '1', E)])[0]
+          expect(lateBets(e).map((b) => [b.memberId, b.before])).toEqual([
+            ['C', t.objection],
+            ['D', 0],
+          ])
+        })
+      })
+    }
   })
 
   describe('ставки за сутки до досрочного предложения (Р-27)', () => {
