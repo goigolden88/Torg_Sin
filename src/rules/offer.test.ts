@@ -757,9 +757,10 @@ describe('сроки пари — из записи (темп комнаты, Р
   })
 
   it('сроки — поле записи журнала: в правилах есть, в ответе — нет', () => {
-    const { type: _type, subject: _subject, ...c } = created({ times: FAST_TIMES })
+    const { type: _type, subject: _subject, guarantorRule: _rule, ...c } = created({ times: FAST_TIMES })
     void _type
     void _subject
+    void _rule
     const e: LogEntry = { ...c, type: 'offer.created', requestId: 'q' }
     expect(isOfferEntry(e) && offerRecord(e)).toEqual(created({ times: FAST_TIMES }))
     const roomLog: LogEntry[] = [
