@@ -810,6 +810,45 @@ describe('пари без общего гаранта — суд сам (Р-31)'
   })
 })
 
+// Пари без гаранта (Р-36): стороны разошлись до «исход к» — суд с «исход к», без часов гаранта
+describe('пари без гаранта — разошлись, сразу суд (Р-36)', () => {
+  const base = (): OfferRecord[] => {
+    const [created, accepted, markA, markB] = offerRecords()
+    return [{ ...created, guarantor: null, guarantorRule: true } as OfferRecord, accepted, markA, markB]
+  }
+  const courtRecord: OfferRecord = { type: 'court.drawn', id: 'k1', at: EXPECT, memberId: 'h', offer: 'o1' }
+  // Заинтересованы только стороны a и b: ведущий h — тоже кандидат
+  const CANDIDATES = ['h', 'c', 'g', 'n']
+  const ORDER = drawCourt(SEED, CANDIDATES, 'h')
+
+  it('суд — с мига хода гаранта; кандидаты — все, кроме сторон; «прав соперник» — окончательно', () => {
+    const o = offerOf(base())
+    expect(o.guarantorId).toBeNull()
+    expect(checkCourtDraw(of(o), null, EXPECT - 1)).toBe(NOT_COURT)
+    expect(checkCourtDraw(of(o), null, EXPECT)).toBeNull()
+    expect(courtCandidates(of(o), OFFER_ROOM, EXPECT)).toEqual(CANDIDATES)
+    const inCourt = offerOf([...base(), courtRecord])
+    const votes: CourtVerdict[] = [{ verdict: 'change', winner: 'taker' }, { verdict: 'change', winner: 'taker' }, { verdict: 'cancel' }]
+    const c = offerCase([drawn(EXPECT, CANDIDATES, 'o1'), ...votes.map((v, i) => voted(ORDER[i], EXPECT + 1 + i, v, 'o1'))], inCourt) as CourtCase
+    expect(c).toMatchObject({ appeal: null, drawnAt: EXPECT })
+    expect(offerOutcome(inCourt, EXPECT + 3, c)).toMatchObject({ phase: 'final', guarantorId: null, approved: { winner: 'taker', how: 'court' } })
+    expect(offerResult(inCourt, EXPECT + 3, c)).toEqual([
+      { memberId: 'a', net: -300 },
+      { memberId: 'b', net: 300 },
+    ])
+    expect(isOfferView(offerView(inCourt, EXPECT + 3, c))).toBe(true)
+  })
+
+  it('суд не собрать (кандидатов нет) — «нужен гарант»: стороны называют общего', () => {
+    const sides: CourtRoom = { hostId: 'h', members: ['a', 'b'].map((m) => ({ id: m, addedAt: 0 })) }
+    const o = offerOf(base())
+    // Кандидатов нет — сервер записи о суде не пишет (drawDueCourts)
+    expect(courtCandidates(of(o), sides, EXPECT)).toEqual([])
+    expect(offerOutcome(o, EXPECT + DAY)).toMatchObject({ phase: 'need-guarantor', needSince: EXPECT })
+    expect(checkNominate(o, 'a', 'c', ROLES, EXPECT + DAY)).toBeNull()
+  })
+})
+
 describe('свёртка записей (roomAppeals)', () => {
   it('записи не по правилам не действуют', () => {
     // Чужие кандидаты, плохое зерно, неизвестная цель, присоединение без апелляции

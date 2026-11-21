@@ -4,7 +4,9 @@
 // 5 — «Исход уже известен» (Р-27): closedAt у события, статус исхода «снято», «ещё не известно» в
 // решении ведущего и голосе
 // 6 — правило гаранта (Р-31): guarantorRule у пари, фаза исхода пари «ждёт суда» (court)
-export const PROTOCOL_VERSION = 6
+// 7 — пари без гаранта (Р-36): guarantorId у пари и его исхода может быть null, noGuarantor в
+// «Предложить пари» и во встречном, guarantor во встречном
+export const PROTOCOL_VERSION = 7
 
 // Ответ GET /health: сервер жив, его протокол и время (UTC, мс) — по нему закрываются сроки
 export type Health = { v: number; ok: true; time: number }
@@ -125,7 +127,7 @@ export type OfferInfo = {
   to: string | null // адресат; null — открытое
   closesAt: number // приём до (не включая)
   expectedAt: number // исход к
-  guarantorId: string
+  guarantorId: string | null // нынешний гарант; null — пари без гаранта (Р-36), пока стороны его не назвали
   counterTo: string | null
   subjectId: string | null // о ком спор (Р-26): только на стороне «сбудется», не гарант; null — ни о ком
   // Правило гаранта (Р-31): часы гаранта — с «исход к», 3 дня без общего гаранта — суд. У пари,
@@ -144,7 +146,8 @@ export type OfferAct = { id: string; at: number; by: string; offer: string }
 export type OfferSide = 'author' | 'taker'
 
 // Ход исхода пари (Р-23) на now: «стороны отмечают» / «решает гарант» / «нужен другой гарант» /
-// «ждёт суда» (Р-31: 3 дня без общего гаранта, суд собран) / «утверждён» / «окончательный» /
+// «ждёт суда» (Р-31: срок молчания без общего гаранта, суд собран; Р-36: без гаранта — сразу, как
+// стороны разошлись или одна молчит) / «утверждён» / «окончательный» /
 // «отменено судом» (Р-24: без выплат)
 export type OfferPhase = 'marking' | 'guarantor' | 'need-guarantor' | 'court' | 'approved' | 'final' | 'cancelled'
 
@@ -198,8 +201,10 @@ export type ReplaceJurorRequest = { v?: number; member: string; reason: string; 
 export type ReplaceJurorResponse = { v: number; replaced: CourtAct & { member: string; reason: string } }
 
 // Исход принятого пари (offerOutcome в offer.ts): marks — последняя отметка каждой стороны (null — не
-// отмечала); guarantorId — нынешний гарант; turnAt — с какого мига решает гарант; guarantorUntil — до
-// какого мига он решает (утверждено — null); needSince — с какого мига нужен другой гарант;
+// отмечала); guarantorId — нынешний гарант (без гаранта — null, Р-36); turnAt — с какого мига решает
+// гарант (без гаранта — с какого мига дело у суда); guarantorUntil — до какого мига он решает
+// (утверждено или гаранта нет — null); needSince — с какого мига нужен другой гарант (без гаранта —
+// с turnAt: суд или, если судить некому, гарант, которого назовут стороны);
 // nominations — кого называют стороны; approved — что, когда, как и кем утверждено (судом — by null);
 // finalAt — с какого мига окончательный (согласием — сразу, гарантом — через 7 дней; апелляция подана —
 // с решения суда, до него — null); appeal и court — апелляция и суд (Р-24; суд без апелляции — appeal
@@ -207,7 +212,7 @@ export type ReplaceJurorResponse = { v: number; replaced: CourtAct & { member: s
 export type OfferOutcomeView = {
   phase: OfferPhase
   marks: Record<OfferSide, OfferSide | null>
-  guarantorId: string
+  guarantorId: string | null
   turnAt: number
   guarantorUntil: number | null
   needSince: number | null
@@ -231,7 +236,8 @@ export type OfferView = OfferInfo & {
 }
 
 // POST /rooms/<номер>/offers — предложить пари. side не задана — «сбудется»; to не задан — открытое;
-// guarantor не задан — ведущий. requestId — номер запроса (ULID): повтор — то же пари и тот же ответ
+// guarantor не задан — ведущий; noGuarantor: true — без гаранта (Р-36; guarantor тогда не задают).
+// requestId — номер запроса (ULID): повтор — то же пари и тот же ответ
 export type CreateOfferRequest = {
   v?: number
   condition: string
@@ -243,13 +249,24 @@ export type CreateOfferRequest = {
   closesAt: number
   expectedAt: number
   guarantor?: string
+  noGuarantor?: boolean
   subject?: string // о ком спор (Р-26); не задан — ни о ком
   requestId?: string
 }
 export type CreateOfferResponse = { v: number; offer: OfferInfo }
 // POST …/offers/<пари>/counter — встречное: свои кэф и/или сумма (не заданы — исходного) и «приём до»;
-// остальное — исходного, сторона — обратная, адресат — автор исходного. Ответ — новое пари
-export type CounterOfferRequest = { v?: number; odds?: { a: number; b: number }; amount?: number; closesAt: number; requestId?: string }
+// гарант — выбор автора встречного (Р-36): guarantor — участник, noGuarantor: true — без гаранта, ни
+// того ни другого — гарант исходного (у исходного без гаранта — тоже без); остальное — исходного,
+// сторона — обратная, адресат — автор исходного. Ответ — новое пари
+export type CounterOfferRequest = {
+  v?: number
+  odds?: { a: number; b: number }
+  amount?: number
+  closesAt: number
+  guarantor?: string
+  noGuarantor?: boolean
+  requestId?: string
+}
 // POST …/offers/<пари>/accept и /revoke — принять и отозвать
 export type OfferActRequest = { v?: number; requestId?: string }
 export type AcceptOfferResponse = { v: number; accepted: OfferAct; offer: OfferInfo }
@@ -732,7 +749,8 @@ function orNull(x: unknown, type: 'string' | 'number'): boolean {
 function isOfferInfo(r: Record<string, unknown>): boolean {
   const odds = record(r.odds)
   return (
-    strings(r, 'id', 'authorId', 'condition', 'check', 'guarantorId') &&
+    strings(r, 'id', 'authorId', 'condition', 'check') &&
+    orNull(r.guarantorId, 'string') &&
     numbers(r, 'at', 'amount', 'takerAmount', 'closesAt', 'expectedAt') &&
     (r.side === 'yes' || r.side === 'no') &&
     !!odds &&
@@ -760,7 +778,7 @@ function isOfferOutcome(r: Record<string, unknown>): boolean {
     !!marks &&
     (marks.author === null || isSide(marks.author)) &&
     (marks.taker === null || isSide(marks.taker)) &&
-    strings(r, 'guarantorId') &&
+    orNull(r.guarantorId, 'string') &&
     numbers(r, 'turnAt') &&
     orNull(r.guarantorUntil, 'number') &&
     orNull(r.needSince, 'number') &&

@@ -70,7 +70,8 @@ function outcomeState(
     }),
     disagreedAt: out.turnAt,
     agreed: a?.how === 'agreement' ? { winner: a.winner, at: a.at } : null,
-    decision: a?.how === 'guarantor' ? { winner: a.winner, at: a.at, by: a.by ?? out.guarantorId } : null,
+    // Решение гаранта бывает, только когда гарант есть
+    decision: a?.how === 'guarantor' ? { winner: a.winner, at: a.at, by: a.by ?? out.guarantorId ?? '' } : null,
     declinedAt: out.phase === 'need-guarantor' || courtAt !== null ? out.needSince : null,
     nominations: { ...out.nominations },
     courtAt,
@@ -193,7 +194,9 @@ export function oddsLabel(odds: { a: number; b: number }): string {
 }
 
 // «Аня (вы)» — для себя, иначе имя
-export function who(room: SavedRoom, memberId: string): string {
+export function who(room: SavedRoom, memberId: string | null): string {
+  // Гаранта нет (пари без гаранта, Р-36)
+  if (memberId === null) return 'без гаранта'
   return nameOf(room, memberId) + (memberId === room.memberId ? ' (вы)' : '')
 }
 
