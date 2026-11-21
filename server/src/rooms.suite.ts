@@ -59,6 +59,9 @@ import {
   GUARANTOR_TAKES,
   IN_COURT,
   NEED_GUARANTOR_TIME,
+  NO_GUARANTOR,
+  NO_GUARANTOR_CHOSEN,
+  NO_GUARANTOR_JUDGES,
   MARK_EARLY,
   NEED_GUARANTOR,
   NEED_TIMES as OFFER_NEED_TIMES,
@@ -2791,6 +2794,141 @@ export function roomsSuite(
         await ok(offerAct(s, room.roomId, vera.key, offer.id, 'nominate', { guarantor: room.memberId }))
         expect(await offerOutcome(s, room.roomId, vera.key, offer.id)).toMatchObject({ phase: 'guarantor', guarantorId: room.memberId, needSince: null })
         expect(await courtEntries(s, room.roomId)).toEqual([])
+      })
+
+      describe('пари без гаранта (Р-36)', () => {
+        const offerForm = (s: TestServer, more: Record<string, unknown> = {}) => ({
+          v: PROTOCOL_VERSION,
+          condition: 'Вася бросит курить',
+          check: 'Скажет сам',
+          odds: { a: 1, b: 1 },
+          amount: 100,
+          closesAt: s.clock.now + HOUR,
+          expectedAt: s.clock.now + DAY,
+          noGuarantor: true,
+          ...more,
+        })
+
+        it('судить есть кому: в маленькой комнате — отказ (адресное и открытое); есть — пари без гаранта, в записи guarantor null', async () => {
+          const s = await server()
+          const room = await create(s)
+          const borya = await member(s, room, 'Боря')
+          const id = room.roomId
+          // Двое: адресное Ани Боре — судить некому; открытое Бори — кроме него только Аня
+          await refused(send(s, id, 'offers', offerForm(s, { to: borya.memberId }), room.key), 400, NO_GUARANTOR_JUDGES)
+          await refused(send(s, id, 'offers', offerForm(s), borya.key), 400, NO_GUARANTOR_JUDGES)
+          const vera = await member(s, room, 'Вера')
+          // Трое: адресное Бори Вере — судит Аня; открытое Бори — один примет, один судит
+          const addressed = await ok<CreateOfferResponse>(send(s, id, 'offers', offerForm(s, { to: vera.memberId }), borya.key))
+          expect(isCreateOfferResponse(addressed)).toBe(true)
+          expect(addressed.offer).toMatchObject({ to: vera.memberId, guarantorId: null, guarantorRule: true })
+          const open = await ok<CreateOfferResponse>(send(s, id, 'offers', offerForm(s), borya.key))
+          expect(open.offer.guarantorId).toBeNull()
+          // Предмет спора не судья: открытое о Вере — кроме автора и предмета только Аня
+          await refused(send(s, id, 'offers', offerForm(s, { subject: vera.memberId }), borya.key), 400, NO_GUARANTOR_JUDGES)
+          // «Без гаранта» и гарант вместе — отказ; «без гаранта» не «да/нет» — отказ
+          await refused(send(s, id, 'offers', offerForm(s, { guarantor: room.memberId }), borya.key), 400, NO_GUARANTOR_CHOSEN)
+          await refused(send(s, id, 'offers', offerForm(s, { noGuarantor: 'да' }), borya.key), 400, BAD_GUARANTOR)
+          const created = (await readLog(s.storage(id))).flatMap((e) => (e.type === 'offer.created' ? [e.guarantor] : []))
+          expect(created).toEqual([null, null])
+          // Повтор того же запроса — то же пари
+          const requestId = ulid(s.clock.now)
+          const first = await ok<CreateOfferResponse>(send(s, id, 'offers', offerForm(s, { to: vera.memberId, requestId }), borya.key))
+          expect(await ok(send(s, id, 'offers', offerForm(s, { to: vera.memberId, requestId }), borya.key))).toEqual(first)
+          // В ответе комнаты — пари без гаранта; исхода нет, пока не принято
+          const view = (await stateOf(s, id, room.key)).offers?.find((o) => o.id === addressed.offer.id)
+          expect(view).toMatchObject({ guarantorId: null, status: 'open', outcome: null })
+          // Без гаранта ведущая принимает открытое: она не гарант
+          await ok(offerAct(s, id, room.key, open.offer.id, 'accept'))
+        })
+
+        it('совпали — окончательно сразу; разошлись — суд сразу, без часов гаранта; «Утвердить» и «Отказаться» — «У пари нет гаранта»', async () => {
+          const s = await server()
+          const { room, borya, vera, gosha, dasha, zhenya } = await room6(s)
+          const keyOf = keys(room, borya, vera, gosha, dasha, zhenya)
+          const id = room.roomId
+          // Совпали — согласием, окончательно сразу
+          const { offer: agreed } = await ok<CreateOfferResponse>(send(s, id, 'offers', offerForm(s), borya.key))
+          await ok(offerAct(s, id, vera.key, agreed.id, 'accept'))
+          await ok(offerAct(s, id, borya.key, agreed.id, 'mark', { winner: 'author' }))
+          await ok(offerAct(s, id, vera.key, agreed.id, 'mark', { winner: 'author' }))
+          expect(await offerOutcome(s, id, gosha.key, agreed.id)).toMatchObject({ phase: 'final', guarantorId: null, approved: { how: 'agreement', winner: 'author' } })
+          // Разошлись после «исход к» — первый запрос собирает суд: кандидаты — все, кроме сторон (ведущая тоже)
+          const { offer } = await ok<CreateOfferResponse>(send(s, id, 'offers', offerForm(s), borya.key))
+          await ok(offerAct(s, id, vera.key, offer.id, 'accept'))
+          s.clock.now = offer.expectedAt
+          await ok(offerAct(s, id, borya.key, offer.id, 'mark', { winner: 'author' }))
+          expect(await offerOutcome(s, id, gosha.key, offer.id)).toMatchObject({ phase: 'marking', guarantorId: null, guarantorUntil: null })
+          expect(await courtEntries(s, id)).toEqual([])
+          s.seeds.push(SEED)
+          await ok(offerAct(s, id, vera.key, offer.id, 'mark', { winner: 'taker' }))
+          const apartAt = s.clock.now
+          const candidates = [room.memberId, gosha.memberId, dasha.memberId, zhenya.memberId]
+          const order = A.drawCourt(SEED, candidates, room.memberId)
+          expect(await offerOutcome(s, id, gosha.key, offer.id)).toMatchObject({
+            phase: 'court',
+            guarantorId: null,
+            guarantorUntil: null,
+            needSince: apartAt,
+            approved: null,
+            appeal: null,
+            court: { seed: SEED, drawnAt: apartAt, candidates: order, decision: null },
+          })
+          expect(await courtEntries(s, id)).toEqual(['court.drawn'])
+          // Гаранта нет — решить и отказаться некому; назвать гаранта и отметить — уже суд
+          await refused(offerAct(s, id, room.key, offer.id, 'decide', { winner: 'author' }), 409, NO_GUARANTOR)
+          await refused(offerAct(s, id, room.key, offer.id, 'decline'), 409, NO_GUARANTOR)
+          await refused(offerAct(s, id, borya.key, offer.id, 'nominate', { guarantor: gosha.memberId }), 409, IN_COURT)
+          await refused(offerAct(s, id, vera.key, offer.id, 'mark', { winner: 'author' }), 409, IN_COURT)
+          // Суд: «прав соперник» большинством — окончательно сразу
+          const judge = (memberId: string, body: Record<string, unknown>) => offerAct(s, id, keyOf(memberId), offer.id, 'judge', body)
+          await ok(judge(order[0], { verdict: 'change', winner: 'taker' }))
+          await ok(judge(order[1], { verdict: 'change', winner: 'taker' }))
+          await ok(judge(order[2], { verdict: 'cancel' }))
+          expect(await offerOutcome(s, id, borya.key, offer.id)).toMatchObject({ phase: 'final', approved: { winner: 'taker', how: 'court', by: null }, finalAt: s.clock.now })
+          expect(await courtEntries(s, id)).toEqual(['court.drawn', 'court.voted', 'court.voted', 'court.voted'])
+        })
+
+        it('вторая сторона молчит — суд через срок молчания темпа комнаты (быстрый — 12 ч)', async () => {
+          const s = await server()
+          const room = await create(s, { ...FORM, pace: 'fast' })
+          const borya = await member(s, room, 'Боря')
+          const vera = await member(s, room, 'Вера')
+          await member(s, room, 'Гоша')
+          const id = room.roomId
+          const { offer } = await ok<CreateOfferResponse>(send(s, id, 'offers', offerForm(s), borya.key))
+          await ok(offerAct(s, id, vera.key, offer.id, 'accept'))
+          s.clock.now = offer.expectedAt
+          await ok(offerAct(s, id, borya.key, offer.id, 'mark', { winner: 'author' }))
+          const due = offer.expectedAt + P.FAST_TIMES.silence
+          s.clock.now = due - 1
+          expect(await offerOutcome(s, id, vera.key, offer.id)).toMatchObject({ phase: 'marking', turnAt: due })
+          expect(await courtEntries(s, id)).toEqual([])
+          s.clock.now = due
+          s.seeds.push(SEED)
+          expect(await offerOutcome(s, id, vera.key, offer.id)).toMatchObject({ phase: 'court', needSince: due, court: { drawnAt: due } })
+          expect(await courtEntries(s, id)).toEqual(['court.drawn'])
+        })
+
+        it('встречное: гарант — выбор автора встречного; не выбрал — как у исходного', async () => {
+          const s = await server()
+          const { room, borya, vera, gosha, dasha } = await room6(s)
+          const id = room.roomId
+          // Исходное с гарантом (ведущая): встречное без гаранта, с Дашей, без выбора — с ведущей
+          const { offer } = await ok<CreateOfferResponse>(send(s, id, 'offers', offerForm(s, { noGuarantor: undefined }), borya.key))
+          expect(offer.guarantorId).toBe(room.memberId)
+          const counter = (key: string, body: Record<string, unknown>) =>
+            ok<CreateOfferResponse>(offerAct(s, id, key, offer.id, 'counter', { closesAt: s.clock.now + HOUR, ...body }))
+          expect((await counter(vera.key, { noGuarantor: true })).offer).toMatchObject({ guarantorId: null, to: borya.memberId, counterTo: offer.id })
+          expect((await counter(gosha.key, { guarantor: dasha.memberId })).offer.guarantorId).toBe(dasha.memberId)
+          expect((await counter(dasha.key, {})).offer.guarantorId).toBe(room.memberId)
+          await refused(offerAct(s, id, vera.key, offer.id, 'counter', { closesAt: s.clock.now + HOUR, noGuarantor: true, guarantor: gosha.memberId }), 400, NO_GUARANTOR_CHOSEN)
+          await refused(offerAct(s, id, vera.key, offer.id, 'counter', { closesAt: s.clock.now + HOUR, guarantor: vera.memberId }), 400, BAD_GUARANTOR)
+          // Исходное без гаранта: встречное без выбора — тоже без
+          const { offer: none } = await ok<CreateOfferResponse>(send(s, id, 'offers', offerForm(s), borya.key))
+          const c = await ok<CreateOfferResponse>(offerAct(s, id, vera.key, none.id, 'counter', { closesAt: s.clock.now + HOUR }))
+          expect(c.offer.guarantorId).toBeNull()
+        })
       })
 
       it('отказы подачи: согласием — окончательный, 7 дней прошли, отменено, некому судить; нет спора — 404, без ключа — 403, кривое тело — 400', async () => {
