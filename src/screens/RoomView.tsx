@@ -149,7 +149,7 @@ function PaceWindow({ room, current, onClose, onDone }: { room: SavedRoom; curre
 
   return (
     <div className="modal-backdrop" onClick={() => !busy.current && onClose()}>
-      <form className="modal form" role="dialog" aria-modal="true" aria-label="Изменить темп" onClick={(e) => e.stopPropagation()} onSubmit={submit}>
+      <form className="modal form pace-modal" role="dialog" aria-modal="true" aria-label="Изменить темп" onClick={(e) => e.stopPropagation()} onSubmit={submit}>
         <p className="modal-question">Изменить темп комнаты?</p>
         <PacePicker value={draft} onChange={setDraft} current={current.pace} autoFocus />
         <p>

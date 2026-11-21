@@ -1406,6 +1406,11 @@ h3 {
   border-radius: 10px;
 }
 
+/* Окно смены темпа длиннее экрана телефона: части не сжимаются, окно прокручивается */
+.pace-modal > * {
+  flex-shrink: 0;
+}
+
 .pace-line {
   display: flex;
   flex-wrap: wrap;
@@ -1413,7 +1418,7 @@ h3 {
   gap: 0.5rem 1rem;
 }
 
-.pace-line .hint {
+.pace-line > .hint {
   flex: 1 1 16rem;
   margin: 0;
 }

@@ -12,9 +12,10 @@ export function PacePicker({
 }: {
   value: PaceDraft
   onChange: (next: PaceDraft) => void
-  current?: Pace // нынешний темп комнаты — пометка «(сейчас)» в окне смены
+  current?: Pace // нынешний темп комнаты — пометка «(сейчас)» в окне смены; нет — это создание комнаты
   autoFocus?: boolean
 }) {
+  const creating = current === undefined
   const setTime = (k: TimeKey, ms: number) => onChange({ ...value, custom: { ...value.custom, [k]: ms } })
   return (
     <fieldset className="field pace-picker">
@@ -23,9 +24,11 @@ export function PacePicker({
         <label key={p} className="check">
           <input type="radio" name="pace" value={p} checked={value.pace === p} onChange={() => onChange({ ...value, pace: p })} autoFocus={autoFocus && value.pace === p} />
           <span>
-            {PACE_TITLE[p]}
-            {p === current ? <span className="hint"> (сейчас)</span> : null}
-            <span className="hint pace-times">{paceSummary(draftTimes({ ...value, pace: p }))}</span>
+            <span>
+              {PACE_TITLE[p]}
+              {p === current ? <span className="hint"> (сейчас)</span> : null}
+            </span>
+            <span className="hint">{paceSummary(draftTimes({ ...value, pace: p }))}</span>
           </span>
         </label>
       ))}
@@ -46,7 +49,7 @@ export function PacePicker({
           ))}
         </div>
       )}
-      <span className="hint">Сроки закрепляются в событии и пари при создании. Ведущий может сменить темп в комнате.</span>
+      {creating && <span className="hint">Сроки закрепляются в событии и пари при создании. Ведущий может сменить темп в комнате.</span>}
     </fieldset>
   )
 }

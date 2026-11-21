@@ -99,7 +99,7 @@ export async function courts(cdp: Cdp, size: Size, startServer: ServerModule['st
     await v.waitText('Нужна причина апелляции')
     await v.fill('Причина апелляции', 'Боря срезал через протоку — по треку видно')
     await v.click('Подать апелляцию')
-    await v.waitIn('.modal', 'Апелляция одна на событие. Суд: ведущий и 2 присяжных по жребию, 72 часа, решение окончательное.')
+    await v.waitIn('.modal', 'Апелляция одна на событие. Суд: ведущий и 2 присяжных по жребию, у каждого — 3 дня на голос, решение окончательное.')
     await v.shot('80a-apellyatsiya-podtverzhdenie')
     await confirmTwice(v, 'Апелляция: Вера (вы)')
     await v.waitIn(COURT, 'ещё не голосовал(а)')
