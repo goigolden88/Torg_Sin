@@ -4,7 +4,7 @@
 // правила, здесь — только перенос полей ответа. Без разметки: её — CourtBlock
 import type { CourtCase, CourtRoom } from '../rules/appeal'
 import type { EventState } from '../rules/event'
-import type { AppealView, CourtView, EventView, OfferView } from '../rules/protocol'
+import type { AppealView, CourtView, EventView, OfferView, TimesView } from '../rules/protocol'
 import type { SavedRoom } from '../store/db'
 
 type WithCourt = { appeal?: AppealView | null; court?: CourtView | null } | null
@@ -40,13 +40,16 @@ export function eventState(e: EventView, hostId: string): EventState {
     decision: o?.decision ? req(o.decision) : null,
     votes: o ? o.votes.map(req) : [],
     members: o ? [...o.voters] : [],
+    // Сроки события (Р-35), закреплённые при создании; сервер до темпа поля не шлёт — правила берут обычные
+    ...(e.times && { times: e.times }),
   }
 }
 
 // Дело суда из ответа (appeal и court у исхода) → CourtCase для правил: зерно, кандидаты (порядок
 // жребия — drawCourt даёт его же), миг жребия, ведущий; принятые записи — голоса мест и досрочные
-// замены ведущим (замены по сроку courtState считает сам), по времени. Суда нет — null
-export function courtCaseOf(target: string, out: WithCourt, hostId: string): CourtCase | null {
+// замены ведущим (замены по сроку courtState считает сам), по времени; срок места — срок суда цели (times,
+// Р-35; у цели до темпа поля нет — и у дела нет, как у сервера). Суда нет — null
+export function courtCaseOf(target: string, out: WithCourt, hostId: string, times?: TimesView): CourtCase | null {
   const c = out?.court
   if (!c) return null
   const acts: CourtCase['acts'] = []
@@ -59,6 +62,7 @@ export function courtCaseOf(target: string, out: WithCourt, hostId: string): Cou
   acts.sort((a, b) => a.at - b.at || (a.type === b.type ? 0 : a.type === 'replace' ? -1 : 1))
   const a = out?.appeal ?? null
   return {
+    ...(times && { seatTime: times.court }),
     target,
     appeal: a && { id: a.id, at: a.at, by: a.by, reason: a.reason, joined: a.joined.map((j) => ({ id: j.id, at: j.at, by: j.by })) },
     seed: c.seed,

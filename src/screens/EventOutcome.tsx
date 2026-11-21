@@ -6,13 +6,13 @@
 // — по событию, действию и выбору, хранится до ответа (двойное нажатие и повтор после «нет связи» —
 // одно действие, Р-13). Esc закрывает окно и форму здесь, не уводя с экрана. «Исход уже известен» —
 // досрочное предложение до «приём до»; по возражению на него — выбор «ещё не известно» (Р-27);
-// ставки за сутки до досрочного предложения — пометкой всем (lateBets, Р-30)
+// ставки за срок возражения до досрочного предложения — пометкой всем (lateBets, Р-30). Сроки в текстах —
+// события (times, Р-35), не постоянные
 import { useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
 import { agreeOutcome, decideOutcome, objectOutcome, proposeOutcome, voteOutcome, type Result } from '../api'
 import type { AppealTarget } from '../rules/appeal'
 import { formatCountdown, formatDateTime } from '../rules/date'
 import {
-  AUTHOR_SILENCE,
   betOn,
   checkObjection,
   earlyProposal,
@@ -26,6 +26,7 @@ import {
   NOT_YET,
   NOT_YET_TITLE,
 } from '../rules/event'
+import type { Times } from '../rules/pace'
 import { formatOdds, poolOdds } from '../rules/pool'
 import type { CourtVerdict, EventView, OutcomeView, Payout } from '../rules/protocol'
 import { formKey, requestFor, type PendingRequest } from '../rules/request'
@@ -34,6 +35,7 @@ import type { SavedRoom } from '../store/db'
 import { CourtBlock } from './CourtBlock'
 import { courtCaseOf, eventState } from './courtParts'
 import { money, nameOf } from './eventParts'
+import { spanText, viewTimes } from './paceParts'
 import type { Sync } from './useRoom'
 
 // Действия выбором исхода и их окна подтверждения
@@ -41,32 +43,34 @@ const CHOICE = {
   propose: {
     send: proposeOutcome,
     question: (t: string) => `Предложить „${t}“?`,
-    note: 'Ставившие смогут согласиться или возразить в течение суток. Предложение не отозвать.',
+    note: (t: Times) => `На согласие или возражение у ставивших — ${spanText(t.objection)}. Предложение не отозвать.`,
     button: 'Предложить',
     busyLabel: 'Предлагаю…',
   },
   decide: {
     send: decideOutcome,
     question: (t: string) => `Утвердить „${t}“ решением ведущего?`,
-    note: 'Исход станет утверждённым, выплаты посчитаются по нему. Решение не изменить.',
+    note: () => 'Исход станет утверждённым, выплаты посчитаются по нему. Решение не изменить.',
     button: 'Утвердить',
     busyLabel: 'Утверждаю…',
   },
   vote: {
     send: voteOutcome,
     question: (t: string) => `Голосовать за „${t}“?`,
-    note: 'Голос один, изменить его нельзя.',
+    note: () => 'Голос один, изменить его нельзя.',
     button: 'Голосовать',
     busyLabel: 'Голосую…',
   },
 }
 type Choice = keyof typeof CHOICE
 
-// Окно досрочного предложения (Р-27): приём закроется в миг предложения
-const EARLY_NOTE = [
-  'Приём ставок закроется сейчас — дальше как обычно: сутки на возражение.',
-  'Ставок больше не будет, даже если предложение снимут. Предложение не отозвать.',
-]
+// Окно досрочного предложения (Р-27): приём закроется в миг предложения; срок возражения — события (Р-35)
+function earlyNote(t: Times): string[] {
+  return [
+    `Приём ставок закроется сейчас — дальше как обычно: ${spanText(t.objection)} на возражение.`,
+    'Ставок больше не будет, даже если предложение снимут. Предложение не отозвать.',
+  ]
+}
 
 // «Ещё не известно» в решении ведущего и голосе (Р-27): вопрос и пояснение окна
 const NOT_YET_ASK: Record<'decide' | 'vote', { question: string; note: string; button?: string }> = {
@@ -118,6 +122,7 @@ export function EventOutcome({
   const title = (id: string) => (id === NOT_YET ? NOT_YET_TITLE : (event.outcomes.find((x) => x.id === id)?.title ?? id))
   const online = sync.state === 'ok'
   const status = eventStatus(event, now)
+  const times = viewTimes(event) // сроки события (Р-35); у события до темпа — обычные
 
   // Esc — сначала окно, потом форма возражения или выбор досрочного исхода; до «Назад» экрана событие не доходит
   function onKey(e: KeyboardEvent) {
@@ -153,7 +158,7 @@ export function EventOutcome({
     !!o && o.status === 'voting' && o.voters.includes(me) && !o.votes.some((v) => v.by === me) && o.votingUntil !== null && now < o.votingUntil
   // По возражению на досрочное предложение — ещё и «ещё не известно» (Р-27)
   const notYet = !!o && earlyProposal({ closesAt: event.closesAt, proposal: o.proposal })
-  // Ставки за сутки до досрочного предложения (Р-27) — всем, пока событие не отменено
+  // Ставки за срок возражения до досрочного предложения (Р-27) — всем, пока событие не отменено
   const late = o && o.status !== 'cancelled' && status !== 'cancelled' ? lateBets(event, o.proposal.by) : []
 
   function chosen(action: Choice, outcome: string) {
@@ -163,7 +168,7 @@ export function EventOutcome({
       slot: event.id + '/' + action,
       form: formKey(room.id, event.id, action, outcome),
       question: special ? special.question : c.question(title(outcome)),
-      note: special ? [special.note] : action === 'propose' && early ? EARLY_NOTE : [c.note],
+      note: special ? [special.note] : action === 'propose' && early ? earlyNote(times) : [c.note(times)],
       button: special?.button ?? c.button,
       busyLabel: c.busyLabel,
       send: (requestId) => c.send(room.server, room.id, room.key, event.id, { outcome, requestId }),
@@ -202,7 +207,7 @@ export function EventOutcome({
   // Апелляция и суд (Р-24): спор для правил — событие из ответа (eventState), дело суда — courtCaseOf.
   // «Оставить» — исход, утверждённый до суда (eventOutcome без суда — как у правил апелляции)
   const dispute: AppealTarget = { kind: 'event', event: eventState(event, room.hostId) }
-  const court = o ? courtCaseOf(event.id, o, room.hostId) : null
+  const court = o ? courtCaseOf(event.id, o, room.hostId, event.times) : null
   const before = eventOutcome(dispute.event, now)?.approved?.outcome ?? null
   const label = (v: CourtVerdict) =>
     v.verdict === 'keep' ? `оставить „${before === null ? '' : title(before)}“` : v.verdict === 'cancel' ? 'отменить — вернуть ставки' : `изменить на „${'outcome' in v ? title(v.outcome) : ''}“`
@@ -219,7 +224,7 @@ export function EventOutcome({
       ) : (
         <NotProposed room={room} event={event} now={now} />
       )}
-      {late.length > 0 && <LateBets room={room} bets={late} title={title} />}
+      {late.length > 0 && <LateBets room={room} bets={late} title={title} lateMs={times.objection} />}
       {o && (
         <CourtBlock
           room={room}
@@ -301,7 +306,7 @@ function whoProposes(room: SavedRoom, event: EventView, now: number): string {
   if (hostAboutSelf) who = `Событие ведущего о себе: предложить может любой участник, кроме ${nameOf(room, room.hostId)}; первое предложение — единственное.`
   else if (event.authorId === event.subjectId) who = `Автор — предмет спора, исход предлагает ведущий — ${nameOf(room, room.hostId)}.`
   else who = `Исход предлагает автор — ${nameOf(room, event.authorId)}.`
-  const silentFrom = event.expectedAt + AUTHOR_SILENCE
+  const silentFrom = event.expectedAt + viewTimes(event).silence
   const hostLater = room.memberId === room.hostId && !hostAboutSelf && event.authorId !== room.hostId && event.authorId !== event.subjectId && now < silentFrom
   return who + (hostLater ? ` Если автор промолчит, вы сможете предложить его сами с ${formatDateTime(silentFrom)}.` : '')
 }
@@ -339,6 +344,7 @@ function OutcomeState({
   title: (id: string) => string
 }) {
   const who = (id: string) => nameOf(room, id) + (id === room.memberId ? ' (вы)' : '')
+  const times = viewTimes(event)
   const p = o.proposal
   const proposed = `Предложен исход „${title(p.outcome)}“ (${who(p.by)}, ${formatDateTime(p.at)})`
   const approved = o.approved
@@ -379,7 +385,7 @@ function OutcomeState({
       <>
         <p className="outcome-head">
           {proposed}
-          {now < o.objectionUntil ? `, возразить до ${formatDateTime(o.objectionUntil)}` : ' — сутки на возражение прошли'}
+          {now < o.objectionUntil ? `, возразить до ${formatDateTime(o.objectionUntil)}` : ` — ${spanText(times.objection)} на возражение прошли`}
         </p>
         <Agreed event={event} o={o} who={who} />
       </>
@@ -405,7 +411,7 @@ function OutcomeState({
       <>
         <p className="outcome-head court">Ждёт суда</p>
         <p className="hint">
-          {courtReason(o)} {o.court ? 'Суд собран — ниже.' : 'Судить некому: все участники заинтересованы; ведущий может отменить событие с причиной.'}
+          {courtReason(o, times)} {o.court ? 'Суд собран — ниже.' : 'Судить некому: все участники заинтересованы; ведущий может отменить событие с причиной.'}
         </p>
       </>
     )
@@ -443,13 +449,15 @@ function OutcomeState({
   )
 }
 
-// Ставки за сутки до досрочного предложения (lateBets, Р-27): «Боря — 500 ₽ на „Да“, за 12 мин до
-// предложения», по времени; ставка того, кто предложил исход, — выделена. Запрета нет — основание возразить
-function LateBets({ room, bets, title }: { room: SavedRoom; bets: LateBet[]; title: (id: string) => string }) {
+// Ставки за срок возражения события до досрочного предложения (lateBets, Р-27, Р-35): «Боря — 500 ₽ на „Да“,
+// за 12 мин до предложения», по времени; ставка того, кто предложил исход, — выделена. Запрета нет —
+// основание возразить
+function LateBets({ room, bets, title, lateMs }: { room: SavedRoom; bets: LateBet[]; title: (id: string) => string; lateMs: number }) {
   const who = (id: string) => nameOf(room, id) + (id === room.memberId ? ' (вы)' : '')
+  const head = `Ставки за ${spanText(lateMs)} до досрочного предложения`
   return (
-    <section className="late-bets" aria-label="Ставки за сутки до досрочного предложения">
-      <p className="outcome-head">Ставки за сутки до досрочного предложения</p>
+    <section className="late-bets" aria-label={head}>
+      <p className="outcome-head">{head}</p>
       <ul className="outcome-log">
         {bets.map((b) => (
           <li key={b.id} className={b.proposer ? 'proposer' : ''}>
@@ -476,9 +484,9 @@ function Agreed({ event, o, who }: { event: EventView; o: OutcomeView; who: (id:
   )
 }
 
-function courtReason(o: OutcomeView): string {
+function courtReason(o: OutcomeView, times: Times): string {
   if (o.voters.length === 0) return 'Голосовать некому: все ставили или предмет спора. Исход не утверждён.'
-  if (o.votes.length === 0) return 'За 72 часа никто не проголосовал. Исход не утверждён.'
+  if (o.votes.length === 0) return `За ${spanText(times.court)} никто не проголосовал. Исход не утверждён.`
   return 'Голоса разделились поровну. Исход не утверждён.'
 }
 

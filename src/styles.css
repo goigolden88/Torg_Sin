@@ -1389,6 +1389,35 @@ h3 {
   gap: 1rem;
 }
 
+/* Темп комнаты (Р-35): сроки варианта — строкой под названием; «свой» — четыре списка столбцом,
+   шире — по два в ряд */
+.pace-picker .check > span {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.pace-custom {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1rem;
+  padding: 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.pace-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1rem;
+}
+
+.pace-line .hint {
+  flex: 1 1 16rem;
+  margin: 0;
+}
+
 /* Окно подтверждения ставки — поверх экрана, по центру */
 .modal-backdrop {
   position: fixed;
@@ -1434,7 +1463,8 @@ h3 {
     flex: none;
   }
 
-  .times {
+  .times,
+  .pace-custom {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
