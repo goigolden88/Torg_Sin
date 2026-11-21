@@ -128,6 +128,8 @@ import type {
   ReplaceJurorResponse,
   SettleModeResponse,
 } from '../../src/rules/protocol'
+import * as pace from '../../src/rules/pace'
+import type { PaceResponse } from '../../src/rules/protocol'
 import * as settle from '../../src/rules/settle'
 import { ulid } from '../../src/rules/ulid'
 import { deriveJoinKey, hashKey, randomSeed, randomToken, sameText } from './keys'
@@ -222,8 +224,24 @@ export async function append(storage: RoomStorage, entries: readonly LogEntry[])
 }
 
 // Что Worker передаёт комнате при создании: номер, проверенная форма, хеш ключа ведущего, приглашение;
-// режим «кто кому» (Р-32) — если выбран: нет — «по ставкам»
-export type CreateInput = RoomInput & { roomId: string; keyHash: string; invite: string; settleMode?: settle.SettleMode }
+// режим «кто кому» (Р-32) — если выбран: нет — «по ставкам»; темп (Р-35, проверен checkPace) — если
+// выбран: нет — обычный
+export type CreateInput = RoomInput & { roomId: string; keyHash: string; invite: string; settleMode?: settle.SettleMode; pace?: pace.PaceInput }
+
+// Темп с его сроками: не выбран — обычный
+function roomPaceOf(input: pace.PaceInput | undefined): pace.RoomPace {
+  const p = input ?? { pace: pace.DEFAULT_PACE }
+  return { pace: p.pace, times: pace.paceTimes(p) }
+}
+
+// Поля темпа в записи журнала (room.created, room.pace): сроки — только у «своего»
+function paceFields(p: pace.PaceInput): { pace: pace.Pace; times?: pace.Times } {
+  return p.pace === 'custom' ? { pace: p.pace, times: { ...p.times } } : { pace: p.pace }
+}
+
+function samePace(a: pace.RoomPace, b: pace.RoomPace): boolean {
+  return a.pace === b.pace && pace.TIME_KEYS.every((k) => a.times[k] === b.times[k])
+}
 
 export type CreateResult =
   | { ok: true; roomId: string; memberId: string; invite: string }
@@ -245,7 +263,10 @@ export async function createRoom(storage: RoomStorage, input: CreateInput, now: 
       existing.name === input.name &&
       existing.currency === input.currency &&
       host?.name === input.hostName &&
-      (createdMode ?? settle.DEFAULT_SETTLE_MODE) === (input.settleMode ?? settle.DEFAULT_SETTLE_MODE)
+      (createdMode ?? settle.DEFAULT_SETTLE_MODE) === (input.settleMode ?? settle.DEFAULT_SETTLE_MODE) &&
+      // Темп при создании (Р-35): logPace по одной записи room.created — без смен ведущим
+      !!created &&
+      samePace(pace.logPace([created]), roomPaceOf(input.pace))
     if (!same || !invite) return { ok: false, status: 409, error: REQUEST_TAKEN }
     return { ok: true, roomId: existing.id, memberId: existing.hostId, invite: invite.token }
   }
@@ -264,6 +285,8 @@ export async function createRoom(storage: RoomStorage, input: CreateInput, now: 
       currency: input.currency,
       // Режим «кто кому» (Р-32) — только если выбран: без поля — «по ставкам», как у старых комнат
       ...(input.settleMode !== undefined && { settleMode: input.settleMode }),
+      // Темп (Р-35) — только если выбран, сроки — только у «своего»: без полей — обычный
+      ...(input.pace !== undefined && paceFields(input.pace)),
     },
     { id: ulid(now), at: now, memberId: hostId, type: 'member.added', member: hostId, name: input.hostName },
   ])
@@ -275,7 +298,7 @@ export type Failure = { ok: false; status: 400 | 403 | 404 | 409; error: string;
 
 // events и offers — события и пари комнаты из журнала, cases — дела суда по ним (Р-25; статус на
 // время ответа считает http.ts); transfers — записи о переводах, settleMode — режим «кто кому» (Р-32;
-// свод на время ответа считает http.ts)
+// свод на время ответа считает http.ts); pace — нынешний темп комнаты и его сроки (Р-35, logPace)
 export type StateResult =
   | {
       ok: true
@@ -286,6 +309,7 @@ export type StateResult =
       cases: CourtCase[]
       transfers: settle.TransferRecord[]
       settleMode: settle.SettleMode
+      pace: pace.RoomPace
     }
   | Failure
 
@@ -333,6 +357,7 @@ export async function roomState(storage: RoomStorage, keyHash: string, now: numb
     cases: appeal.logAppeals(c.log, { events, offers }),
     transfers: logTransfers(c.log),
     settleMode: logSettleMode(c.log),
+    pace: pace.logPace(c.log),
   }
 }
 
@@ -462,6 +487,8 @@ export type RoomAction =
   | { type: 'receiveTransfer'; keyHash: string; from: string; amount: number; requestId: string }
   | { type: 'answerTransfer'; keyHash: string; transfer: string; answer: TransferAnswer; requestId: string }
   | { type: 'setSettleMode'; keyHash: string; mode: settle.SettleMode; requestId: string }
+  // Темп комнаты (Р-35): правила — pace.ts; форма уже проверена (checkPace); меняет ведущий
+  | { type: 'setPace'; keyHash: string; pace: pace.PaceInput; requestId: string }
 
 export type CourtKind = appeal.AppealTarget['kind']
 
@@ -502,6 +529,7 @@ export type ActionValues = {
   receiveTransfer: { transfer: settle.Transfer }
   answerTransfer: { transfer: settle.Transfer }
   setSettleMode: { settleMode: SettleModeResponse['settleMode'] }
+  setPace: { pace: PaceResponse['pace'] }
 }
 
 export type ActionType = RoomAction['type']
@@ -621,6 +649,9 @@ export async function act<K extends ActionType>(
       break
     case 'setSettleMode':
       r = await setSettleMode(storage, a, now)
+      break
+    case 'setPace':
+      r = await setPace(storage, a, now)
       break
   }
   return r as ActionResult<K>
@@ -813,6 +844,8 @@ async function createEvent(
       expectedAt: input.expectedAt,
       subject: input.subject,
       ...(rule && { subjectRule: 1 as const }),
+      // Сроки нынешнего темпа комнаты (Р-35) — у каждого нового события, и у обычного: смена темпа потом их не трогает
+      times: { ...pace.logPace(c.log).times },
       requestId: a.requestId,
     },
   ])
@@ -1160,6 +1193,8 @@ async function writeOffer(
     ...(input.subject !== null && { subject: input.subject }),
     // Правило гаранта (Р-31) — у всех новых пари, встречных тоже: часы гаранта с «исход к», суд без гаранта
     guarantorRule: 1,
+    // Сроки нынешнего темпа комнаты (Р-35) — у всех новых пари, встречных тоже, и у обычного
+    times: { ...pace.logPace(c.log).times },
     requestId,
   }
   await append(storage, [entry])
@@ -1761,4 +1796,41 @@ async function setSettleMode(
   const entry: SettleModeEntry = { id: ulid(now), at: now, memberId: c.me, type: 'room.settle-mode', mode: a.mode, requestId: a.requestId }
   await append(storage, [entry])
   return ok({ settleMode: settleModeAct(entry) })
+}
+
+// --- Темп комнаты (Р-35). Правила — pace.ts: смена — checkPaceChange, нынешний темп — logPace. Новый темп —
+// только для новых событий и пари: их сроки закрепляются при создании (поле times записи)
+
+type PaceEntry = Extract<LogEntry, { type: 'room.pace' }>
+
+// Отказ правил темпа: не ведущий — 403, тот же темп — 409, кривое тело — 400
+function paceRefusal(error: string): Failure {
+  if (error === pace.ONLY_HOST_PACE) return fail(403, error)
+  return fail(error === pace.SAME_PACE ? 409 : 400, error)
+}
+
+function paceAct(e: PaceEntry): PaceResponse['pace'] {
+  return { id: e.id, at: e.at, by: e.memberId, pace: e.pace, times: { ...pace.paceTimes(e) } }
+}
+
+// Смена темпа ведущим в любой момент (checkPaceChange на нынешний темп). Повтор с тем же номером запроса —
+// тот же ответ без второй записи; тот же номер у другого действия, темпа или от другого — 409
+async function setPace(
+  storage: RoomStorage,
+  a: { keyHash: string; pace: pace.PaceInput; requestId: string },
+  now: number,
+): Promise<ActionResult<'setPace'>> {
+  const c = await caller(storage, a.keyHash)
+  if (!c.ok) return c
+  const again = byRequest(c.log, a.requestId)
+  if (again) {
+    return again.type === 'room.pace' && again.memberId === c.me && samePace(paceAct(again), roomPaceOf(a.pace))
+      ? ok({ pace: paceAct(again) })
+      : fail(409, REQUEST_USED)
+  }
+  const refused = pace.checkPaceChange(pace.logPace(c.log), { hostId: c.state.hostId }, c.me, a.pace)
+  if (refused) return paceRefusal(refused)
+  const entry: PaceEntry = { id: ulid(now), at: now, memberId: c.me, type: 'room.pace', ...paceFields(a.pace), requestId: a.requestId }
+  await append(storage, [entry])
+  return ok({ pace: paceAct(entry) })
 }

@@ -15,7 +15,8 @@ export type ErrorResponse = { v: number; error: string; join?: 'waiting' | 'reje
 
 // POST /rooms: создать комнату по паролю компании (Р-03). requestId — номер запроса (ULID)
 // от телефона: повтор с тем же номером даёт ту же комнату и тот же ответ
-// settleMode — режим «кто кому» (Р-32): «по ставкам» / «меньше переводов»; не задан — «по ставкам»
+// settleMode — режим «кто кому» (Р-32): «по ставкам» / «меньше переводов»; не задан — «по ставкам».
+// pace — темп комнаты (Р-35), times — сроки, только у «своего»; не задан — обычный
 export type CreateRoomRequest = {
   v?: number
   password: string
@@ -23,8 +24,19 @@ export type CreateRoomRequest = {
   currency: string
   hostName: string
   settleMode?: SettleModeView
+  pace?: PaceView
+  times?: TimesView
   requestId?: string
 }
+
+// Темп комнаты (Р-35; правила — pace.ts): «обычный» / «быстрый» / «свой». Сроки (мс): возражение,
+// апелляция, молчание, суд
+export type PaceView = 'normal' | 'fast' | 'custom'
+export type TimesView = { objection: number; appeal: number; silence: number; court: number }
+// POST /rooms/<номер>/pace { pace, times? } — ведущий меняет темп (times — только у «своего»); новый
+// темп — для новых событий и пари. Ответ — смена: кто, когда, темп и его сроки
+export type PaceRequest = { v?: number; pace: PaceView; times?: TimesView; requestId?: string }
+export type PaceResponse = { v: number; pace: { id: string; at: number; by: string; pace: PaceView; times: TimesView } }
 
 // Ответ на создание: номер комнаты, токен приглашения, номер участника-ведущего и ключ его
 // телефона — ключ дальше идёт в заголовке Authorization: Bearer <ключ>
@@ -34,10 +46,11 @@ export type CreateRoomResponse = { v: number; roomId: string; invite: string; me
 // events — события-пул по порядку создания; offers — пари по порядку создания (Р-22; все пари
 // комнаты, адресные тоже — тайных нет; сервер до этапа 3 поля не шлёт); now — время сервера
 // (UTC, мс): по нему сайт считает отсчёт до закрытия приёма, а не по часам телефона; settlement —
-// свод расчёта на now (Р-32; сервер до этапа 5 поля не шлёт), видят все участники
+// свод расчёта на now (Р-32; сервер до этапа 5 поля не шлёт), видят все участники; room.pace и
+// room.times — нынешний темп комнаты и его сроки (Р-35; сервер до темпа полей не шлёт)
 export type RoomStateResponse = {
   v: number
-  room: { id: string; name: string; currency: string; hostId: string; createdAt: number }
+  room: { id: string; name: string; currency: string; hostId: string; createdAt: number; pace?: PaceView; times?: TimesView }
   members: { id: string; name: string }[]
   me: string
   events: EventView[]
@@ -206,8 +219,10 @@ export type OfferOutcomeView = {
 }
 
 // Пари в состоянии комнаты: статус на now; accepted — кто принял и когда; withdrawnAt — когда
-// отозвано; closedBy — каким встречным закрыто; outcome — исход (Р-23; не принято — null)
+// отозвано; closedBy — каким встречным закрыто; outcome — исход (Р-23; не принято — null); times —
+// сроки пари, закреплённые при создании (Р-35; у старых — обычный набор; сервер до темпа поля не шлёт)
 export type OfferView = OfferInfo & {
+  times?: TimesView
   status: OfferStatus
   accepted: { by: string; at: number } | null
   withdrawnAt: number | null
@@ -315,8 +330,11 @@ export type OutcomeView = {
 
 // Событие в состоянии комнаты: ставки по порядку журнала, уточнения, статус; отменено —
 // refunds: каждому участнику — его сумма; outcome — исход (не предложен — null). closedAt — миг,
-// когда приём закрылся досрочно предложением исхода (Р-27); закрыт в срок или ещё идёт — поля нет
+// когда приём закрылся досрочно предложением исхода (Р-27); закрыт в срок или ещё идёт — поля нет.
+// times — сроки события, закреплённые при создании (Р-35; у старых — обычный набор; сервер до темпа
+// поля не шлёт)
 export type EventView = EventInfo & {
+  times?: TimesView
   closedAt?: number
   status: EventStatus
   clarifications: Clarification[]
@@ -490,6 +508,8 @@ export function isRoomStateResponse(x: unknown): x is RoomStateResponse {
   const room = r && record(r.room)
   if (!r || !room || typeof r.v !== 'number' || typeof r.me !== 'string' || !Array.isArray(r.members)) return false
   if (!strings(room, 'id', 'name', 'currency', 'hostId') || typeof room.createdAt !== 'number') return false
+  // Темп комнаты (Р-35): сервер без него (до выкатки) не ломает сайт
+  if ((room.pace !== undefined && !PACE_VIEWS.includes(room.pace)) || !optionalTimes(room.times)) return false
   if (typeof r.now !== 'number' || !Array.isArray(r.events) || !r.events.every(isEventView)) return false
   // Пари — с этапа 3: сервер без них (до выкатки) не ломает сайт
   if (r.offers !== undefined && !list(r.offers, isOfferView)) return false
@@ -503,6 +523,18 @@ export function isRoomStateResponse(x: unknown): x is RoomStateResponse {
 
 function numbers(r: Record<string, unknown>, ...names: string[]): boolean {
   return names.every((n) => typeof r[n] === 'number')
+}
+
+const PACE_VIEWS: readonly unknown[] = ['normal', 'fast', 'custom']
+
+function isTimes(x: unknown): boolean {
+  const r = record(x)
+  return !!r && numbers(r, 'objection', 'appeal', 'silence', 'court')
+}
+
+// Сроки темпа (Р-35) в ответе: нет поля (сервер до темпа) или четыре числа
+function optionalTimes(x: unknown): boolean {
+  return x === undefined || isTimes(x)
 }
 
 function list(x: unknown, item: (r: Record<string, unknown>) => boolean): boolean {
@@ -627,6 +659,7 @@ export function isEventView(x: unknown): x is EventView {
   if (!r || !isEventInfo(r)) return false
   if (r.status !== 'open' && r.status !== 'closed' && r.status !== 'cancelled') return false
   if (r.closedAt !== undefined && typeof r.closedAt !== 'number') return false
+  if (!optionalTimes(r.times)) return false
   return (
     nullable(r.cancelled, isCancellation) &&
     list(r.clarifications, isClarification) &&
@@ -749,6 +782,7 @@ export function isOfferView(x: unknown): x is OfferView {
   return (
     !!r &&
     isOfferInfo(r) &&
+    optionalTimes(r.times) &&
     OFFER_STATUSES.includes(r.status) &&
     nullable(r.accepted, (a) => strings(a, 'by') && numbers(a, 'at')) &&
     orNull(r.withdrawnAt, 'number') &&
@@ -861,4 +895,8 @@ export function isTransferResponse(x: unknown): x is TransferResponse {
 
 export function isSettleModeResponse(x: unknown): x is SettleModeResponse {
   return recordIn(x, 'settleMode', (r) => strings(r, 'id', 'by') && numbers(r, 'at') && SETTLE_MODE_VIEWS.includes(r.mode))
+}
+
+export function isPaceResponse(x: unknown): x is PaceResponse {
+  return recordIn(x, 'pace', (r) => strings(r, 'id', 'by') && numbers(r, 'at') && PACE_VIEWS.includes(r.pace) && isTimes(r.times))
 }

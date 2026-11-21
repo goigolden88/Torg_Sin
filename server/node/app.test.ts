@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
-import { PROTOCOL_VERSION, type CreateRoomResponse, type RoomStateResponse } from '../../src/rules/protocol'
+import { isPaceResponse, PROTOCOL_VERSION, type CreateRoomResponse, type RoomStateResponse } from '../../src/rules/protocol'
 import { ulid } from '../../src/rules/ulid'
 import type { RoomStorage } from '../src/room'
 import { readLog } from '../src/room'
@@ -14,6 +14,8 @@ import { MAX_BODY, TOO_LARGE } from './listen'
 
 const PASSWORD = 'пароль-компании'
 const FORM = { v: PROTOCOL_VERSION, password: PASSWORD, name: 'Дача', currency: 'RUB', hostName: 'Аня' }
+const HOUR = 60 * 60 * 1000
+const DAY = 24 * HOUR
 
 const dir = mkdtempSync(join(tmpdir(), 'torgsin-node-'))
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
@@ -54,6 +56,30 @@ describe('перезапуск сервера на Node', () => {
     const body = (await state.json()) as RoomStateResponse
     expect(body.room.name).toBe('Дача')
     expect(body.me).toBe(created.memberId)
+  })
+
+  it('темп комнаты (Р-35): при создании и сменой ведущим через адрес /pace — на месте после перезапуска', async () => {
+    const file = newFile()
+    const first = await start({ file })
+    const r = await fetch(first.url + '/rooms', { method: 'POST', body: JSON.stringify({ ...FORM, pace: 'fast', requestId: ulid() }) })
+    expect(r.status).toBe(200)
+    const created = (await r.json()) as CreateRoomResponse
+    const auth = { Authorization: 'Bearer ' + created.key }
+    const times = { objection: 6 * HOUR, appeal: 3 * DAY, silence: 2 * DAY, court: 5 * DAY }
+    const changed = await fetch(first.url + '/rooms/' + created.roomId + '/pace', {
+      method: 'POST',
+      headers: auth,
+      body: JSON.stringify({ v: PROTOCOL_VERSION, pace: 'custom', times }),
+    })
+    expect(changed.status).toBe(200)
+    const body: unknown = await changed.json()
+    expect(isPaceResponse(body)).toBe(true)
+    expect((await readLog(first.storage(created.roomId))).map((e) => e.type)).toEqual(['room.created', 'member.added', 'room.pace'])
+    await stop(first)
+
+    const second = await start({ file })
+    const state = (await (await fetch(second.url + '/rooms/' + created.roomId, { headers: auth })).json()) as RoomStateResponse
+    expect(state.room).toMatchObject({ pace: 'custom', times })
   })
 
   it('пароль компании — из настроек запуска: не задан — создание выключено', async () => {
