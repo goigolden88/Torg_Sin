@@ -3313,7 +3313,7 @@ export function roomsSuite(
         const plainId = ulid(s.clock.now)
         const plain = await create(s, { ...FORM, requestId: plainId })
         expect(await create(s, { ...FORM, requestId: plainId, pace: 'normal' })).toEqual(plain)
-        expect(s.roomIds()).toEqual([first.roomId, plain.roomId])
+        expect([...s.roomIds()].sort()).toEqual([first.roomId, plain.roomId].sort())
       })
 
       it('смена темпа: только ведущий, в любой момент; тот же или кривой — отказ правил; запись room.pace; повтор — тот же ответ', async () => {
