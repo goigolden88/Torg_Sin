@@ -4,7 +4,8 @@
 // итог сторон — offerNets. Блок — у принятого, когда «исход к» настал или исход уже пошёл; до «исход
 // к» сторонам — «Исход уже известен?»: отметить можно в любой миг после принятия (Р-27). Каждое
 // действие — окном подтверждения экрана пари (номер запроса по пари, действию и выбору — Р-13). Сроки в
-// текстах — пари (times, Р-35), не постоянные
+// текстах — пари (times, Р-35), не постоянные. Пари без гаранта (Р-36): блока гаранта нет; в
+// текстах вместо гаранта — суд (разошлись — сразу, вторая сторона молчит — с turnAt) и почему
 import { useState, type FormEvent } from 'react'
 import { declineOffer, decideOffer, markOffer, nominateGuarantor } from '../api'
 import { formatDateTime } from '../rules/date'
@@ -27,7 +28,7 @@ import type { SavedRoom } from '../store/db'
 import { CourtBlock } from './CourtBlock'
 import { courtRoomOf } from './courtParts'
 import { nameOf } from './eventParts'
-import { netsOf, offerCourt, offerState, roomRolesOf, sideMember, who, winnerLabel, type OfferAsk } from './offerParts'
+import { courtWhy, netsOf, offerCourt, offerState, roomRolesOf, sideMember, who, winnerLabel, type OfferAsk } from './offerParts'
 import { capital, spanText, viewTimes } from './paceParts'
 
 const SIDES: OfferSide[] = ['author', 'taker']
@@ -84,6 +85,9 @@ export function OfferOutcome({
   const candidates = mySide ? room.members.filter((m) => checkNominate(state, me, m.id, roles, now) === null).map((m) => m.id) : []
   const mayNominate = candidates.length > 0
   const guarantor = who(room, out.guarantorId)
+  // Пари без гаранта (Р-36), пока стороны его не назвали: разошлись или одна молчит — сразу суд
+  const none = out.guarantorId === null
+  const fmt = formatDateTime
   const name = (side: OfferSide) => nameOf(room, sideMember(offer, side))
   const result = (winner: OfferSide) => {
     const n = netsOf(room, offer, winner)
@@ -101,18 +105,28 @@ export function OfferOutcome({
     if (!mySide) return
     const other: OfferSide = mySide === 'author' ? 'taker' : 'author'
     const theirs = out?.marks[other] ?? null
-    const next =
-      theirs === winner
-        ? `${cap(ROLE[other])} уже отметил так же — исход станет окончательным сразу и не обжалуется.`
-        : theirs === null
-          ? `Если ${ROLE[other]} отметит так же, исход окончательный сразу и не обжалуется.`
-          : `${cap(ROLE[other])} отметил иначе — решает гарант ${nameOf(room, offer.guarantorId)}; пока он не решил, отметку можно поменять.`
     // Первая отметка раньше «исход к» у прежних пари (Р-27): молчание второй стороны — срок молчания с неё.
     // Правило гаранта (Р-31): раньше «исход к» исход утверждают только совпавшие отметки
     const first = out?.marks.author === null && out?.marks.taker === null
     const early = now < offer.expectedAt
+    // Без гаранта (Р-36) вместо гаранта — суд: разойдутся — сразу, вторая сторона промолчит — с turnAt
+    const silentUntil = first ? Math.max(now, offer.expectedAt) + times.silence : (out?.turnAt ?? now)
+    const next =
+      theirs === winner
+        ? `${cap(ROLE[other])} уже отметил так же — исход станет окончательным сразу и не обжалуется.`
+        : theirs === null
+          ? none
+            ? `Если ${ROLE[other]} отметит так же, исход окончательный сразу и не обжалуется. Отметит иначе — сразу суд; промолчит до ${fmt(silentUntil)} — тоже суд.`
+            : `Если ${ROLE[other]} отметит так же, исход окончательный сразу и не обжалуется.`
+          : none
+            ? `${cap(ROLE[other])} отметил иначе — гаранта нет, решит суд жребием из участников: соберётся сразу, отметки после этого не поменять.`
+            : `${cap(ROLE[other])} отметил иначе — решает гарант ${nameOf(room, offer.guarantorId)}; пока он не решил, отметку можно поменять.`
     const silence = !early
       ? []
+      : none
+        ? [
+            `Совпадёт с отметкой ${OF[other]} — исход окончательный сразу. Разойдётся — решит суд жребием из участников, но не раньше «исход к» (${fmt(offer.expectedAt)})${theirs === null ? `; ${ROLE[other]} не отметит до ${fmt(silentUntil)} — тоже суд` : ''}.`,
+          ]
       : state.guarantorRule
         ? [
             `Совпадёт с отметкой ${OF[other]} — исход окончательный сразу. Разойдётся или ${ROLE[other]} не отметит — решит гарант ${nameOf(room, offer.guarantorId)}, но не раньше «исход к» (${formatDateTime(offer.expectedAt)}).`,
@@ -189,7 +203,7 @@ export function OfferOutcome({
         })}
       </ul>
       {out.approved && out.phase !== 'cancelled' && <Result room={room} offer={offer} winner={out.approved.winner} />}
-      {out.phase === 'need-guarantor' && <Nominations room={room} offer={offer} out={out} />}
+      {out.phase === 'need-guarantor' && <Nominations room={room} offer={offer} out={out} first={none} />}
       <CourtBlock
         room={room}
         kind="offer"
@@ -200,6 +214,7 @@ export function OfferOutcome({
         online={online}
         changes={SIDES.map((w) => ({ verdict: 'change', winner: w }))}
         label={label}
+        why={none ? courtWhy(room, offer, out.marks) : undefined}
         onAsk={onAsk}
       />
       {!online && (mayMark || mayDecide || mayDecline || mayNominate) && <p className="hint">Действовать можно, когда есть связь с сервером.</p>}
@@ -207,7 +222,9 @@ export function OfferOutcome({
       {mayMark && mySide && (
         <div className="outcome-act" role="group" aria-label="Ваша отметка">
           <p className="hint">
-            {out.marks[mySide] ? `Ваша отметка: ${winnerLabel(out.marks[mySide])}. Поменять можно, пока гарант не решил.` : 'Кто прав? Отметка — с подтверждением.'}
+            {out.marks[mySide]
+              ? `Ваша отметка: ${winnerLabel(out.marks[mySide])}. Поменять можно, ${none ? 'пока не собрался суд' : 'пока гарант не решил'}.`
+              : 'Кто прав? Отметка — с подтверждением.'}
           </p>
           <div className="row">
             {SIDES.map((w) => (
@@ -255,6 +272,7 @@ export function OfferOutcome({
         <NominateForm
           room={room}
           candidates={candidates}
+          first={none}
           initial={out.nominations[mySide === 'author' ? 'taker' : 'author'] ?? out.nominations[mySide] ?? null}
           disabled={!online}
           onChoose={askNominate}
@@ -282,6 +300,24 @@ function Head({
 }) {
   const { marks } = out
   const silence = spanText(viewTimes(offer).silence)
+  const none = out.guarantorId === null // без гаранта (Р-36)
+  if (out.phase === 'marking' && none) {
+    // Разошлись до «исход к» — суд соберётся в «исход к» (turnAt), если отметки не сойдутся
+    const apart = marks.author !== null && marks.taker !== null && marks.author !== marks.taker
+    return (
+      <>
+        <p className="outcome-head">{apart ? 'Отметки сторон разошлись' : 'Ждём отметок сторон'}</p>
+        <p className="hint">
+          {apart
+            ? `Поменяет кто-то отметку и они совпадут — исход окончательный сразу. Не совпадут — суд соберётся ${formatDateTime(out.turnAt)}.`
+            : `Совпадут отметки — исход окончательный сразу. Разойдутся — суд соберётся ${
+                now < offer.expectedAt ? `сразу, но не раньше «исход к» (${formatDateTime(offer.expectedAt)})` : 'сразу'
+              }; одна сторона промолчит до ${formatDateTime(out.turnAt)} — суд соберётся тогда.`}
+        </p>
+        <p className="hint">Гаранта нет: суд — жребием из участников, кроме сторон.</p>
+      </>
+    )
+  }
   if (out.phase === 'marking') {
     // Правило гаранта (Р-31): до «исход к» исход утверждают только совпавшие отметки
     if (state.guarantorRule && now < offer.expectedAt) {
@@ -309,7 +345,10 @@ function Head({
     return (
       <>
         <p className="outcome-head court">Ждёт суда</p>
-        <p className="hint">{capital(silence)} без общего гаранта — решает суд. Суд выбирает: прав автор, прав соперник или отменить — вернуть ставки.</p>
+        <p className="hint">
+          {none ? `Гаранта нет, ${courtWhy(room, offer, marks)}` : `${capital(silence)} без общего гаранта`} — решает суд. Суд выбирает: прав автор, прав соперник
+          или отменить — вернуть ставки.
+        </p>
       </>
     )
   }
@@ -321,6 +360,25 @@ function Head({
           Решает гарант {guarantor} до {out.guarantorUntil === null ? '' : formatDateTime(out.guarantorUntil)}
         </p>
         <p className="hint">{why}. Пока гарант не решил, стороны могут поменять отметку: совпадут — исход утвердится согласием.</p>
+      </>
+    )
+  }
+  if (out.phase === 'need-guarantor' && none) {
+    // Без гаранта (Р-36): дело у суда с turnAt; суд соберёт следующий запрос, а судить некому —
+    // стороны называют общего гаранта, дальше — обычный путь с гарантом
+    const nobody = courtCandidates({ kind: 'offer', offer: state }, courtRoomOf(room), now).length === 0
+    const why = capital(courtWhy(room, offer, marks))
+    return nobody ? (
+      <>
+        <p className="outcome-head court">Нужен гарант</p>
+        <p className="hint">
+          {why}, а суд собрать не из кого. Каждая сторона называет участника не из сторон; назовут одного и того же — это и есть гарант, на решение — {silence}.
+        </p>
+      </>
+    ) : (
+      <>
+        <p className="outcome-head court">Собираем суд</p>
+        <p className="hint">{why} — гаранта нет, решит суд жребием из участников.</p>
       </>
     )
   }
@@ -427,9 +485,9 @@ function Result({ room, offer, winner }: { room: SavedRoom; offer: OfferView; wi
 }
 
 // Кого называют стороны, пока нужен новый гарант
-function Nominations({ room, offer, out }: { room: SavedRoom; offer: OfferView; out: Outcome }) {
+function Nominations({ room, offer, out, first }: { room: SavedRoom; offer: OfferView; out: Outcome; first: boolean }) {
   return (
-    <ul className="outcome-log" aria-label="Новый гарант">
+    <ul className="outcome-log" aria-label={first ? 'Гарант' : 'Новый гарант'}>
       {SIDES.map((side) => {
         const id = out.nominations[side]
         return (
@@ -442,16 +500,19 @@ function Nominations({ room, offer, out }: { room: SavedRoom; offer: OfferView; 
   )
 }
 
-// Выбор нового гаранта → окно подтверждения. Сначала выбран тот, кого назвала другая сторона
+// Выбор нового гаранта → окно подтверждения. Сначала выбран тот, кого назвала другая сторона. first —
+// пари без гаранта (Р-36): гарант первый, не «новый»
 function NominateForm({
   room,
   candidates,
+  first,
   initial,
   disabled,
   onChoose,
 }: {
   room: SavedRoom
   candidates: string[]
+  first: boolean
   initial: string | null
   disabled: boolean
   onChoose: (id: string) => void
@@ -468,9 +529,9 @@ function NominateForm({
   }
 
   return (
-    <form className="form outcome-form" onSubmit={submit} aria-label="Назовите нового гаранта">
+    <form className="form outcome-form" onSubmit={submit} aria-label={first ? 'Назовите гаранта' : 'Назовите нового гаранта'}>
       <fieldset className="field">
-        <legend>Назовите нового гаранта</legend>
+        <legend>{first ? 'Назовите гаранта' : 'Назовите нового гаранта'}</legend>
         <div className="chips">
           {candidates.map((id) => (
             <label key={id} className="chip">

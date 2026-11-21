@@ -23,6 +23,7 @@ import { eventWidth } from './shots/event-width.ts'
 import { history } from './shots/history.ts'
 import { known } from './shots/known.ts'
 import { layout } from './shots/layout.ts'
+import { noGuarantor } from './shots/no-guarantor.ts'
 import { offerOutcomes } from './shots/offer-outcomes.ts'
 import { offers } from './shots/offers.ts'
 import { outcomes } from './shots/outcomes.ts'
@@ -117,6 +118,11 @@ const SCENARIOS: Scenario[] = [
     name: 'pace',
     about: 'темп комнаты: создание со «Своим», строка темпа, смена ведущим, сроки на «Новом событии», исход в быстрой комнате (127–132)',
     perSize: (c, size) => pace(c.cdp, size, c.startServer),
+  },
+  {
+    name: 'no-guarantor',
+    about: 'пари без гаранта: выбор в форме, совпали — окончательно, разошлись — сразу суд, «вы в суде», недоступно в комнате из двоих (133–141)',
+    perSize: (c, size) => noGuarantor(c.cdp, size, c.startServer),
   },
   {
     name: 'layout',

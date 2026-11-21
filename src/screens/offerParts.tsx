@@ -155,8 +155,12 @@ function acceptedLine(room: SavedRoom, offer: OfferView, now: number) {
   }
   if (out.phase === 'marking') return <span className="status open">принято — ждём отметок сторон</span>
   if (out.phase === 'guarantor') return <span className="status open">решает гарант — {who(room, out.guarantorId)}</span>
-  if (out.phase === 'need-guarantor') return <span className="status cancelled">нужен новый гарант</span>
-  if (out.phase === 'court') return <span className="status open">ждёт суда — {spanText(viewTimes(offer).silence)} без общего гаранта</span>
+  // Без гаранта (Р-36): «нужен гарант» — суд не собрать (или ещё не собран), в суде — почему
+  if (out.phase === 'need-guarantor') return <span className="status cancelled">{out.guarantorId === null ? 'нужен гарант' : 'нужен новый гарант'}</span>
+  if (out.phase === 'court') {
+    const why = out.guarantorId === null ? courtWhy(room, offer, out.marks) : `${spanText(viewTimes(offer).silence)} без общего гаранта`
+    return <span className="status open">ждёт суда — {why}</span>
+  }
   if (out.phase === 'cancelled') return <span className="status cancelled">отменено судом — ставки возвращены</span>
   const winner = out.approved?.winner ?? 'author'
   const nets = netsOf(room, offer, winner)
@@ -198,6 +202,22 @@ export function who(room: SavedRoom, memberId: string | null): string {
   // Гаранта нет (пари без гаранта, Р-36)
   if (memberId === null) return 'без гаранта'
   return nameOf(room, memberId) + (memberId === room.memberId ? ' (вы)' : '')
+}
+
+// Гарант в условиях пари: имя или, у пари без гаранта (Р-36), «нет — спор решит суд»
+export function guarantorLabel(room: SavedRoom, o: { guarantorId: string | null }): string {
+  return o.guarantorId === null ? NO_GUARANTOR_LABEL : who(room, o.guarantorId)
+}
+export const NO_GUARANTOR_LABEL = 'нет — спор решит суд'
+
+// Почему пари без гаранта (Р-36) ушло в суд — по отметкам сторон: «стороны разошлись» / «Вера
+// промолчал(а) 3 дня» / «обе стороны промолчали 3 дня после «исход к»». Срок — пари (Р-35)
+export function courtWhy(room: SavedRoom, o: OfferView, marks: Record<OfferSide, OfferSide | null>): string {
+  const silence = spanText(viewTimes(o).silence)
+  if (marks.author !== null && marks.taker !== null) return 'стороны разошлись'
+  if (marks.author === null && marks.taker === null) return `обе стороны промолчали ${silence} после «исход к»`
+  const silent: OfferSide = marks.author === null ? 'author' : 'taker'
+  return `${nameOf(room, sideMember(o, silent))} промолчал(а) ${silence}`
 }
 
 // Основание чисел (Р-10): «Аня ставит 300 ₽ на „сбудется“, соперник — 100 ₽ (кэф 3 к 1), банк 400 ₽»

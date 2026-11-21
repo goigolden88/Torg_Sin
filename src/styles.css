@@ -431,6 +431,16 @@ h3 {
   outline-offset: 2px;
 }
 
+/* Вариант виден, но недоступен (пари «без гаранта», когда судить некому, Р-36): почему — подсказкой */
+.chip input:disabled {
+  cursor: not-allowed;
+}
+
+.chip input:disabled + span {
+  opacity: 0.5;
+  border-style: dashed;
+}
+
 .row {
   display: flex;
   flex-wrap: wrap;

@@ -1,6 +1,7 @@
 // «Предложить пари» (Р-04): условие, «как проверяем», своя сторона («сбудется» / «не сбудется»), кэф
 // «a к b», своя сумма, кому (участник или «открытое — любой»), «приём до», «исход к», гарант (по
-// умолчанию ведущий; ведущий — сторона — выбрать обязательно), о ком спор (по желанию, Р-26: предмет —
+// умолчанию ведущий; ведущий — сторона — выбрать обязательно; «без гаранта» — разошлись, решит суд,
+// Р-36: только если судить есть кому, иначе вариант закрыт с объяснением), о ком спор (по желанию, Р-26: предмет —
 // только на «сбудется» и не гарант; сторона тогда — одна). Под формой по ходу ввода — «вы ставите
 // …, соперник — …, банк …» (offerStakes). «Предложить» — окно подтверждения; повтор той же формы —
 // тот же номер запроса: двойное нажатие и повтор после «нет связи» дают одно пари (Р-13). Отказ
@@ -60,6 +61,7 @@ export function NewOffer({ room, onUpdate }: { room: SavedRoom; onUpdate: (room:
   const [closes, setCloses] = useState(times.closes)
   const [expected, setExpected] = useState(times.expected)
   const [guarantor, setGuarantor] = useState('') // пусто — ведущий
+  const [none, setNone] = useState(false) // без гаранта (Р-36): разошлись — суд
   const [subject, setSubject] = useState('') // о ком спор (Р-26); пусто — ни о ком
   const [error, setError] = useState('')
   const [ask, setAsk] = useState<Ask | null>(null)
@@ -88,17 +90,34 @@ export function NewOffer({ room, onUpdate }: { room: SavedRoom; onUpdate: (room:
   // адресат — ваша «не сбудется». Иначе сторону выбираете сами
   const fixedSide: 'yes' | 'no' | null = subject === '' ? null : subject === room.memberId ? 'yes' : subject === to ? 'no' : null
   const mySide = fixedSide ?? side
+  // «Без гаранта» — только если судить есть кому (правило offerGuarantor, как у сервера)
+  const noneOk = (toId: string, subjectId: string) =>
+    offerGuarantor({ to: toId || null, guarantor: null, noGuarantor: true, subject: subjectId || null }, room.memberId, roomRolesOf(room)).ok
+  const mayNone = noneOk(to, subject)
+  const silence = spanText((pace?.times ?? NORMAL_TIMES).silence)
 
   function chooseTo(id: string) {
     setTo(id)
     // Адресат не бывает гарантом; ведущий стал стороной — его по умолчанию больше нет
     if (guarantor === id) setGuarantor('')
+    if (!noneOk(id, subject)) setNone(false)
   }
 
   function chooseSubject(id: string) {
     setSubject(id)
     // Предмет спора не бывает гарантом
     if (guarantor === id) setGuarantor('')
+    if (!noneOk(to, id)) setNone(false)
+  }
+
+  function chooseGuarantor(id: string) {
+    setGuarantor(id)
+    setNone(false)
+  }
+
+  function chooseNone() {
+    setGuarantor('')
+    setNone(true)
   }
 
   // Сумма из поля: целые минимальные единицы или отказ правил валюты
@@ -125,7 +144,8 @@ export function NewOffer({ room, onUpdate }: { room: SavedRoom; onUpdate: (room:
       to: to || null,
       closesAt,
       expectedAt,
-      guarantor: guarantor || null,
+      guarantor: none ? null : guarantor || null,
+      ...(none && { noGuarantor: true }),
       subject: subject || null,
     })
     if (!checked.ok) return setError(checked.error)
@@ -142,7 +162,7 @@ export function NewOffer({ room, onUpdate }: { room: SavedRoom; onUpdate: (room:
   async function confirm() {
     if (!ask || sending.current) return
     const x = ask.input
-    const form = formKey(room.id, x.condition, x.check, x.side, String(x.odds.a), String(x.odds.b), String(x.amount), x.to ?? '', String(x.closesAt), String(x.expectedAt), x.guarantor ?? '', x.subject ?? '')
+    const form = formKey(room.id, x.condition, x.check, x.side, String(x.odds.a), String(x.odds.b), String(x.amount), x.to ?? '', String(x.closesAt), String(x.expectedAt), x.noGuarantor ? 'none' : (x.guarantor ?? ''), x.subject ?? '')
     const request = requestFor(pending.current, form, ulid)
     pending.current = request
     sending.current = true
@@ -158,6 +178,7 @@ export function NewOffer({ room, onUpdate }: { room: SavedRoom; onUpdate: (room:
         closesAt: x.closesAt,
         expectedAt: x.expectedAt,
         ...(x.guarantor ? { guarantor: x.guarantor } : {}),
+        ...(x.noGuarantor ? { noGuarantor: true } : {}),
         ...(x.subject ? { subject: x.subject } : {}),
         requestId: request.requestId,
       })
@@ -290,22 +311,37 @@ export function NewOffer({ room, onUpdate }: { room: SavedRoom; onUpdate: (room:
             <div className="chips">
               {!hostNoDefault && (
                 <label className="chip">
-                  <input type="radio" name="offer-guarantor" value="" checked={guarantor === ''} onChange={() => setGuarantor('')} />
+                  <input type="radio" name="offer-guarantor" value="" checked={!none && guarantor === ''} onChange={() => chooseGuarantor('')} />
                   <span>Ведущий — {nameOf(room, room.hostId)}</span>
                 </label>
               )}
               {candidates.map((m) => (
                 <label key={m.id} className="chip">
-                  <input type="radio" name="offer-guarantor" value={m.id} checked={guarantor === m.id} onChange={() => setGuarantor(m.id)} />
+                  <input type="radio" name="offer-guarantor" value={m.id} checked={!none && guarantor === m.id} onChange={() => chooseGuarantor(m.id)} />
                   <span>{m.name}</span>
                 </label>
               ))}
+              {/* Без гаранта (Р-36): судить некому — вариант виден, но закрыт, ниже — почему */}
+              <label className="chip">
+                <input type="radio" name="offer-guarantor" value="none" checked={none} onChange={chooseNone} disabled={!mayNone} />
+                <span>Без гаранта — разойдётесь, решит суд</span>
+              </label>
             </div>
             <span className="hint">
-              {hostNoDefault && guarantor === ''
-                ? (hostIsSide ? NEED_GUARANTOR : NEED_GUARANTOR_SUBJECT) + '.'
-                : `Гарант решает исход, если вы с соперником разойдётесь или кто-то промолчит ${spanText((pace?.times ?? NORMAL_TIMES).silence)}. Он не принимает пари.`}
+              {none
+                ? `Отметите одинаково — исход окончательный сразу. Разойдётесь или соперник промолчит ${silence} — суд жребием из участников.`
+                : hostNoDefault && guarantor === ''
+                  ? (hostIsSide ? NEED_GUARANTOR : NEED_GUARANTOR_SUBJECT) + '.'
+                  : `Гарант решает исход, если вы с соперником разойдётесь или кто-то промолчит ${silence}. Он не принимает пари.`}
             </span>
+            {!mayNone && (
+              <span className="hint">
+                «Без гаранта» недоступно: судить некому.{' '}
+                {to
+                  ? `Нужен хотя бы один участник, кроме вас, ${nameOf(room, to)}${subject && subject !== to && subject !== room.memberId ? ' и предмета спора' : ''}.`
+                  : `Нужны хотя бы двое, кроме вас${subject && subject !== room.memberId ? ' и предмета спора' : ''}: один примет пари, другой рассудит.`}
+              </span>
+            )}
           </fieldset>
           {room.members.length < SMALL_ROOM && <p className="hint">{SMALL_ROOM_NOTE}</p>}
         </div>
@@ -389,7 +425,7 @@ function ConfirmOffer({ room, ask, busy, onConfirm, onClose }: { room: SavedRoom
           </p>
         )}
         <p className="hint">
-          Кому: {x.to ? nameOf(room, x.to) : 'открытое — любой'} · гарант — {nameOf(room, ask.guarantorId)}
+          Кому: {x.to ? nameOf(room, x.to) : 'открытое — любой'} · {ask.guarantorId === null ? 'без гаранта: разойдётесь — решит суд' : `гарант — ${nameOf(room, ask.guarantorId)}`}
           {x.subject ? ` · о ком спор — ${nameOf(room, x.subject)}` : ''} · приём до {formatDateTime(x.closesAt)} · исход к{' '}
           {formatDateTime(x.expectedAt)}
         </p>
