@@ -4,7 +4,8 @@
 // только на «сбудется» и не гарант; сторона тогда — одна). Под формой по ходу ввода — «вы ставите
 // …, соперник — …, банк …» (offerStakes). «Предложить» — окно подтверждения; повтор той же формы —
 // тот же номер запроса: двойное нажатие и повтор после «нет связи» дают одно пари (Р-13). Отказ
-// сервера — текстом под формой, введённое остаётся. Проверка до отправки — правила (offer.ts)
+// сервера — текстом под формой, введённое остаётся. Проверка до отправки — правила (offer.ts). Под
+// сроками — сроки комнаты (темп, Р-35)
 import { useCallback, useRef, useState, type FormEvent } from 'react'
 import { createOffer } from '../api'
 import { currency as currencyOf, isCurrencyCode, parseAmount, type CurrencyCode } from '../rules/currency'
@@ -28,6 +29,8 @@ import type { SavedRoom } from '../store/db'
 import { BackLink, useEscape } from './BackLink'
 import { money, nameOf, SMALL_ROOM, SMALL_ROOM_NOTE } from './eventParts'
 import { OddsField, oddsLabel, oddsNumber, offerHref, roomRolesOf, sideLabel, validOdds } from './offerParts'
+import { roomTimesLine, spanText } from './paceParts'
+import { NORMAL_TIMES } from '../rules/pace'
 import { serverTime, useRoom } from './useRoom'
 
 const HOUR = 60 * 60 * 1000
@@ -45,7 +48,7 @@ const UNKNOWN_CURRENCY = 'Валюта комнаты незнакома это�
 type Ask = { input: OfferInput; guarantorId: string | null }
 
 export function NewOffer({ room, onUpdate }: { room: SavedRoom; onUpdate: (room: SavedRoom) => void }) {
-  const { sync, clock, refresh } = useRoom(room, onUpdate)
+  const { sync, clock, pace, refresh } = useRoom(room, onUpdate)
   const [condition, setCondition] = useState('')
   const [check, setCheck] = useState('')
   const [side, setSide] = useState<'yes' | 'no'>('yes')
@@ -280,6 +283,7 @@ export function NewOffer({ room, onUpdate }: { room: SavedRoom; onUpdate: (room:
             </label>
           </div>
           <p className="hint">Время — местное, на этом устройстве. Приём закрывается по часам сервера.</p>
+          {pace && <p className="hint">{roomTimesLine(pace)}</p>}
 
           <fieldset className="field">
             <legend>Гарант</legend>
@@ -300,7 +304,7 @@ export function NewOffer({ room, onUpdate }: { room: SavedRoom; onUpdate: (room:
             <span className="hint">
               {hostNoDefault && guarantor === ''
                 ? (hostIsSide ? NEED_GUARANTOR : NEED_GUARANTOR_SUBJECT) + '.'
-                : 'Гарант решает исход, если вы с соперником разойдётесь или кто-то промолчит 3 дня. Он не принимает пари.'}
+                : `Гарант решает исход, если вы с соперником разойдётесь или кто-то промолчит ${spanText((pace?.times ?? NORMAL_TIMES).silence)}. Он не принимает пари.`}
             </span>
           </fieldset>
           {room.members.length < SMALL_ROOM && <p className="hint">{SMALL_ROOM_NOTE}</p>}

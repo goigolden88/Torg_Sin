@@ -18,7 +18,6 @@ import {
   courtVerdict,
   NO_JUDGES,
   replaceReason,
-  SEAT_TIME,
   type AppealTarget,
   type CourtCase,
 } from '../rules/appeal'
@@ -29,6 +28,7 @@ import { formKey } from '../rules/request'
 import type { SavedRoom } from '../store/db'
 import { courtRoomOf } from './courtParts'
 import { nameOf } from './eventParts'
+import { capital, spanText, viewTimes } from './paceParts'
 
 // Окно подтверждения: вопрос, основание строками, кнопка и запрос с номером
 export type CourtAsk = {
@@ -39,8 +39,6 @@ export type CourtAsk = {
   form: string
   run: (requestId: string) => Promise<Result<{ v: number }>>
 }
-
-const HOURS = SEAT_TIME / (60 * 60 * 1000)
 
 type Form = { kind: 'appeal' } | { kind: 'replace'; member: string } | null
 
@@ -73,6 +71,9 @@ export function CourtBlock({
   const what = kind === 'event' ? 'событие' : 'пари'
   const who = (id: string) => nameOf(room, id) + (id === me ? ' (вы)' : '')
   const send = { server: room.server, roomId: room.id, key: room.key }
+  // Сроки спора (Р-35), закреплённые при создании; у спора до темпа — обычные
+  const times = viewTimes(dispute.kind === 'event' ? dispute.event : dispute.offer)
+  const seatSpan = spanText(times.court) // на голос у места — срок суда
 
   const appealError = checkAppeal(dispute, c, me, '-', courtRoom, now)
   const mayAppeal = appealError === null
@@ -100,7 +101,7 @@ export function CourtBlock({
     onAsk({
       question: 'Подать апелляцию?',
       body: [
-        `Апелляция одна на ${what}. Суд: ${court}, ${HOURS} часа, решение окончательное.${n < COURT_SIZE ? ' Больше судить некому.' : ''}`,
+        `Апелляция одна на ${what}. Суд: ${court}, у каждого — ${seatSpan} на голос, решение окончательное.${n < COURT_SIZE ? ' Больше судить некому.' : ''}`,
         `Причина: ${reason}`,
         'Апелляцию не отозвать. До решения суда исход не окончательный.',
       ],
@@ -146,7 +147,7 @@ export function CourtBlock({
       question: `Заменить: ${nameOf(room, member)}?`,
       body: [
         'Место перейдёт следующему по жребию; одна замена на место.',
-        nextReserve ? `Следующий по жребию — ${nameOf(room, nextReserve)}: на голос — свои ${HOURS} часа.` : 'Запасных нет — место останется пустым.',
+        nextReserve ? `Следующий по жребию — ${nameOf(room, nextReserve)}: на голос — свои ${seatSpan}.` : 'Запасных нет — место останется пустым.',
         `Причина: ${reason}`,
       ],
       button: 'Заменить',
@@ -209,7 +210,7 @@ export function CourtBlock({
         <section className="court-box" aria-label="Суд">
           <h4>Суд</h4>
           <p className="hint">
-            {c.appeal ? 'По апелляции' : kind === 'offer' ? '3 дня без общего гаранта — решает суд' : 'Исход ждал суда'}, собран {formatDateTime(c.drawnAt)}. У каждого места — {HOURS} часа; нет голоса — место переходит
+            {c.appeal ? 'По апелляции' : kind === 'offer' ? `${capital(spanText(times.silence))} без общего гаранта — решает суд` : 'Исход ждал суда'}, собран {formatDateTime(c.drawnAt)}. У каждого места — {seatSpan}; нет голоса — место переходит
             следующему по жребию. Решает большинство поданных голосов, решение окончательное.
           </p>
           <ol className="seats" aria-label="Места суда">
@@ -237,7 +238,7 @@ export function CourtBlock({
                 )}
                 {s.replaced && (
                   <span className="hint">
-                    вместо {nameOf(room, s.replaced.member)}: {s.replaced.by ? `заменён(а) ведущим — ${s.replaced.reason ?? ''}` : `молчал(а) ${HOURS} ч`},{' '}
+                    вместо {nameOf(room, s.replaced.member)}: {s.replaced.by ? `заменён(а) ведущим — ${s.replaced.reason ?? ''}` : `молчал(а) ${seatSpan}`},{' '}
                     {formatDateTime(s.replaced.at)}
                   </span>
                 )}

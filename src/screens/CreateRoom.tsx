@@ -1,6 +1,7 @@
 // «Создать комнату» по паролю компании (Р-03). Повтор той же формы — тот же номер запроса:
 // двойное нажатие и «Создать» ещё раз после «нет связи» дают одну комнату (Р-13). «Кто кому переводит»
-// (Р-32): «По ставкам» (выбран) или «Меньше переводов»; в комнате на очки выбора нет
+// (Р-32): «По ставкам» (выбран) или «Меньше переводов»; в комнате на очки выбора нет. «Темп споров» (Р-35):
+// «Обычный» (выбран), «Быстрый» или «Свой» — четыре срока из списков (PacePicker)
 import { useCallback, useRef, useState, type FormEvent } from 'react'
 import { createRoom, fetchRoom } from '../api'
 import { CURRENCIES, currencyLabel, type CurrencyCode } from '../rules/currency'
@@ -11,6 +12,8 @@ import { getPassword, getServer, setPassword } from '../settings'
 import { store, type SavedRoom } from '../store/db'
 import type { SettleModeView } from '../rules/protocol'
 import { BackLink, useEscape } from './BackLink'
+import { PacePicker } from './PacePicker'
+import { paceDraft, paceInput, type PaceDraft } from './paceParts'
 import { isPoints, MODE_ABOUT, MODE_TITLE, MODES } from './settleParts'
 
 const NEED_PASSWORD = 'Нужен пароль компании'
@@ -23,6 +26,8 @@ export function CreateRoom({ onCreated }: { onCreated: (room: SavedRoom) => void
   const [settleMode, setSettleMode] = useState<SettleModeView>('stakes')
   const points = isPoints(currency)
   const mode: SettleModeView = points ? 'stakes' : settleMode
+  // Темп споров (Р-35): по умолчанию — обычный; «свой» — со сроками обычного
+  const [pace, setPace] = useState<PaceDraft>(() => paceDraft(null))
   const [hostName, setHostName] = useState('')
   const [password, setPasswordDraft] = useState(getPassword)
   const [error, setError] = useState('')
@@ -44,7 +49,8 @@ export function CreateRoom({ onCreated }: { onCreated: (room: SavedRoom) => void
     if (!checked.ok) return setError(checked.error)
     if (!password.trim()) return setError(NEED_PASSWORD)
     const server = getServer()
-    const request = requestFor(pending.current, formKey(checked.input.name, currency, checked.input.hostName, password, server, mode), ulid)
+    const paceFields = paceInput(pace)
+    const request = requestFor(pending.current, formKey(checked.input.name, currency, checked.input.hostName, password, server, mode, JSON.stringify(paceFields)), ulid)
     pending.current = request
 
     sending.current = true
@@ -53,7 +59,9 @@ export function CreateRoom({ onCreated }: { onCreated: (room: SavedRoom) => void
     try {
       // «По ставкам» — без поля: так и сервер до этапа 5 комнату создаст
       const modeField = mode === 'stakes' ? {} : { settleMode: mode }
-      const created = await createRoom(server, { password, ...checked.input, ...modeField, requestId: request.requestId })
+      // Обычный темп — без поля: так и сервер до темпа комнату создаст (Р-35)
+      const pacePart = paceFields.pace === 'normal' ? {} : paceFields
+      const created = await createRoom(server, { password, ...checked.input, ...modeField, ...pacePart, requestId: request.requestId })
       if (!created.ok) return setError(created.error)
       const { roomId, invite, memberId, key } = created.value
       setPassword(password) // пароль верный — устройство его помнит
@@ -130,6 +138,7 @@ export function CreateRoom({ onCreated }: { onCreated: (room: SavedRoom) => void
             <span className="hint">Ведущий может сменить режим в «Расчёте», пока переводов нет.</span>
           </fieldset>
         )}
+        <PacePicker value={pace} onChange={setPace} />
         <label className="field">
           <span>Ваше имя в комнате</span>
           <input

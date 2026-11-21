@@ -1,6 +1,6 @@
 // «Новое событие» по шаблону «Условие / Как проверяем / Срок» (Р-04): исходы «Да / Нет» или свои
 // 2–6 (сервер добавит последним «Другое», Р-16), сроки — местное время телефона, на сервер — UTC,
-// предмет спора — участник или никто. Повтор той же формы — тот же номер запроса: двойное
+// предмет спора — участник или никто; под сроками — сроки комнаты (темп, Р-35). Повтор той же формы — тот же номер запроса: двойное
 // нажатие и «Завести» ещё раз после «нет связи» дают одно событие (Р-13). Ошибка — текст сервера,
 // введённое остаётся
 import { useCallback, useRef, useState, type FormEvent } from 'react'
@@ -12,6 +12,7 @@ import { ulid } from '../rules/ulid'
 import type { SavedRoom } from '../store/db'
 import { BackLink, useEscape } from './BackLink'
 import { eventHref, SMALL_ROOM, SMALL_ROOM_NOTE } from './eventParts'
+import { roomTimesLine } from './paceParts'
 import { useRoom } from './useRoom'
 
 type Mode = 'yes-no' | 'own'
@@ -26,7 +27,7 @@ function defaultTimes(now: number): { closes: string; expected: string } {
 }
 
 export function NewEvent({ room, onUpdate }: { room: SavedRoom; onUpdate: (room: SavedRoom) => void }) {
-  const { sync, refresh } = useRoom(room, onUpdate)
+  const { sync, pace, refresh } = useRoom(room, onUpdate)
   const [condition, setCondition] = useState('')
   const [check, setCheck] = useState('')
   const [mode, setMode] = useState<Mode>('yes-no')
@@ -181,6 +182,7 @@ export function NewEvent({ room, onUpdate }: { room: SavedRoom; onUpdate: (room:
             </label>
           </div>
           <p className="hint">Время — местное, на этом устройстве. Приём закрывается по часам сервера.</p>
+          {pace && <p className="hint">{roomTimesLine(pace)}</p>}
 
           <fieldset className="field">
             <legend>Предмет спора</legend>

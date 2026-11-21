@@ -79,7 +79,10 @@ import {
   type ReplaceJurorRequest,
   type ReplaceJurorResponse,
   isSettleModeResponse,
+  isPaceResponse,
   isTransferResponse,
+  type PaceRequest,
+  type PaceResponse,
   type SettleModeRequest,
   type SettleModeResponse,
   type TransferActRequest,
@@ -406,4 +409,9 @@ export function answerTransfer(
 // POST /rooms/<номер>/settle-mode — ведущий меняет режим «кто кому»
 export function changeSettleMode(server: string, roomId: string, key: string, request: Omit<SettleModeRequest, 'v'>): Promise<Result<SettleModeResponse>> {
   return call(roomUrl(server, roomId, 'settle-mode'), post(request, key), isSettleModeResponse)
+}
+
+// POST /rooms/<номер>/pace — ведущий меняет темп комнаты (новые сроки — для новых событий и пари)
+export function changePace(server: string, roomId: string, key: string, request: Omit<PaceRequest, 'v'>): Promise<Result<PaceResponse>> {
+  return call(roomUrl(server, roomId, 'pace'), post(request, key), isPaceResponse)
 }

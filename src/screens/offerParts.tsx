@@ -5,14 +5,12 @@ import type { Result } from '../api'
 import type { CourtCase } from '../rules/appeal'
 import { formatCountdown, formatDateTime } from '../rules/date'
 import {
-  GUARANTOR_SILENCE,
   MAX_ODDS,
   MIN_ODDS,
   offerNets,
   offerOutcome,
   offerStakes,
   offerStatus,
-  SIDE_SILENCE,
   subjectIsSide,
   type OfferOutcome,
   type OfferSide,
@@ -24,6 +22,7 @@ import type { OfferView } from '../rules/protocol'
 import type { SavedRoom } from '../store/db'
 import { courtCaseOf } from './courtParts'
 import { money, nameOf } from './eventParts'
+import { spanText, viewTimes } from './paceParts'
 
 export function offerHref(roomId: string, offerId: string): string {
   return `#/room/${roomId}/offer/${offerId}`
@@ -41,8 +40,8 @@ export type OfferAsk = {
 
 // Ход исхода из ответа (outcome) → поля состояния для правил так, чтобы offerOutcome, checkMark,
 // checkDecide, checkDecline и checkNominate на часах сервера дали то же, что сервер: с какого мига решает
-// гарант (turnAt — как миг расхождения; отметки — не раньше, чем turnAt минус 3 дня), до какого он
-// решает (guarantorUntil — 3 дня с guarantorSince), отказ или пропуск срока (needSince), утверждено
+// гарант (turnAt — как миг расхождения; отметки — не раньше, чем turnAt минус срок молчания пари), до какого
+// он решает (guarantorUntil — срок молчания с guarantorSince; сроки — пари, Р-35), отказ или пропуск срока (needSince), утверждено
 // согласием или гарантом; суд по «ждёт суда» (Р-31: суд без апелляции — courtAt с мига сбора, а другой
 // гарант нужен с needSince). Сами записи журнала сайту не приходят; между опросами фаза идёт по часам
 function outcomeState(
@@ -50,7 +49,8 @@ function outcomeState(
 ): Pick<OfferState, 'guarantorSince' | 'marks' | 'disagreedAt' | 'agreed' | 'decision' | 'declinedAt' | 'nominations' | 'courtAt'> {
   const out = o.outcome
   if (!out) return { guarantorSince: null, marks: [], disagreedAt: null, agreed: null, decision: null, declinedAt: null, nominations: {}, courtAt: null }
-  const markAt = Math.max(o.expectedAt, out.turnAt - SIDE_SILENCE)
+  const silence = viewTimes(o).silence // сроки пари (Р-35); у пари до темпа — обычные
+  const markAt = Math.max(o.expectedAt, out.turnAt - silence)
   const sides: OfferSide[] = ['author', 'taker']
   const courtAt = out.court && !out.appeal ? out.court.drawnAt : null
   // Суд изменил решение гаранта (Р-24): в ответе — новый исход, а правилам нужно решение гаранта, на
@@ -63,7 +63,7 @@ function outcomeState(
         ? { winner: other(out.approved.winner), at: out.appeal?.at ?? out.court?.drawnAt ?? out.approved.at, how: 'guarantor' as const, by: out.guarantorId }
         : out.approved
   return {
-    guarantorSince: out.guarantorUntil === null ? null : out.guarantorUntil - GUARANTOR_SILENCE,
+    guarantorSince: out.guarantorUntil === null ? null : out.guarantorUntil - silence,
     marks: sides.flatMap((by) => {
       const winner = out.marks[by]
       return winner ? [{ by, winner, at: markAt }] : []
@@ -101,6 +101,7 @@ export function offerState(o: OfferView): OfferState {
     accepted: o.accepted,
     withdrawnAt: o.withdrawnAt,
     closedBy: o.closedBy,
+    ...(o.times && { times: o.times }),
     ...outcomeState(o),
   }
 }
@@ -112,7 +113,7 @@ export function other(side: OfferSide): OfferSide {
 
 // Дело суда по пари из ответа (courtCaseOf) — для offerOutcome и проверок апелляции; суда нет — null
 export function offerCourt(room: SavedRoom, o: OfferView): CourtCase | null {
-  return courtCaseOf(o.id, o.outcome, room.hostId)
+  return courtCaseOf(o.id, o.outcome, room.hostId, o.times)
 }
 
 // Исход пари на часах сервера с учётом суда (offerOutcome с делом суда, как у сервера)
@@ -155,7 +156,7 @@ function acceptedLine(room: SavedRoom, offer: OfferView, now: number) {
   if (out.phase === 'marking') return <span className="status open">принято — ждём отметок сторон</span>
   if (out.phase === 'guarantor') return <span className="status open">решает гарант — {who(room, out.guarantorId)}</span>
   if (out.phase === 'need-guarantor') return <span className="status cancelled">нужен новый гарант</span>
-  if (out.phase === 'court') return <span className="status open">ждёт суда — 3 дня без общего гаранта</span>
+  if (out.phase === 'court') return <span className="status open">ждёт суда — {spanText(viewTimes(offer).silence)} без общего гаранта</span>
   if (out.phase === 'cancelled') return <span className="status cancelled">отменено судом — ставки возвращены</span>
   const winner = out.approved?.winner ?? 'author'
   const nets = netsOf(room, offer, winner)

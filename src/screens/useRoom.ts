@@ -4,7 +4,9 @@
 // часы, не часы телефона) — по ним отсчёт до закрытия приёма
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { fetchRoom } from '../api'
+import type { RoomPace } from '../rules/pace'
 import { store, withState, type SavedRoom } from '../store/db'
+import { statePace } from './paceParts'
 import { usePoll } from './usePoll'
 
 export type Sync = { state: 'busy' } | { state: 'ok' } | { state: 'fail'; text: string }
@@ -14,12 +16,16 @@ export type Clock = { server: number; local: number }
 
 // Часы — на комнату, а не на экран: перешёл из комнаты в событие — отсчёт тот же сразу
 const clocks = new Map<string, Clock>()
+// Темп комнаты (Р-35) — из последнего ответа сервера, тоже на комнату и только в памяти: на устройство не
+// пишется (запись комнаты та же). Сервер без темпа или ответа ещё не было — null (строки темпа нет)
+const paces = new Map<string, RoomPace | null>()
 
 export const OFFLINE_SHOWN = 'Нет связи с сервером — показано последнее известное'
 
 export function useRoom(room: SavedRoom, onUpdate: (room: SavedRoom) => void) {
   const [sync, setSync] = useState<Sync>({ state: 'busy' })
   const [clock, setClock] = useState<Clock | null>(() => clocks.get(room.id) ?? null)
+  const [pace, setPace] = useState<RoomPace | null>(() => paces.get(room.id) ?? null)
   const latest = useRef(room)
   latest.current = room
 
@@ -44,13 +50,16 @@ export function useRoom(room: SavedRoom, onUpdate: (room: SavedRoom) => void) {
     const next = { server: res.value.now, local: performance.now() }
     clocks.set(r.id, next)
     setClock(next)
+    const p = statePace(res.value.room)
+    paces.set(r.id, p)
+    setPace(p)
     setSync({ state: 'ok' })
     save(withState(latest.current, res.value, Date.now()))
   }, [save])
 
   usePoll(refresh)
 
-  return { sync, clock, refresh, save, latest }
+  return { sync, clock, pace, refresh, save, latest }
 }
 
 // Время сервера сейчас; ответа ещё не было — часы телефона (ставить без ответа сервера всё равно нельзя)

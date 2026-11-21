@@ -3,15 +3,19 @@
 // сервер не спрашиваем, POST /invite сменил бы ссылку — это отдельная кнопка «Сменить ссылку»
 // с подтверждением. «Ссылка для другого устройства» — себе; ведущему — и за другого участника.
 // Состояние — с сервера раз в 5 с, пока комната открыта (useRoom); нет связи — последнее известное.
+// Под названием — строка темпа (Р-35, PaceBlock); у ведущего — «Изменить темп» с подтверждением.
 // Под участниками — «Расчёт» (SettleBlock; на очках — «Таблица очков»), «События» (EventList), под ними —
 // «Пари» (OfferList); прошедшее из них — в «Истории», строка «История · N» под «Пари». На iPhone в браузере —
 // заметка про экран «Домой» (HomeScreenNote). В самом низу — «Скачать копию комнаты» (BackupBlock)
-import { useCallback, useState } from 'react'
-import { admitRequest, fetchBackup, fetchRequests, issueDeviceLink, rejectRequest, renewInvite } from '../api'
+import { useCallback, useRef, useState, type FormEvent } from 'react'
+import { admitRequest, changePace, fetchBackup, fetchRequests, issueDeviceLink, rejectRequest, renewInvite } from '../api'
 import { currencyLabel } from '../rules/currency'
 import { formatDate, formatDateTime } from '../rules/date'
 import { deviceLink, inviteLink } from '../rules/link'
+import { checkPaceChange, PACE_LABELS, paceSummary, type RoomPace } from '../rules/pace'
 import type { JoinRequestsResponse } from '../rules/protocol'
+import { formKey, requestFor, type PendingRequest } from '../rules/request'
+import { ulid } from '../rules/ulid'
 import { savedEvents, savedOffers, savedSettlement, type SavedRoom } from '../store/db'
 import { BackLink, useEscape } from './BackLink'
 import { BACKUP_FAILED, BACKUP_NOTE, backupFileName, backupText, deliveryWay } from './backupParts'
@@ -20,6 +24,8 @@ import { historyHref, historyItems, historyLine } from './historyParts'
 import { HomeScreenNote } from './HomeScreenNote'
 import { LinkBox, siteUrl } from './LinkBox'
 import { OfferList } from './OfferList'
+import { PacePicker } from './PacePicker'
+import { draftTimes, PACE_CHANGE_NOTE, paceDraft, paceInput, paceLine, type PaceDraft } from './paceParts'
 import { balanceNote, isPoints, myTotalLine, settleHref } from './settleParts'
 import { usePoll } from './usePoll'
 import { useRoom, useServerNow, type Clock } from './useRoom'
@@ -28,7 +34,7 @@ type Panel = 'none' | 'invite' | 'device'
 
 export function RoomView({ room, onUpdate }: { room: SavedRoom; onUpdate: (room: SavedRoom) => void }) {
   const [panel, setPanel] = useState<Panel>('none')
-  const { sync, clock, refresh, save, latest } = useRoom(room, onUpdate)
+  const { sync, clock, pace, refresh, save, latest } = useRoom(room, onUpdate)
 
   useEscape(
     useCallback(() => setPanel('none'), []),
@@ -47,6 +53,7 @@ export function RoomView({ room, onUpdate }: { room: SavedRoom; onUpdate: (room:
       </p>
       {sync.state === 'busy' && <p className="hint">Обновляю с сервера…</p>}
       {sync.state === 'fail' && <p className="error">{sync.text}</p>}
+      <PaceBlock room={room} pace={pace} isHost={isHost} onChanged={refresh} />
       <HomeScreenNote room={room} />
 
       {isHost && <Requests room={room} onAdmitted={refresh} />}
@@ -79,6 +86,90 @@ export function RoomView({ room, onUpdate }: { room: SavedRoom; onUpdate: (room:
       <OfferList room={room} clock={clock} />
       <HistoryLink room={room} clock={clock} />
       <BackupBlock room={room} />
+    </div>
+  )
+}
+
+const pacePending = new Map<string, PendingRequest>() // по комнате: окно закрыли и открыли — тот же номер
+
+// Темп комнаты (Р-35): строка всем; ведущему — «Изменить темп»: окно с тем же выбором, что на создании,
+// и подтверждением. Сервер без темпа (или ответа ещё не было) — блока нет
+function PaceBlock({ room, pace, isHost, onChanged }: { room: SavedRoom; pace: RoomPace | null; isHost: boolean; onChanged: () => Promise<void> }) {
+  const [open, setOpen] = useState(false)
+  if (!pace) return null
+  return (
+    <section className="pace-line" aria-label="Темп комнаты">
+      <p className="hint">{paceLine(pace)}</p>
+      {isHost && (
+        <button className="button secondary" type="button" onClick={() => setOpen(true)}>
+          Изменить темп
+        </button>
+      )}
+      {open && <PaceWindow room={room} current={pace} onClose={() => setOpen(false)} onDone={onChanged} />}
+    </section>
+  )
+}
+
+// Окно смены темпа — форма: Enter отправляет, Esc закрывает. Тот же темп — отказ правил (checkPaceChange)
+// до запроса; повтор того же выбора — тот же номер запроса (Р-13); отказ сервера — его текстом в окне
+function PaceWindow({ room, current, onClose, onDone }: { room: SavedRoom; current: RoomPace; onClose: () => void; onDone: () => Promise<void> }) {
+  const [draft, setDraft] = useState<PaceDraft>(() => paceDraft(current))
+  const [sending, setSending] = useState(false)
+  const [error, setError] = useState('')
+  const busy = useRef(false)
+  useEscape(
+    useCallback(() => {
+      if (!busy.current) onClose()
+    }, [onClose]),
+  )
+
+  async function submit(e: FormEvent) {
+    e.preventDefault()
+    if (busy.current) return // синхронный замок: второе нажатие раньше перерисовки
+    const input = paceInput(draft)
+    const refused = checkPaceChange(current, room, room.memberId, input)
+    if (refused) return setError(refused)
+    const request = requestFor(pacePending.get(room.id) ?? null, formKey(room.id, 'pace', JSON.stringify(input)), ulid)
+    pacePending.set(room.id, request)
+    busy.current = true
+    setSending(true)
+    setError('')
+    try {
+      const res = await changePace(room.server, room.id, room.key, { ...input, requestId: request.requestId })
+      if (!res.ok) return setError(res.error)
+      pacePending.delete(room.id)
+      busy.current = false
+      await onDone()
+      onClose()
+    } finally {
+      busy.current = false
+      setSending(false)
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" onClick={() => !busy.current && onClose()}>
+      <form className="modal form pace-modal" role="dialog" aria-modal="true" aria-label="Изменить темп" onClick={(e) => e.stopPropagation()} onSubmit={submit}>
+        <p className="modal-question">Изменить темп комнаты?</p>
+        <PacePicker value={draft} onChange={setDraft} current={current.pace} autoFocus />
+        <p>
+          Новый темп: {PACE_LABELS[draft.pace]} — {paceSummary(draftTimes(draft))}.
+        </p>
+        <p className="hint">{PACE_CHANGE_NOTE}</p>
+        {error && (
+          <p className="error" role="alert">
+            {error}
+          </p>
+        )}
+        <div className="row">
+          <button className="button" type="submit" disabled={sending}>
+            {sending ? 'Меняю…' : 'Сменить темп'}
+          </button>
+          <button className="button secondary" type="button" onClick={onClose} disabled={sending}>
+            Отмена
+          </button>
+        </div>
+      </form>
     </div>
   )
 }
