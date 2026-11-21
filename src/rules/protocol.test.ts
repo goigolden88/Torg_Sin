@@ -31,6 +31,7 @@ import {
   isJoinRoomResponse,
   isPreviewResponse,
   isRejectResponse,
+  isPaceResponse,
   isRoomStateResponse,
   isSettlementView,
   isSettleModeResponse,
@@ -410,6 +411,79 @@ describe('расчёт (Р-32)', () => {
     expect(isSettleModeResponse({ v, settleMode: changed })).toBe(true)
     expect(isSettleModeResponse({ v, settleMode: { ...changed, mode: 'всё' } })).toBe(false)
     expect(isSettleModeResponse({ settleMode: changed })).toBe(false)
+  })
+})
+
+describe('темп комнаты (Р-35)', () => {
+  const v = PROTOCOL_VERSION
+  const times = { objection: 2, appeal: 24, silence: 12, court: 12 }
+  const room = { id: 'R', name: 'Дача', currency: 'RUB', hostId: 'M', createdAt: 1 }
+  const state = { v, room, members: [{ id: 'M', name: 'Аня' }], me: 'M', events: [], offers: [], now: 5 }
+  const event = {
+    id: 'E',
+    at: 1,
+    authorId: 'M',
+    condition: 'Условие',
+    check: 'Как проверяем',
+    outcomes: [
+      { id: '1', title: 'Да' },
+      { id: '2', title: 'Нет' },
+    ],
+    closesAt: 10,
+    expectedAt: 20,
+    subjectId: null,
+    subjectRule: false,
+    status: 'open',
+    clarifications: [],
+    bets: [],
+    cancelled: null,
+    refunds: [],
+    outcome: null,
+  }
+  const offer = {
+    id: 'O',
+    at: 1,
+    authorId: 'A',
+    condition: 'Условие',
+    check: 'Как проверяем',
+    side: 'yes',
+    odds: { a: 3, b: 1 },
+    amount: 300,
+    takerAmount: 100,
+    to: null,
+    closesAt: 10,
+    expectedAt: 20,
+    guarantorId: 'M',
+    counterTo: null,
+    subjectId: null,
+    guarantorRule: true,
+    status: 'open',
+    accepted: null,
+    withdrawnAt: null,
+    closedBy: null,
+    outcome: null,
+  }
+
+  it('темп и сроки комнаты, сроки события и пари — в ответе; сервер до темпа их не шлёт — тоже годно', () => {
+    expect(isRoomStateResponse(state)).toBe(true)
+    expect(isRoomStateResponse({ ...state, events: [event], offers: [offer] })).toBe(true)
+    expect(isRoomStateResponse({ ...state, room: { ...room, pace: 'fast', times }, events: [{ ...event, times }], offers: [{ ...offer, times }] })).toBe(true)
+    const bad: unknown[] = [
+      { ...state, room: { ...room, pace: 'медленный', times } },
+      { ...state, room: { ...room, pace: 'fast', times: { ...times, court: undefined } } },
+      { ...state, room: { ...room, times: null } },
+      { ...state, events: [{ ...event, times: { ...times, appeal: '24' } }] },
+      { ...state, offers: [{ ...offer, times: [] }] },
+    ]
+    for (const x of bad) expect(isRoomStateResponse(x)).toBe(false)
+  })
+
+  it('ответ на смену темпа', () => {
+    const changed = { id: 'P', at: 4, by: 'M', pace: 'custom', times }
+    expect(isPaceResponse({ v, pace: changed })).toBe(true)
+    expect(isPaceResponse({ v, pace: { ...changed, pace: 'свой' } })).toBe(false)
+    expect(isPaceResponse({ v, pace: { ...changed, times: undefined } })).toBe(false)
+    expect(isPaceResponse({ pace: changed })).toBe(false)
   })
 })
 

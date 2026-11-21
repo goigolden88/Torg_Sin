@@ -11,6 +11,7 @@ import { checkAmount, checkClarification, checkEventInput, checkObjection, check
 import { BAD_GUARANTOR, BAD_MARK, BAD_ODDS, checkOfferInput, MAX_ODDS, MIN_ODDS, NO_OFFER, offerView, type Odds } from '../../src/rules/offer'
 import { appealReason, caseOf, courtVote, NOT_SEAT, replaceReason } from '../../src/rules/appeal'
 import { checkBackup, type Backup } from '../../src/rules/backup'
+import { checkPace, timesOf, type PaceInput } from '../../src/rules/pace'
 import { checkMemberName, checkRoomInput } from '../../src/rules/room'
 import {
   BAD_MODE,
@@ -161,7 +162,29 @@ export async function handle(request: Request, deps: RoomsDeps): Promise<Respons
     const r = await settleModeAction(sm[1], request, deps)
     return json(r.status, r.body)
   }
+  // Темп комнаты (Р-35): /rooms/<номер>/pace
+  const pc = /^\/rooms\/([^/]+)\/pace$/.exec(path)
+  if (pc && request.method === 'POST') {
+    const r = await paceAction(pc[1], request, deps)
+    return json(r.status, r.body)
+  }
   return notFound()
+}
+
+// POST /rooms/<номер>/pace { pace: "normal" | "fast" | "custom", times?, requestId? } — ведущий меняет темп
+// комнаты; times — только у «своего». Форма — checkPace (400 с текстом правил)
+async function paceAction(roomId: string, request: Request, deps: RoomsDeps): Promise<Reply<unknown>> {
+  const authorization = request.headers.get('Authorization')
+  const raw: unknown = await request.json().catch(() => null)
+  return withKey(roomId, authorization, async (keyHash) => {
+    const read = readBody(raw)
+    if (!read.ok) return read.reply
+    const checked = checkPace({ pace: read.body.pace, times: read.body.times })
+    if (!checked.ok) return failure(400, checked.error)
+    const requestId = requestIdOf(read.body, deps)
+    if (!requestId) return failure(400, BAD_REQUEST_ID)
+    return reply(await deps.act(roomId, { type: 'setPace', keyHash, pace: checked.value, requestId }))
+  })
 }
 
 // POST /rooms/<номер>/transfers { to, amount, requestId? } — «Перевёл»; { from, amount, requestId? } —
@@ -669,10 +692,18 @@ export async function createRoom(body: unknown, deps: RoomsDeps): Promise<Reply<
   // Режим «кто кому» (Р-32): не задан — «по ставкам» (старый сайт поля не шлёт)
   const settleMode = body.settleMode === undefined ? undefined : settleModeOf(body.settleMode)
   if (settleMode === null) return fail(400, BAD_MODE)
+  // Темп (Р-35): не задан (ни темпа, ни сроков) — обычный, полей в записи нет; иначе — checkPace
+  let pace: PaceInput | undefined
+  if (body.pace !== undefined || body.times !== undefined) {
+    const p = checkPace({ pace: body.pace, times: body.times })
+    if (!p.ok) return fail(400, p.error)
+    pace = p.value
+  }
   const { roomId, key } = await deriveCreation(requestId, deps.password)
   const created = await deps.create({
     ...checked.input,
     ...(settleMode && { settleMode }),
+    ...(pace && { pace }),
     roomId,
     keyHash: await hashKey(key),
     invite: randomToken(),
@@ -698,12 +729,22 @@ export async function getRoom(roomId: string, authorization: string | null, deps
     status: 200,
     body: {
       v: PROTOCOL_VERSION,
-      room: { id: state.id, name: state.name, currency: state.currency, hostId: state.hostId, createdAt: state.createdAt },
+      // Темп комнаты и его сроки (Р-35) — нынешние: по ним заведутся новые события и пари
+      room: {
+        id: state.id,
+        name: state.name,
+        currency: state.currency,
+        hostId: state.hostId,
+        createdAt: state.createdAt,
+        pace: r.pace.pace,
+        times: { ...r.pace.times },
+      },
       members: state.members.map((m) => ({ id: m.id, name: m.name })),
       me: r.me,
-      // Апелляция и суд (Р-25) — у исхода своего события или пари
-      events: r.events.map((e) => eventView(e, now, caseOf(r.cases, e.id))),
-      offers: r.offers.map((o) => offerView(o, now, caseOf(r.cases, o.id))),
+      // Апелляция и суд (Р-25) — у исхода своего события или пари; times — сроки, закреплённые при
+      // создании (Р-35; у старых — обычный набор, timesOf): экраны показывают их, а не константы
+      events: r.events.map((e) => ({ ...eventView(e, now, caseOf(r.cases, e.id)), times: { ...timesOf(e) } })),
+      offers: r.offers.map((o) => ({ ...offerView(o, now, caseOf(r.cases, o.id)), times: { ...timesOf(o) } })),
       // Свод расчёта (Р-32) — на то же время, в режиме комнаты; виден всем участникам
       settlement: roomSettlement(
         {

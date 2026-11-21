@@ -118,6 +118,9 @@ import {
 } from '../../src/rules/protocol'
 import * as A from '../../src/rules/appeal'
 import * as T from '../../src/rules/settle'
+import * as P from '../../src/rules/pace'
+import { NORMAL_TIMES } from '../../src/rules/pace'
+import { isPaceResponse, type PaceResponse } from '../../src/rules/protocol'
 import {
   isSettlementView,
   isSettleModeResponse,
@@ -403,7 +406,8 @@ export function roomsSuite(
         expect(r.status).toBe(200)
         expect(await r.json()).toEqual({
           v: PROTOCOL_VERSION,
-          room: { id: created.roomId, name: 'Дача', currency: 'RUB', hostId: created.memberId, createdAt: s.clock.now },
+          // Темп не выбран — обычный (Р-35)
+          room: { id: created.roomId, name: 'Дача', currency: 'RUB', hostId: created.memberId, createdAt: s.clock.now, pace: 'normal', times: NORMAL_TIMES },
           members: [{ id: created.memberId, name: 'Аня' }],
           me: created.memberId,
           events: [],
@@ -807,9 +811,11 @@ export function roomsSuite(
           subjectId: vera.memberId,
           subjectRule: true,
         })
-        const expected = { ...event, status: 'open', clarifications: [], bets: [], cancelled: null, refunds: [], outcome: null }
+        // Сроки события (Р-35) — в ответе комнаты и в записи; в обычной комнате — обычный набор
+        const expected = { ...event, times: NORMAL_TIMES, status: 'open', clarifications: [], bets: [], cancelled: null, refunds: [], outcome: null }
         for (const key of [room.key, borya.key, vera.key]) expect(await eventsOf(s, room.roomId, key)).toEqual([expected])
         expect(await eventEntries(s, room.roomId)).toEqual(['event.created'])
+        expect((await readLog(s.storage(room.roomId))).at(-1)).toMatchObject({ type: 'event.created', times: NORMAL_TIMES })
         // Без предмета спора — null
         const second = await newEvent(s, room.roomId, room.key, eventForm(s))
         expect(second.event.subjectId).toBeNull()
@@ -1744,10 +1750,11 @@ export function roomsSuite(
           subjectId: null,
           guarantorRule: true,
         })
-        const expected = { ...offer, status: 'open', accepted: null, withdrawnAt: null, closedBy: null, outcome: null }
+        // Сроки пари (Р-35) — в ответе комнаты; в обычной комнате — обычный набор, и в записи тоже
+        const expected = { ...offer, times: NORMAL_TIMES, status: 'open', accepted: null, withdrawnAt: null, closedBy: null, outcome: null }
         for (const key of [room.key, borya.key, vera.key, gosha.key]) expect(await offersOf(s, room.roomId, key)).toEqual([expected])
         const log = await readLog(s.storage(room.roomId))
-        expect(log.at(-1)).toMatchObject({ type: 'offer.created', id: offer.id, memberId: borya.memberId, guarantor: room.memberId, counterTo: null, requestId: expect.any(String) })
+        expect(log.at(-1)).toMatchObject({ type: 'offer.created', id: offer.id, memberId: borya.memberId, guarantor: room.memberId, counterTo: null, times: NORMAL_TIMES, requestId: expect.any(String) })
         // Правило гаранта (Р-31) — пометкой в записи нового пари
         expect(log.at(-1)).toMatchObject({ guarantorRule: 1 })
         // Ни о ком — поля «о ком спор» в записи нет, как у пари до выкатки (Р-26)
@@ -3230,6 +3237,207 @@ export function roomsSuite(
         expect(settlement.transfers).toEqual([])
         expect(settlement.suggestions).toEqual([])
         expect(await settleEntries(s, id)).toEqual([])
+      })
+    })
+
+    describe('темп комнаты (Р-35)', () => {
+      const HOUR = 60 * 60 * 1000
+      const DAY = 24 * HOUR
+      const SEED = 'ef'.repeat(16)
+      // «Свой» набор — из списков pace.ts, каждый срок не как у обычного и быстрого
+      const CUSTOM: P.Times = { objection: 6 * HOUR, appeal: 3 * DAY, silence: 2 * DAY, court: 5 * DAY }
+
+      function setPace(s: TestServer, roomId: string, key: string, body: Record<string, unknown>) {
+        return send(s, roomId, 'pace', { v: PROTOCOL_VERSION, ...body }, key)
+      }
+
+      async function stateOf(s: TestServer, roomId: string, key: string): Promise<RoomStateResponse> {
+        const state = await ok<RoomStateResponse>(get(s, roomId, key))
+        expect(isRoomStateResponse(state)).toBe(true)
+        return state
+      }
+
+      async function paceEntries(s: TestServer, roomId: string): Promise<string[]> {
+        return (await readLog(s.storage(roomId))).flatMap((e) => (e.type === 'room.pace' ? [e.pace] : []))
+      }
+
+      it('темп при создании: обычный, быстрый, свой — в записи room.created и в ответе комнаты; без поля — обычный, полей в записи нет', async () => {
+        const s = await server()
+        const cases: [Record<string, unknown>, P.RoomPace][] = [
+          [{ pace: 'normal' }, { pace: 'normal', times: NORMAL_TIMES }],
+          [{ pace: 'fast' }, { pace: 'fast', times: P.FAST_TIMES }],
+          [{ pace: 'custom', times: CUSTOM }, { pace: 'custom', times: CUSTOM }],
+        ]
+        for (const [change, expected] of cases) {
+          const room = await create(s, { ...FORM, ...change })
+          const created = (await readLog(s.storage(room.roomId)))[0]
+          expect(created).toMatchObject({ type: 'room.created', ...change })
+          // Сроки в записи — только у «своего»
+          expect('times' in created).toBe(change.pace === 'custom')
+          expect((await stateOf(s, room.roomId, room.key)).room).toMatchObject(expected)
+        }
+        const plain = await create(s)
+        const created = (await readLog(s.storage(plain.roomId)))[0]
+        expect('pace' in created || 'times' in created).toBe(false)
+        expect((await stateOf(s, plain.roomId, plain.key)).room).toMatchObject({ pace: 'normal', times: NORMAL_TIMES })
+      })
+
+      it('темп при создании: чужой срок, лишние или неполные сроки, кривой темп — 400, комнаты нет; повтор создания сверяет темп', async () => {
+        const s = await server()
+        const cases: [Record<string, unknown>, string][] = [
+          [{ pace: 'slow' }, P.BAD_PACE],
+          [{ pace: null }, P.BAD_PACE],
+          [{ times: CUSTOM }, P.BAD_PACE],
+          [{ pace: 'custom' }, P.NEED_PACE_TIMES],
+          [{ pace: 'custom', times: { ...CUSTOM, silence: undefined } }, P.NEED_PACE_TIMES],
+          [{ pace: 'custom', times: { ...CUSTOM, objection: 3 * HOUR } }, P.badTime('objection')],
+          [{ pace: 'custom', times: { ...CUSTOM, court: 4 * DAY } }, P.badTime('court')],
+          [{ pace: 'fast', times: P.FAST_TIMES }, P.EXTRA_PACE_TIMES],
+        ]
+        for (const [change, error] of cases) {
+          const r = await post(s, { ...FORM, ...change })
+          expect(r.status).toBe(400)
+          expect(await r.json()).toEqual({ v: PROTOCOL_VERSION, error })
+        }
+        expect(s.roomIds()).toEqual([])
+        // Повтор: тот же темп и сроки — та же комната; другой темп, другие сроки или без темпа — 409
+        const requestId = ulid(s.clock.now)
+        const first = await create(s, { ...FORM, requestId, pace: 'custom', times: CUSTOM })
+        expect(await create(s, { ...FORM, requestId, pace: 'custom', times: CUSTOM })).toEqual(first)
+        for (const change of [{}, { pace: 'fast' }, { pace: 'custom', times: { ...CUSTOM, court: 7 * DAY } }]) {
+          const r = await post(s, { ...FORM, requestId, ...change })
+          expect(r.status).toBe(409)
+          expect(await r.json()).toEqual({ v: PROTOCOL_VERSION, error: REQUEST_TAKEN })
+        }
+        // Обычный явно и без поля — одно и то же
+        const plainId = ulid(s.clock.now)
+        const plain = await create(s, { ...FORM, requestId: plainId })
+        expect(await create(s, { ...FORM, requestId: plainId, pace: 'normal' })).toEqual(plain)
+        expect(s.roomIds()).toEqual([first.roomId, plain.roomId])
+      })
+
+      it('смена темпа: только ведущий, в любой момент; тот же или кривой — отказ правил; запись room.pace; повтор — тот же ответ', async () => {
+        const s = await server()
+        const room = await create(s)
+        const borya = await member(s, room, 'Боря')
+        const id = room.roomId
+        await refused(setPace(s, id, borya.key, { pace: 'fast' }), 403, P.ONLY_HOST_PACE)
+        await refused(setPace(s, id, room.key, { pace: 'normal' }), 409, P.SAME_PACE)
+        await refused(setPace(s, id, room.key, { pace: 'custom', times: { ...CUSTOM, appeal: 4 * DAY } }), 400, P.badTime('appeal'))
+        await refused(setPace(s, id, room.key, { pace: 'fast', times: P.FAST_TIMES }), 400, P.EXTRA_PACE_TIMES)
+        await refused(setPace(s, id, room.key, { pace: 'custom' }), 400, P.NEED_PACE_TIMES)
+        await refused(setPace(s, id, room.key, {}), 400, P.BAD_PACE)
+        await refused(send(s, id, 'pace', { pace: 'fast' }), 403, NEED_KEY)
+        await refused(setPace(s, id, room.key, { pace: 'fast', requestId: 'abc' }), 400, BAD_REQUEST_ID)
+        expect(await paceEntries(s, id)).toEqual([])
+        // Ведущая сменила на быстрый — запись без сроков, ответ — со сроками; темп виден всем
+        const requestId = ulid(s.clock.now)
+        const fast = await ok<PaceResponse>(setPace(s, id, room.key, { pace: 'fast', requestId }))
+        expect(isPaceResponse(fast)).toBe(true)
+        expect(fast.pace).toEqual({ id: expect.any(String), at: s.clock.now, by: room.memberId, pace: 'fast', times: P.FAST_TIMES })
+        expect((await readLog(s.storage(id))).at(-1)).toEqual({ id: fast.pace.id, at: s.clock.now, memberId: room.memberId, type: 'room.pace', pace: 'fast', requestId })
+        s.clock.now += 1000
+        expect(await ok(setPace(s, id, room.key, { pace: 'fast', requestId }))).toEqual(fast)
+        await refused(setPace(s, id, room.key, { pace: 'normal', requestId }), 409, REQUEST_USED)
+        await refused(setPace(s, id, room.key, { pace: 'fast' }), 409, P.SAME_PACE)
+        for (const key of [room.key, borya.key]) expect((await stateOf(s, id, key)).room).toMatchObject({ pace: 'fast', times: P.FAST_TIMES })
+        // Свой — сроки в записи; свой с другими сроками — уже не тот же; обратно — обычный
+        const custom = await ok<PaceResponse>(setPace(s, id, room.key, { pace: 'custom', times: CUSTOM }))
+        expect(custom.pace).toMatchObject({ pace: 'custom', times: CUSTOM })
+        expect((await readLog(s.storage(id))).at(-1)).toMatchObject({ type: 'room.pace', pace: 'custom', times: CUSTOM })
+        await refused(setPace(s, id, room.key, { pace: 'custom', times: CUSTOM }), 409, P.SAME_PACE)
+        await ok(setPace(s, id, room.key, { pace: 'custom', times: { ...CUSTOM, court: 7 * DAY } }))
+        await ok(setPace(s, id, room.key, { pace: 'normal' }))
+        expect((await stateOf(s, id, borya.key)).room).toMatchObject({ pace: 'normal', times: NORMAL_TIMES })
+        expect(await paceEntries(s, id)).toEqual(['fast', 'custom', 'custom', 'normal'])
+      })
+
+      it('событие до смены живёт по старым срокам, после — по новым: в быстрой комнате возражение — 2 ч, апелляция — сутки', async () => {
+        const s = await server()
+        const room = await create(s)
+        const borya = await member(s, room, 'Боря')
+        const vera = await member(s, room, 'Вера')
+        const id = room.roomId
+        // Событие Бори «Да / Нет»: Боря — 300 на «Да», Вера — 100 на «Нет»
+        const newEvent = async () => {
+          const form = { v: PROTOCOL_VERSION, condition: 'Вася пробежит 10 км', check: 'Скрин из приложения', closesAt: s.clock.now + HOUR, expectedAt: s.clock.now + 2 * HOUR }
+          const { event } = await ok<CreateEventResponse>(send(s, id, 'events', form, borya.key))
+          await ok(send(s, id, `events/${event.id}/bets`, { outcome: '1', amount: 300 }, borya.key))
+          await ok(send(s, id, `events/${event.id}/bets`, { outcome: '2', amount: 100 }, vera.key))
+          return event
+        }
+        const events = async () => (await stateOf(s, id, vera.key)).events
+        const outcome = async (eventId: string) => (await events()).find((e) => e.id === eventId)?.outcome
+        const before = await newEvent()
+        await ok(setPace(s, id, room.key, { pace: 'fast' }))
+        const after = await newEvent()
+        // Сроки — в записи каждого события и в ответе комнаты
+        const created = (await readLog(s.storage(id))).flatMap((e) => (e.type === 'event.created' ? [e.times] : []))
+        expect(created).toEqual([NORMAL_TIMES, P.FAST_TIMES])
+        expect((await events()).map((e) => e.times)).toEqual([NORMAL_TIMES, P.FAST_TIMES])
+        // Оба исхода предложены в один миг
+        s.clock.now = after.closesAt
+        const proposedAt = s.clock.now
+        for (const e of [before, after]) await ok(send(s, id, `events/${e.id}/propose`, { outcome: '1' }, borya.key))
+        expect(await outcome(before.id)).toMatchObject({ status: 'proposed', objectionUntil: proposedAt + DAY })
+        expect(await outcome(after.id)).toMatchObject({ status: 'proposed', objectionUntil: proposedAt + 2 * HOUR })
+        // 2 ч прошли: новое утверждено само, возражать поздно; старое ещё на возражении
+        s.clock.now = proposedAt + 2 * HOUR
+        expect(await outcome(after.id)).toMatchObject({
+          status: 'approved',
+          approved: { how: 'unopposed', at: proposedAt + 2 * HOUR },
+          finalAt: proposedAt + 2 * HOUR + DAY,
+        })
+        await refused(send(s, id, `events/${after.id}/object`, { reason: 'Поздно' }, vera.key), 409, OBJECTION_OVER)
+        expect((await outcome(before.id))?.status).toBe('proposed')
+        // Смена темпа обратно закреплённых сроков не трогает: апелляция нового — сутки, старого — 7 дней
+        await ok(setPace(s, id, room.key, { pace: 'normal' }))
+        s.clock.now = proposedAt + 2 * HOUR + DAY - 1
+        expect((await outcome(after.id))?.status).toBe('approved')
+        s.clock.now = proposedAt + 2 * HOUR + DAY
+        expect((await outcome(after.id))?.status).toBe('final')
+        expect(await outcome(before.id)).toMatchObject({ status: 'approved', finalAt: proposedAt + 8 * DAY })
+        expect((await events()).map((e) => e.times)).toEqual([NORMAL_TIMES, P.FAST_TIMES])
+      })
+
+      it('пари в «своей» комнате: сроки — в записи, у встречного — нынешнего темпа; молчание стороны — свой срок; место в суде — срок суда', async () => {
+        const s = await server()
+        const room = await create(s, { ...FORM, pace: 'custom', times: CUSTOM })
+        const borya = await member(s, room, 'Боря')
+        const vera = await member(s, room, 'Вера')
+        const gosha = await member(s, room, 'Гоша')
+        await member(s, room, 'Даша')
+        await member(s, room, 'Женя')
+        const id = room.roomId
+        const form = { v: PROTOCOL_VERSION, condition: 'Вася бросит курить', check: 'Скажет сам', odds: { a: 3, b: 1 }, amount: 300, closesAt: s.clock.now + HOUR, expectedAt: s.clock.now + DAY }
+        const { offer } = await ok<CreateOfferResponse>(send(s, id, 'offers', form, borya.key))
+        const { offer: open } = await ok<CreateOfferResponse>(send(s, id, 'offers', form, borya.key))
+        await ok(send(s, id, `offers/${offer.id}/accept`, {}, vera.key))
+        const offerOf = async (offerId: string) => (await stateOf(s, id, gosha.key)).offers?.find((o) => o.id === offerId)
+        // Встречное после смены темпа — по нынешнему темпу, исходное — по своему
+        await ok(setPace(s, id, room.key, { pace: 'fast' }))
+        const { offer: counter } = await ok<CreateOfferResponse>(send(s, id, `offers/${open.id}/counter`, { closesAt: s.clock.now + HOUR }, gosha.key))
+        expect([(await offerOf(offer.id))?.times, (await offerOf(open.id))?.times, (await offerOf(counter.id))?.times]).toEqual([CUSTOM, CUSTOM, P.FAST_TIMES])
+        const created = (await readLog(s.storage(id))).flatMap((e) => (e.type === 'offer.created' ? [e.times] : []))
+        expect(created).toEqual([CUSTOM, CUSTOM, P.FAST_TIMES])
+        // Боря отметил в «исход к», Вера молчит: гарант (ведущая) решает через 2 дня, а не через 3
+        s.clock.now = offer.expectedAt
+        await ok(send(s, id, `offers/${offer.id}/mark`, { winner: 'author' }, borya.key))
+        expect((await offerOf(offer.id))?.outcome).toMatchObject({ phase: 'marking', turnAt: offer.expectedAt + 2 * DAY })
+        s.clock.now = offer.expectedAt + 2 * DAY - 1
+        await refused(send(s, id, `offers/${offer.id}/decide`, { winner: 'author' }, room.key), 409, NOT_TURN)
+        s.clock.now = offer.expectedAt + 2 * DAY
+        expect((await offerOf(offer.id))?.outcome).toMatchObject({ phase: 'guarantor', guarantorUntil: offer.expectedAt + 4 * DAY })
+        await ok(send(s, id, `offers/${offer.id}/decide`, { winner: 'author' }, room.key))
+        const decidedAt = s.clock.now
+        // Окончательный — через свои 3 дня; апелляция Веры — суд, место — на свои 5 дней
+        expect((await offerOf(offer.id))?.outcome).toMatchObject({ phase: 'approved', finalAt: decidedAt + 3 * DAY })
+        s.clock.now = decidedAt + HOUR
+        s.seeds.push(SEED)
+        await ok<AppealResponse>(send(s, id, `offers/${offer.id}/appeal`, { reason: 'Гарант не видел видео' }, vera.key))
+        const seats = (await offerOf(offer.id))?.outcome?.court?.seats ?? []
+        expect(seats).toHaveLength(3)
+        for (const seat of seats) expect(seat).toMatchObject({ since: s.clock.now, until: s.clock.now + 5 * DAY })
       })
     })
 
