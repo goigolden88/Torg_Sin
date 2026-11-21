@@ -20,6 +20,9 @@ import {
   GUARANTOR_TAKES,
   IN_COURT,
   NEED_GUARANTOR_TIME,
+  NO_GUARANTOR,
+  NO_GUARANTOR_CHOSEN,
+  NO_GUARANTOR_JUDGES,
   courtDue,
   courtFrom,
   MARK_EARLY,
@@ -517,6 +520,157 @@ describe('правило гаранта (Р-31): часы гаранта с «и
     expect(late.courtAt).toBe(DUE)
     // Запись о суде раньше срока не действует
     expect(ruled([act('offer.declined', 'h', DECLINED), drawn(DUE - 1)]).courtAt).toBeNull()
+  })
+})
+
+describe('пари без гаранта (Р-36): разошлись или молчат — сразу суд', () => {
+  const none = (more: OfferRecord[] = [], over: Partial<OfferCreated> = {}) =>
+    one([created({ guarantor: null, guarantorRule: true, ...over }), act('offer.accepted', 'b', T + 10), ...more])
+  const drawn = (at: number): OfferRecord => ({ type: 'court.drawn', id: `r${++seq}`, at, memberId: 'h', offer: 'o1' })
+  const apart = [mark('a', 'author', EXPECT + 20), mark('b', 'taker', EXPECT + 30)]
+
+  it('ввод: «без гаранта» — признак формы; вместе с гарантом или не «да/нет» — отказ', () => {
+    const form = { condition: 'Вася подтянется', check: 'Видео', odds: { a: 1, b: 1 }, amount: 100, closesAt: CLOSE, expectedAt: EXPECT }
+    const ok = checkOfferInput({ ...form, noGuarantor: true })
+    expect(ok.ok && ok.value).toMatchObject({ guarantor: null, noGuarantor: true })
+    const plain = checkOfferInput(form)
+    expect(plain.ok && 'noGuarantor' in plain.value).toBe(false)
+    expect(checkOfferInput({ ...form, noGuarantor: false })).toMatchObject({ ok: true })
+    expect(checkOfferInput({ ...form, noGuarantor: true, guarantor: 'g' })).toEqual({ ok: false, error: NO_GUARANTOR_CHOSEN })
+    expect(checkOfferInput({ ...form, noGuarantor: 'да' })).toEqual({ ok: false, error: BAD_GUARANTOR })
+  })
+
+  it('судить есть кому: адресное — хотя бы один, кроме автора, адресата и предмета; открытое — хотя бы двое', () => {
+    const small = { hostId: 'h', members: ['h', 'a', 'b'] }
+    // Адресное: h не сторона — судья есть; в комнате из двоих — нет
+    expect(offerGuarantor({ to: 'b', guarantor: null, noGuarantor: true }, 'a', small)).toEqual({ ok: true, value: null })
+    expect(offerGuarantor({ to: 'b', guarantor: null, noGuarantor: true }, 'a', { hostId: 'a', members: ['a', 'b'] })).toEqual({
+      ok: false,
+      error: NO_GUARANTOR_JUDGES,
+    })
+    // Предмет спора не судья: адресное о h в комнате из троих — некому
+    expect(offerGuarantor({ to: 'b', guarantor: null, noGuarantor: true, subject: 'h' }, 'a', small)).toEqual({ ok: false, error: NO_GUARANTOR_JUDGES })
+    // Открытое: кроме автора — двое (один примет, один судит)
+    expect(offerGuarantor({ to: null, guarantor: null, noGuarantor: true }, 'a', small)).toEqual({ ok: true, value: null })
+    expect(offerGuarantor({ to: null, guarantor: null, noGuarantor: true, subject: 'h' }, 'a', small)).toEqual({ ok: false, error: NO_GUARANTOR_JUDGES })
+    expect(offerGuarantor({ to: null, guarantor: null, noGuarantor: true }, 'a', { hostId: 'a', members: ['a', 'b'] })).toEqual({
+      ok: false,
+      error: NO_GUARANTOR_JUDGES,
+    })
+    // Без гаранта ведущий — сторона не мешает: гарант не нужен
+    expect(offerGuarantor({ to: 'b', guarantor: null, noGuarantor: true }, 'h', small)).toEqual({ ok: true, value: null })
+    expect(offerGuarantor({ to: 'b', guarantor: 'g', noGuarantor: true }, 'a', room)).toEqual({ ok: false, error: NO_GUARANTOR_CHOSEN })
+    // Свёртка: запись без гаранта в маленькой комнате не действует
+    expect(roomOffers([created({ guarantor: null, to: 'b', subject: 'h', side: 'no' })], small)).toEqual([])
+    expect(roomOffers([created({ guarantor: null, to: 'b' })], small)).toHaveLength(1)
+  })
+
+  it('пари без гаранта: гаранта нет, принять может любой, кроме автора', () => {
+    const o = one([created({ guarantor: null, guarantorRule: true })])
+    expect(o.guarantorId).toBeNull()
+    expect(checkAccept(o, 'h', room, T + 1)).toBeNull()
+    expect(offerInfo(o).guarantorId).toBeNull()
+  })
+
+  it('совпали — утверждено согласием и окончательно сразу (Р-06)', () => {
+    const o = none([mark('a', 'author', T + 20), mark('b', 'author', T + 21)])
+    expect(offerOutcome(o, T + 21)).toMatchObject({
+      phase: 'final',
+      guarantorId: null,
+      approved: { winner: 'author', how: 'agreement', at: T + 21 },
+      finalAt: T + 21,
+    })
+    expect(courtDue(o, T + 100 * DAY)).toBe(false)
+  })
+
+  it('разошлись — с мига хода гаранта «ждёт суда»: суд сразу, без часов гаранта', () => {
+    const o = none(apart)
+    const turn = EXPECT + 30
+    expect(offerOutcome(o, turn - 1)).toMatchObject({ phase: 'marking', turnAt: turn, guarantorUntil: null })
+    expect(courtDue(o, turn - 1)).toBe(false)
+    expect(courtFrom(o, turn)).toBe(turn)
+    expect(courtDue(o, turn)).toBe(true)
+    // До сбора — «нужен гарант» с мига хода; суд собран — «ждёт суда»
+    expect(offerOutcome(o, turn)).toMatchObject({ phase: 'need-guarantor', needSince: turn, guarantorUntil: null })
+    const c = none([...apart, drawn(turn)])
+    expect(c.courtAt).toBe(turn)
+    expect(offerOutcome(c, turn)).toMatchObject({ phase: 'court', guarantorId: null, approved: null, finalAt: null })
+    // Решить и отказаться некому; назвать гаранта и отметить — уже нельзя
+    expect(checkDecide(c, 'h', 'author', turn)).toBe(NO_GUARANTOR)
+    expect(checkDecline(c, 'h', turn)).toBe(NO_GUARANTOR)
+    expect(checkNominate(c, 'a', 'g', room, turn + 1)).toBe(IN_COURT)
+    expect(checkMark(c, 'a', 'taker')).toBe(IN_COURT)
+  })
+
+  it('разошлись до «исход к» — суд с «исход к» (как ход гаранта у правила Р-31)', () => {
+    const early = [mark('a', 'author', T + 20), mark('b', 'taker', T + 30)]
+    expect(courtFrom(none(early), EXPECT - 1)).toBeNull()
+    expect(courtFrom(none(early), EXPECT)).toBe(EXPECT)
+  })
+
+  it('вторая сторона молчит — суд через срок молчания пари (обычный — 3 дня, быстрый — 12 ч)', () => {
+    const first = EXPECT + DAY
+    const o = none([mark('a', 'author', first)])
+    expect(courtDue(o, first + SIDE_SILENCE - 1)).toBe(false)
+    expect(courtDue(o, first + SIDE_SILENCE)).toBe(true)
+    const fast = none([mark('a', 'author', first)], { times: FAST_TIMES })
+    expect(courtDue(fast, first + FAST_TIMES.silence - 1)).toBe(false)
+    expect(courtFrom(fast, first + FAST_TIMES.silence)).toBe(first + FAST_TIMES.silence)
+    // Никто не отметил — срок молчания после «исход к»
+    expect(courtFrom(none(), EXPECT + SIDE_SILENCE)).toBe(EXPECT + SIDE_SILENCE)
+  })
+
+  it('«Утвердить» и «Отказаться» до хода суда — «У пари нет гаранта»', () => {
+    const o = none(apart)
+    expect(checkDecide(o, 'h', 'author', EXPECT + 30)).toBe(NO_GUARANTOR)
+    expect(checkDecline(o, 'h', EXPECT + 30)).toBe(NO_GUARANTOR)
+    // Свёртка: такие записи не действуют
+    const d = none([...apart, decide('h', 'author', EXPECT + 40), act('offer.declined', 'h', EXPECT + 41)])
+    expect(d.decision).toBeNull()
+    expect(d.declinedAt).toBeNull()
+  })
+
+  it('суд не собрать — «нужен гарант»: стороны назвали одного — обычный путь с гарантом', () => {
+    const turn = EXPECT + 30
+    const o = none(apart)
+    // Суда нет (судить некому) — гаранта называют; раньше хода — нельзя
+    expect(checkNominate(o, 'a', 'g', room, turn - 1)).toBe(GUARANTOR_PRESENT)
+    expect(checkNominate(o, 'a', 'g', room, turn + DAY)).toBeNull()
+    const set = turn + DAY + 1
+    const g = none([...apart, nominate('a', 'g', turn + DAY), nominate('b', 'g', set)])
+    expect(g.guarantorId).toBe('g')
+    expect(g.guarantorSince).toBe(set)
+    expect(offerOutcome(g, set)).toMatchObject({ phase: 'guarantor', guarantorId: 'g', guarantorUntil: set + GUARANTOR_SILENCE, needSince: null })
+    // Суду больше не пора; гарант решает — окончательно через срок апелляции
+    expect(courtDue(g, set)).toBe(false)
+    expect(checkDecide(g, 'g', 'taker', set)).toBeNull()
+    const d = none([...apart, nominate('a', 'g', turn + DAY), nominate('b', 'g', set), decide('g', 'taker', set + 1)])
+    expect(offerOutcome(d, set + 1 + FINAL_TIME)).toMatchObject({ phase: 'final', approved: { winner: 'taker', how: 'guarantor', by: 'g' } })
+    // Названный гарант промолчал — дальше как у правила Р-31: нужен другой, потом суд
+    expect(offerOutcome(g, set + GUARANTOR_SILENCE)).toMatchObject({ phase: 'need-guarantor', needSince: set + GUARANTOR_SILENCE })
+    expect(courtFrom(g, set + GUARANTOR_SILENCE)).toBe(set + GUARANTOR_SILENCE + NEED_GUARANTOR_TIME)
+  })
+
+  it('встречное: гарант — выбор автора встречного; не выбрал — как у исходного', () => {
+    const plain = one([created()])
+    const no = one([created({ guarantor: null })])
+    const terms = { odds: { a: 1, b: 1 }, amount: 100, closesAt: CLOSE }
+    expect(counterInput(plain, terms)).toMatchObject({ guarantor: 'h' })
+    expect('noGuarantor' in counterInput(plain, terms)).toBe(false)
+    expect(counterInput(no, terms)).toMatchObject({ guarantor: null, noGuarantor: true })
+    expect(counterInput(plain, { ...terms, noGuarantor: true })).toMatchObject({ guarantor: null, noGuarantor: true })
+    expect(counterInput(no, { ...terms, guarantor: 'g' })).toMatchObject({ guarantor: 'g' })
+    expect('noGuarantor' in counterInput(no, { ...terms, guarantor: 'g' })).toBe(false)
+    // Свёртка: встречное без гаранта к пари с гарантом — действует, если судить есть кому
+    const c = roomOffers([created(), created({ id: 'o2', memberId: 'b', to: 'a', side: 'no', counterTo: 'o1', guarantor: null })], room)
+    expect(c.find((x) => x.id === 'o2')?.guarantorId).toBeNull()
+  })
+
+  it('пари с гарантом — как было: «Утвердить» у гаранта, суд только по Р-31', () => {
+    const o = accepted(apart)
+    expect(o.guarantorId).toBe('h')
+    expect(checkDecide(o, 'h', 'author', EXPECT + 30)).toBeNull()
+    expect(courtDue(o, EXPECT + 100 * DAY)).toBe(false)
   })
 })
 

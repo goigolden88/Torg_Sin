@@ -69,8 +69,12 @@ export const ONLY_GUARANTOR = 'Это может только гарант па�
 export const NOT_TURN = 'Стороны ещё отмечают исход — гарант решает, когда они разошлись или одна молчит дольше срока'
 export const GUARANTOR_LAPSED = 'Гарант не решил в срок или отказался — стороны выбирают другого'
 export const GUARANTOR_PRESENT = 'Гарант на месте — выбирать другого не нужно'
-// Правило гаранта (Р-31): суд собран по «ждёт суда» — решает только он
-export const IN_COURT = 'Пари решает суд: срок выбрать общего гаранта прошёл — назвать гаранта и отметить исход уже нельзя'
+// Правило гаранта (Р-31) и пари без гаранта (Р-36): суд собран по «ждёт суда» — решает только он
+export const IN_COURT = 'Пари решает суд — назвать гаранта и отметить исход уже нельзя'
+// Без гаранта (Р-36)
+export const NO_GUARANTOR_JUDGES = 'Без гаранта судить некому — выберите гаранта'
+export const NO_GUARANTOR_CHOSEN = '«Без гаранта» — тогда гаранта не выбирают'
+export const NO_GUARANTOR = 'У пари нет гаранта'
 
 type Checked<T> = { ok: true; value: T } | { ok: false; error: string }
 
@@ -114,7 +118,8 @@ function text(x: unknown, need: string, long: string): Checked<string> {
 }
 
 // Проверенная форма пари. to — адресат (null — открытое), guarantor — выбранный (null — ведущий),
-// subject — о ком спор (null — ни о ком; Р-26)
+// noGuarantor — без гаранта (Р-36; guarantor тогда null; нет поля — с гарантом), subject — о ком
+// спор (null — ни о ком; Р-26)
 export type OfferInput = {
   condition: string
   check: string
@@ -125,6 +130,7 @@ export type OfferInput = {
   closesAt: number
   expectedAt: number
   guarantor: string | null
+  noGuarantor?: boolean
   subject: string | null
 }
 
@@ -140,6 +146,7 @@ export function checkOfferInput(x: {
   closesAt: unknown
   expectedAt: unknown
   guarantor?: unknown
+  noGuarantor?: unknown
   subject?: unknown
 }): Checked<OfferInput> {
   const condition = text(x.condition, NEED_CONDITION, LONG_CONDITION)
@@ -159,6 +166,9 @@ export function checkOfferInput(x: {
   const member = (v: unknown) => v === undefined || v === null || (typeof v === 'string' && v !== '')
   if (!member(x.to)) return { ok: false, error: BAD_ADDRESSEE }
   if (!member(x.guarantor)) return { ok: false, error: BAD_GUARANTOR }
+  const none = x.noGuarantor
+  if (none !== undefined && none !== null && typeof none !== 'boolean') return { ok: false, error: BAD_GUARANTOR }
+  if (none === true && typeof x.guarantor === 'string') return { ok: false, error: NO_GUARANTOR_CHOSEN }
   if (!member(x.subject)) return { ok: false, error: BAD_SUBJECT }
   return {
     ok: true,
@@ -172,6 +182,7 @@ export function checkOfferInput(x: {
       closesAt: x.closesAt as number,
       expectedAt: x.expectedAt as number,
       guarantor: typeof x.guarantor === 'string' ? x.guarantor : null,
+      ...(none === true && { noGuarantor: true }),
       subject: typeof x.subject === 'string' ? x.subject : null,
     },
   }
@@ -188,17 +199,25 @@ export type RoomRoles = { hostId: string; members: readonly string[] }
 
 // Гарант пари: выбран — участник, не автор и не адресат; не выбран — ведущий, а ведущий сам автор
 // или адресат — отказ (гаранта надо выбрать). Заодно проверяет адресата: другой участник. Предмет
-// спора (Р-26; нет — null) гарантом не бывает: ведущий — предмет — гаранта тоже надо выбрать
+// спора (Р-26; нет — null) гарантом не бывает: ведущий — предмет — гаранта тоже надо выбрать.
+// Без гаранта (Р-36) — null, если судить есть кому: у адресного — хотя бы один участник, кроме
+// автора, адресата и предмета спора; у открытого — хотя бы двое, кроме автора и предмета (один примет,
+// один судит)
 export function offerGuarantor(
-  input: { to: string | null; guarantor: string | null; subject?: string | null },
+  input: { to: string | null; guarantor: string | null; noGuarantor?: boolean; subject?: string | null },
   authorId: string,
   room: RoomRoles,
-): Checked<string> {
+): Checked<string | null> {
   if (input.to !== null && (input.to === authorId || !room.members.includes(input.to))) {
     return { ok: false, error: BAD_ADDRESSEE }
   }
   const subject = input.subject ?? null
   const g = input.guarantor
+  if (input.noGuarantor === true) {
+    if (g !== null) return { ok: false, error: NO_GUARANTOR_CHOSEN }
+    const judges = new Set(room.members.filter((m) => m !== authorId && m !== input.to && m !== subject))
+    return judges.size >= (input.to === null ? 2 : 1) ? { ok: true, value: null } : { ok: false, error: NO_GUARANTOR_JUDGES }
+  }
   if (g === null) {
     if (room.hostId === authorId || room.hostId === input.to) return { ok: false, error: NEED_GUARANTOR }
     return room.hostId === subject ? { ok: false, error: NEED_GUARANTOR_SUBJECT } : { ok: true, value: room.hostId }
@@ -226,7 +245,8 @@ export function subjectIsSide(o: { subjectId: string | null; authorId: string; a
 }
 
 // Записи пари — как будут в журнале комнаты: memberId — автор записи, at — время сервера.
-// Номер пари — id записи offer.created; guarantor в ней — уже определённый (offerGuarantor)
+// Номер пари — id записи offer.created; guarantor в ней — уже определённый (offerGuarantor); null —
+// без гаранта (Р-36)
 export type OfferCreated = {
   type: 'offer.created'
   id: string
@@ -240,7 +260,7 @@ export type OfferCreated = {
   to: string | null
   closesAt: number
   expectedAt: number
-  guarantor: string
+  guarantor: string | null
   counterTo: string | null // встречное к какому пари
   subject: string | null // о ком спор (Р-26); у пари до выкатки — null
   // Правило гаранта (Р-31): часы гаранта — с «исход к», без общего гаранта — суд. Нет (у пари до
@@ -268,7 +288,7 @@ export type OfferState = Omit<OfferCreated, 'type' | 'memberId' | 'guarantor' | 
   guarantorRule: boolean // правило гаранта (Р-31)
   courtAt: number | null // суд по «ждёт суда» собран (Р-31); нет — null
   authorId: string
-  guarantorId: string
+  guarantorId: string | null // нынешний гарант; null — без гаранта (Р-36), пока стороны его не назвали
   guarantorSince: number | null // назначен сторонами (null — с создания)
   accepted: { by: string; at: number } | null
   withdrawnAt: number | null
@@ -327,10 +347,19 @@ export function checkCounter(o: OfferState, memberId: string, room: RoomRoles, n
 }
 
 // Форма встречного: своё — кэф, сумма и «приём до»; условие, «как проверяем», «исход к» — исходного;
-// сторона — обратная, адресат — автор исходного, гарант — тот же (он не автор и не принимает пари);
-// о ком спор — тот же (Р-26): правило предмета то же
-export function counterInput(o: OfferState, x: { odds: Odds; amount: number; closesAt: number }): OfferInput {
+// сторона — обратная, адресат — автор исходного; о ком спор — тот же (Р-26): правило предмета то же.
+// Гарант — выбор автора встречного (Р-36): guarantor — участник, noGuarantor — без гаранта; не выбрал —
+// тот же, что у исходного (он не автор и не принимает пари; у исходного без гаранта — тоже без).
+// Проверяет выбор offerGuarantor
+export function counterInput(
+  o: OfferState,
+  x: { odds: Odds; amount: number; closesAt: number; guarantor?: string | null; noGuarantor?: boolean },
+): OfferInput {
+  const chosen = typeof x.guarantor === 'string' || x.noGuarantor === true
+  const guarantor = chosen ? (x.guarantor ?? null) : o.guarantorId
+  const noGuarantor = chosen ? x.noGuarantor === true : o.guarantorId === null
   return {
+    ...(noGuarantor && { noGuarantor: true }),
     condition: o.condition,
     check: o.check,
     side: o.side === 'yes' ? 'no' : 'yes',
@@ -339,7 +368,7 @@ export function counterInput(o: OfferState, x: { odds: Odds; amount: number; clo
     to: o.authorId,
     closesAt: x.closesAt,
     expectedAt: o.expectedAt,
-    guarantor: o.guarantorId,
+    guarantor,
     subject: o.subject,
   }
 }
@@ -398,16 +427,20 @@ export type OfferPhase = 'marking' | 'guarantor' | 'need-guarantor' | 'court' | 
 
 // Ход исхода на now без суда: решение у гаранта — срок молчания с мига, как перешло к нему (назначен
 // сторонами позже — с назначения); не решил или отказался — нужен другой гарант. Окончательно — через
-// срок апелляции после решения гаранта. Сроки — пари (Р-35)
+// срок апелляции после решения гаранта. Сроки — пари (Р-35). Без гаранта (Р-36) часов гаранта нет:
+// с мига его хода (turnAt) дело у суда — до сбора суда «нужен гарант» (needSince = turnAt): суд не
+// собрать — стороны называют общего гаранта, дальше — обычный путь с гарантом
 function basePhase(o: OfferState, now: number) {
   const times = timesOf(o)
   const turnAt = guarantorTurn(o)
-  const until = Math.max(turnAt, o.guarantorSince ?? turnAt) + times.silence
+  const until = o.guarantorId === null ? null : Math.max(turnAt, o.guarantorSince ?? turnAt) + times.silence
   let phase: OfferPhase = 'marking'
   let needSince: number | null = null
   if (o.agreed) phase = 'final'
   else if (o.decision) phase = now >= o.decision.at + times.appeal ? 'final' : 'approved'
-  else if (o.declinedAt !== null) [phase, needSince] = ['need-guarantor', o.declinedAt]
+  else if (until === null) {
+    if (now >= turnAt) [phase, needSince] = ['need-guarantor', turnAt]
+  } else if (o.declinedAt !== null) [phase, needSince] = ['need-guarantor', o.declinedAt]
   else if (now >= until) [phase, needSince] = ['need-guarantor', until]
   else if (now >= turnAt) phase = 'guarantor'
   return { phase, turnAt, until, needSince }
@@ -421,15 +454,19 @@ function phaseOf(o: OfferState, now: number) {
 }
 
 // С какого мига дело уходит в суд (Р-31): срок молчания пари (3 дня у обычного темпа; Р-35) с мига,
-// как нужен другой гарант. Правила нет или другой гарант не нужен — null
+// как нужен другой гарант. Без гаранта (Р-36) — сразу с мига хода гаранта (turnAt). Правила нет или
+// другой гарант не нужен — null
 export function courtFrom(o: OfferState, now: number): number | null {
-  if (!o.guarantorRule || !o.accepted) return null
+  if (!o.accepted) return null
   const { phase, needSince } = basePhase(o, now)
-  return phase === 'need-guarantor' && needSince !== null ? needSince + timesOf(o).silence : null
+  if (phase !== 'need-guarantor' || needSince === null) return null
+  if (o.guarantorId === null) return needSince
+  return o.guarantorRule ? needSince + timesOf(o).silence : null
 }
 
-// Пора ли суду по пари (Р-31, как «ждёт суда» у пула): правило есть, общего гаранта 3 дня не назвали.
-// Собран ли уже суд и есть ли кандидаты — appeal.ts (checkCourtDraw, courtCandidates)
+// Пора ли суду по пари (Р-31, как «ждёт суда» у пула): правило есть, общего гаранта срок молчания не
+// назвали; без гаранта (Р-36) — стороны разошлись или одна молчит. Собран ли уже суд и есть ли
+// кандидаты — appeal.ts (checkCourtDraw, courtCandidates)
 export function courtDue(o: OfferState, now: number): boolean {
   const from = courtFrom(o, now)
   return from !== null && now >= from
@@ -438,6 +475,7 @@ export function courtDue(o: OfferState, now: number): boolean {
 // Решение гаранта: только нынешний гарант, когда решение перешло к нему и его 3 дня не прошли
 export function checkDecide(o: OfferState, memberId: string, winner: unknown, now: number): string | null {
   if (winner !== 'author' && winner !== 'taker') return BAD_MARK
+  if (o.guarantorId === null) return NO_GUARANTOR
   const settled = settledError(o)
   if (settled) return settled
   if (memberId !== o.guarantorId) return ONLY_GUARANTOR
@@ -447,8 +485,10 @@ export function checkDecide(o: OfferState, memberId: string, winner: unknown, no
   return null
 }
 
-// Отказ гаранта: нынешний гарант принятого пари, пока исход не утверждён и его не сменяют
+// Отказ гаранта: нынешний гарант принятого пари, пока исход не утверждён и его не сменяют. Решить и
+// отказаться у пари без гаранта (Р-36) некому — NO_GUARANTOR
 export function checkDecline(o: OfferState, memberId: string, now: number): string | null {
+  if (o.guarantorId === null) return NO_GUARANTOR
   const settled = settledError(o)
   if (settled) return settled
   if (memberId !== o.guarantorId) return ONLY_GUARANTOR
@@ -481,7 +521,7 @@ export function roomOffers(records: readonly OfferRecord[], room: RoomRoles): Of
         const original = offers.get(r.counterTo)
         if (!original || r.to !== original.authorId || checkCounter(original, r.memberId, room, r.at)) continue
       }
-      const g = offerGuarantor({ to: r.to, guarantor: r.guarantor, subject: r.subject }, r.memberId, room)
+      const g = offerGuarantor({ to: r.to, guarantor: r.guarantor, noGuarantor: r.guarantor === null, subject: r.subject }, r.memberId, room)
       if (!g.ok || g.value !== r.guarantor || checkOfferTimes(r, r.at) || checkOfferSubject(r, r.memberId, room)) continue
       const times = recordTimes(r.times)
       offers.set(r.id, {
@@ -572,10 +612,10 @@ export function roomOffers(records: readonly OfferRecord[], room: RoomRoles): Of
 export type OfferOutcome = {
   phase: OfferPhase
   marks: Record<OfferSide, OfferSide | null>
-  guarantorId: string
-  turnAt: number // с какого мига решает гарант (если стороны не сойдутся раньше)
-  guarantorUntil: number | null // до какого мига решает нынешний гарант; утверждено — null
-  needSince: number | null // с какого мига нужен другой гарант
+  guarantorId: string | null // без гаранта (Р-36) — null
+  turnAt: number // с какого мига решает гарант (если стороны не сойдутся раньше); без гаранта — суд
+  guarantorUntil: number | null // до какого мига решает нынешний гарант; утверждено или гаранта нет — null
+  needSince: number | null // с какого мига нужен другой гарант; без гаранта — с turnAt (суд или гарант)
   nominations: Partial<Record<OfferSide, string>>
   approved: { winner: OfferSide; at: number; how: 'agreement' | 'guarantor' | 'court'; by: string | null } | null
   finalAt: number | null // согласием — сразу; гарантом — через срок апелляции пари (7 дней у обычного, Р-35); апелляция — с решения суда (Р-24)

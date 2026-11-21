@@ -45,7 +45,7 @@ function defaultTimes(now: number): { closes: string; expected: string } {
 const UNKNOWN_CURRENCY = 'Валюта комнаты незнакома этой версии сайта — обновите страницу'
 
 // Проверенная форма и гарант, которого покажем в подтверждении
-type Ask = { input: OfferInput; guarantorId: string }
+type Ask = { input: OfferInput; guarantorId: string | null }
 
 export function NewOffer({ room, onUpdate }: { room: SavedRoom; onUpdate: (room: SavedRoom) => void }) {
   const { sync, clock, pace, refresh } = useRoom(room, onUpdate)

@@ -16,7 +16,7 @@ import type {
   OutcomeMark,
   OutcomeView,
 } from './protocol'
-import { NORMAL_TIMES, recordTimes, timesOf, type Times } from './pace'
+import { durationText, NORMAL_TIMES, recordTimes, timesOf, type Times } from './pace'
 import type { LogEntry } from './room'
 
 // Сроки исхода (Архитектура, «Правила» — «Исход пула», «Окончательность»; Р-17) — обычного темпа
@@ -58,6 +58,15 @@ export const NEED_OBJECTION = 'Нужна причина возражения'
 export const LONG_OBJECTION = `Причина возражения — не длиннее ${MAX_EVENT_TEXT} знаков`
 // Предмет спора ставит только на «сбудется» (Р-26)
 export const SUBJECT_YES_ONLY = `Вы — предмет спора: ставить можно только на „${YES}“`
+// Отказы со сроком — из сроков события (Р-35; durationText): в быстрой комнате — «2 ч», а не «сутки».
+// Кто предлагает исход (автор; молчит срок молчания после «исход ожидается к» — ведущий) и срок
+// возражения и согласия прошёл
+export function proposerOnly(e: { times?: Times }): string {
+  return `Исход предлагает автор события, а если он молчит ${durationText(timesOf(e).silence)} после «исход ожидается к» — ведущий`
+}
+export function objectionOver(e: { times?: Times }): string {
+  return `Срок возражения — ${durationText(timesOf(e).objection)} — прошёл`
+}
 export const SUBJECT_NO_BETS = 'Вы — предмет спора: в событии со своими исходами вы не ставите'
 // Отказы отмены события (checkCancel; Р-29)
 export const CANCEL_DONE = 'Событие уже отменено'

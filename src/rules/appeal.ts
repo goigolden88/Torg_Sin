@@ -29,7 +29,8 @@ export const OWN_APPEAL = 'Апелляцию подали вы — присое
 export const ALREADY_JOINED = 'Вы уже присоединились к апелляции'
 export const COURT_DECIDED = 'Суд уже решил — решение окончательное'
 // Суд без апелляции
-export const NOT_COURT = 'Суд без апелляции собирается, только когда исход «ждёт суда» или стороны пари в срок не сошлись на новом гаранте'
+export const NOT_COURT =
+  'Суд без апелляции собирается, только когда исход «ждёт суда», стороны пари в срок не сошлись на новом гаранте или у пари без гаранта стороны разошлись'
 export const COURT_EXISTS = 'Суд уже собран'
 export const BAD_SEED = 'Зерно жребия — шестнадцатеричные цифры'
 export const BAD_CANDIDATES = 'Кандидаты в суд — участники комнаты без заинтересованных'
@@ -138,7 +139,8 @@ function dispute(t: AppealTarget, now: number): Dispute {
     stage,
     approved: a?.winner ?? null,
     choices: ['author', 'taker'],
-    interested: [...sides, o.guarantorId],
+    // Без гаранта (Р-36) — только стороны
+    interested: o.guarantorId === null ? sides : [...sides, o.guarantorId],
     cannotAppeal: (m) => (sides.includes(m) && o.accepted ? null : NOT_SIDE),
   }
 }
@@ -201,8 +203,9 @@ export function checkJoin(t: AppealTarget, c: CourtCase | null, memberId: string
   return null
 }
 
-// Суд без апелляции: исход пула «ждёт суда» (ничья или некому голосовать, Р-17) или у пари 3 дня без
-// общего гаранта (правило гаранта, Р-31; courtDue) — суд собирается сам
+// Суд без апелляции: исход пула «ждёт суда» (ничья или некому голосовать, Р-17) или у пари срок
+// молчания без общего гаранта (правило гаранта, Р-31), у пари без гаранта — с мига хода гаранта (Р-36;
+// courtDue) — суд собирается сам
 export function checkCourtDraw(t: AppealTarget, existing: CourtCase | null, now: number): string | null {
   if (existing) return COURT_EXISTS
   const due = t.kind === 'event' ? dispute(t, now).stage === 'court' : courtDue(t.offer, now)
