@@ -74,6 +74,39 @@ import {
   type OfferSide,
   type OfferState,
 } from './offer'
+import {
+  AUCTION_ACCEPT,
+  AUCTION_ADDRESSED,
+  AUCTION_COUNTER,
+  AUCTION_EXPECTED,
+  AUCTION_EXTEND,
+  AUCTION_EXTEND_MAX,
+  AUCTION_HAS_BIDS,
+  AUCTION_LONG,
+  AUCTION_MAX,
+  AUCTION_MIN,
+  AUCTION_OVER,
+  AUCTION_SHORT,
+  BAD_BID,
+  BAD_START,
+  BAD_STEP,
+  BID_LOW,
+  BID_STEP,
+  GUARANTOR_BIDS,
+  NO_BIDS,
+  NOT_AUCTION,
+  NOT_MEMBER,
+  ONLY_AUTHOR_TAKES,
+  OWN_BID,
+  SUBJECT_BIDS,
+  auctionStep,
+  biddingView,
+  checkBid,
+  checkTakeBid,
+  offerAmounts,
+  offerAt,
+} from './offer'
+import { isOfferView } from './protocol'
 import { LONG_CONDITION, NEED_CHECK, NEED_CONDITION, BAD_AMOUNT } from './event'
 import { FAST_TIMES, NORMAL_TIMES, type Times } from './pace'
 import type { LogEntry } from './room'
@@ -979,4 +1012,314 @@ describe('сроки пари — из записи (темп комнаты, Р
       })
     })
   }
+})
+
+describe('«Торг до …» (Р-37)', () => {
+  const MIN = 60 * 1000
+  const END = T + 60 * MIN // исходный конец торга
+  const CAP = END + AUCTION_EXTEND_MAX
+  // Торг автора a: 300 на «сбудется», старт 1000, шаг 100, гарант — ведущий
+  const auc = (over: Partial<OfferCreated> = {}) =>
+    created({ auction: { start: 1000, step: 100 }, odds: { a: 300, b: 1000 }, closesAt: END, ...over })
+  const bid = (memberId: string, amount: number, at: number, offer = 'o1'): OfferRecord => ({ type: 'offer.bid', id: `r${++seq}`, at, memberId, offer, amount })
+  const take = (memberId: string, at: number): OfferRecord => ({ type: 'offer.bid-accepted', id: `r${++seq}`, at, memberId, offer: 'o1' })
+  const form = {
+    condition: 'Вася подтянется 20 раз',
+    check: 'Видео в чате',
+    amount: 300,
+    closesAt: END,
+    expectedAt: EXPECT,
+    auction: { start: 1000, step: 100 },
+  }
+
+  describe('создание', () => {
+    it('форма торга: сторона, сумма автора, старт и шаг; кэф не задают', () => {
+      expect(checkOfferInput(form)).toMatchObject({
+        ok: true,
+        value: { side: 'yes', amount: 300, odds: { a: 300, b: 1000 }, to: null, auction: { start: 1000, step: 100 } },
+      })
+      // Шаг не задан — 10 % старта, не меньше одной единицы
+      expect(checkOfferInput({ ...form, auction: { start: 1005 } })).toMatchObject({ ok: true, value: { auction: { start: 1005, step: 100 } } })
+      expect(checkOfferInput({ ...form, auction: { start: 5, step: null } })).toMatchObject({ ok: true, value: { auction: { step: 1 } } })
+      expect(auctionStep(1000)).toBe(100)
+      expect(auctionStep(9)).toBe(1)
+      // Обычное пари — без поля торга и с кэфом, как раньше
+      const { auction: _a, ...plain } = form
+      void _a
+      expect(checkOfferInput(plain)).toEqual({ ok: false, error: BAD_ODDS })
+      expect('auction' in (checkOfferInput({ ...plain, odds: { a: 3, b: 1 } }) as { value: object }).value).toBe(false)
+    })
+
+    it('отказы формы торга', () => {
+      expect(checkOfferInput({ ...form, to: 'b' })).toEqual({ ok: false, error: AUCTION_ADDRESSED })
+      for (const start of [0, -1, 1.5, '1000', undefined]) {
+        expect(checkOfferInput({ ...form, auction: { start, step: 100 } })).toEqual({ ok: false, error: BAD_START })
+      }
+      expect(checkOfferInput({ ...form, auction: 5 })).toEqual({ ok: false, error: BAD_START })
+      for (const step of [0, 2.5, 'шаг']) {
+        expect(checkOfferInput({ ...form, auction: { start: 1000, step } })).toEqual({ ok: false, error: BAD_STEP })
+      }
+      expect(checkOfferInput({ ...form, amount: 0 })).toEqual({ ok: false, error: BAD_AMOUNT })
+    })
+
+    it('конец торга — от 10 минут до 3 дней с создания, «исход к» — не раньше конца + 30 минут', () => {
+      const terms = { start: 1000, step: 100 }
+      const at = (closesAt: number, expectedAt = closesAt + AUCTION_EXTEND_MAX) => checkOfferTimes({ closesAt, expectedAt, auction: terms }, T)
+      expect(at(T + AUCTION_MIN)).toBeNull()
+      expect(at(T + AUCTION_MIN - 1)).toBe(AUCTION_SHORT)
+      expect(at(T + AUCTION_MAX)).toBeNull()
+      expect(at(T + AUCTION_MAX + 1)).toBe(AUCTION_LONG)
+      expect(at(END, END + AUCTION_EXTEND_MAX - 1)).toBe(AUCTION_EXPECTED)
+      // Свёртка проверяет те же сроки на время записи
+      expect(roomOffers([auc({ closesAt: T + AUCTION_MIN - 1 })], room)).toEqual([])
+      expect(roomOffers([auc({ expectedAt: CAP - 1 })], room)).toEqual([])
+    })
+
+    it('запись торга: только открытое, не встречное, кэф — стартовый', () => {
+      expect(one([auc()])?.auction).toEqual({ start: 1000, step: 100, endsAt: END, bids: [], taken: null })
+      expect(roomOffers([auc({ to: 'b' })], room)).toEqual([])
+      expect(roomOffers([auc({ odds: { a: 3, b: 1 } })], room)).toEqual([])
+      expect(roomOffers([auc({ auction: { start: 1000, step: 0 } })], room)).toEqual([])
+      const counter = auc({ id: 'o2', at: T + 5, memberId: 'b', side: 'no', counterTo: 'o1' })
+      expect(roomOffers([created(), counter], room).map((o) => o.id)).toEqual(['o1'])
+    })
+
+    it('гарант — как у обычного: выбранный, ведущий или «без гаранта»', () => {
+      expect(one([auc({ guarantor: 'g' })]).guarantorId).toBe('g')
+      expect(one([auc()]).guarantorId).toBe('h')
+      expect(one([auc({ guarantor: null })]).guarantorId).toBeNull()
+    })
+  })
+
+  describe('встречные', () => {
+    it('первое — не меньше старта, следующее — больше лучшего хотя бы на шаг', () => {
+      const o0 = one([auc()])
+      expect(checkBid(o0, 'b', 999, room, T + 10)).toBe(BID_LOW)
+      expect(checkBid(o0, 'b', 1000, room, T + 10)).toBeNull()
+      const o1 = one([auc(), bid('b', 1000, T + 10)])
+      expect(checkBid(o1, 'c', 1099, room, T + 20)).toBe(BID_STEP)
+      expect(checkBid(o1, 'c', 1100, room, T + 20)).toBeNull()
+      // Свою перебить можно: перебитое — свободно
+      expect(checkBid(o1, 'b', 1100, room, T + 20)).toBeNull()
+    })
+
+    it('не ставят автор, гарант, предмет спора не на своей стороне, не участник; сумма — целое > 0', () => {
+      const o = one([auc()])
+      expect(checkBid(o, 'a', 1000, room, T + 10)).toBe(OWN_BID)
+      expect(checkBid(o, 'h', 1000, room, T + 10)).toBe(GUARANTOR_BIDS)
+      expect(checkBid(o, 'x', 1000, room, T + 10)).toBe(NOT_MEMBER)
+      for (const amount of [0, 1.5, '1000', null]) expect(checkBid(o, 'b', amount, room, T + 10)).toBe(BAD_BID)
+      // Предмет спора — b: автор за «сбудется» — b не торгуется; автор за «не сбудется» — можно
+      expect(checkBid(one([auc({ subject: 'b' })]), 'b', 1000, room, T + 10)).toBe(SUBJECT_BIDS)
+      expect(checkBid(one([auc({ side: 'no', subject: 'b' })]), 'b', 1000, room, T + 10)).toBeNull()
+      // Без гаранта ведущий торгуется, как любой участник
+      expect(checkBid(one([auc({ guarantor: null })]), 'h', 1000, room, T + 10)).toBeNull()
+      // У обычного пари встречных в торге нет
+      expect(checkBid(one([created()]), 'b', 1000, room, T + 10)).toBe(NOT_AUCTION)
+    })
+
+    it('свёртка: действует только разрешённое встречное, лучшее — последнее', () => {
+      const o = one([auc(), bid('b', 900, T + 10), bid('b', 1000, T + 11), bid('c', 1050, T + 12), bid('c', 1200, T + 13), bid('a', 5000, T + 14)])
+      expect(o.auction?.bids.map((b) => [b.by, b.amount])).toEqual([
+        ['b', 1000],
+        ['c', 1200],
+      ])
+      expect(biddingView(o, T + 20)).toMatchObject({ best: { by: 'c', amount: 1200, at: T + 13 }, endsAt: END, result: null })
+      expect(offerInfo(o)).toMatchObject({ takerAmount: 1200, odds: { a: 300, b: 1200 }, auction: { start: 1000, step: 100, latestEnd: CAP } })
+      expect(offerStatus(o, T + 20)).toBe('open')
+    })
+
+    it('обычные «принять» и «встречное пари» к торгу — отказ, записи не действуют', () => {
+      const o = one([auc()])
+      expect(checkAccept(o, 'b', room, T + 10)).toBe(AUCTION_ACCEPT)
+      expect(checkCounter(o, 'b', room, T + 10)).toBe(AUCTION_COUNTER)
+      expect(one([auc(), act('offer.accepted', 'b', T + 10)]).accepted).toBeNull()
+    })
+  })
+
+  describe('продление', () => {
+    it('встречное за 2 минуты до конца переносит конец на 2 минуты после него', () => {
+      expect(one([auc(), bid('b', 1000, END - AUCTION_EXTEND - 1)]).auction?.endsAt).toBe(END)
+      expect(one([auc(), bid('b', 1000, END - AUCTION_EXTEND)]).auction?.endsAt).toBe(END)
+      expect(one([auc(), bid('b', 1000, END - MIN)]).auction?.endsAt).toBe(END + MIN)
+      const late = one([auc(), bid('b', 1000, END - 1)])
+      expect(late.auction?.endsAt).toBe(END - 1 + AUCTION_EXTEND)
+      // Продлённый торг идёт после исходного конца
+      expect(offerStatus(late, END + MIN)).toBe('open')
+      expect(checkBid(late, 'c', 1100, room, END + MIN)).toBeNull()
+      expect(offerStatus(late, END - 1 + AUCTION_EXTEND)).toBe('accepted')
+    })
+
+    it('не дальше исходного конца + 30 минут', () => {
+      const recs: OfferRecord[] = [auc()]
+      let at = END - 1000
+      for (let i = 0; i < 20; i++) {
+        recs.push(bid(i % 2 ? 'c' : 'b', 1000 + i * 100, at))
+        at = (one(recs).auction?.endsAt as number) - 1000
+      }
+      const o = one(recs)
+      expect(o.auction?.bids).toHaveLength(20)
+      expect(o.auction?.endsAt).toBe(CAP)
+      expect(offerStatus(o, CAP - 1)).toBe('open')
+      expect(checkBid(o, 'b', 5000, room, CAP)).toBe(AUCTION_OVER)
+      expect(one([...recs, bid('b', 5000, CAP)]).auction?.bids).toHaveLength(20)
+      expect(offerView(o, CAP).bidding?.result).toEqual({ how: 'end', at: CAP, bid: o.auction?.bids[19].id })
+    })
+  })
+
+  describe('«принять сейчас»', () => {
+    it('автор принимает лучшее в любой миг торга — торг закончен, лучший — соперник', () => {
+      const recs = [auc(), bid('b', 1000, T + 10), bid('c', 1500, T + 20)]
+      const o = one(recs)
+      expect(checkTakeBid(o, 'b', T + 30)).toBe(ONLY_AUTHOR_TAKES)
+      expect(checkTakeBid(o, 'a', T + 30)).toBeNull()
+      const taken = one([...recs, take('a', T + 30)])
+      expect(taken.accepted).toEqual({ by: 'c', at: T + 30 })
+      expect(taken.auction?.taken).toBe('now')
+      expect(offerStatus(taken, T + 31)).toBe('accepted')
+      expect(offerView(taken, T + 31).bidding?.result).toEqual({ how: 'now', at: T + 30, bid: taken.auction?.bids[1].id })
+      // После — ни встречного, ни второго «принять сейчас»
+      expect(checkBid(taken, 'b', 2000, room, T + 40)).toBe(AUCTION_OVER)
+      expect(checkTakeBid(taken, 'a', T + 40)).toBe(AUCTION_OVER)
+      expect(one([...recs, take('a', T + 30), bid('b', 2000, T + 40)]).auction?.bids).toHaveLength(2)
+    })
+
+    it('без встречных принимать нечего; после конца — поздно', () => {
+      expect(checkTakeBid(one([auc()]), 'a', T + 10)).toBe(NO_BIDS)
+      expect(checkTakeBid(one([auc()]), 'a', END)).toBe(AUCTION_OVER)
+      expect(checkTakeBid(one([auc(), bid('b', 1000, T + 10)]), 'a', END)).toBe(AUCTION_OVER)
+      expect(checkTakeBid(one([created()]), 'a', T + 10)).toBe(NOT_AUCTION)
+      expect(one([auc(), take('a', T + 10)]).accepted).toBeNull()
+    })
+  })
+
+  describe('конец торга', () => {
+    it('со встречным: лучшее принято в миг конца, без записи', () => {
+      const o = one([auc(), bid('b', 1000, T + 10), bid('c', 1200, T + 20)])
+      expect(o.accepted).toBeNull()
+      expect(offerAt(o, END - 1)).toBe(o)
+      expect(offerAt(o, END).accepted).toEqual({ by: 'c', at: END })
+      expect(offerStatus(o, END)).toBe('accepted')
+      const view = offerView(o, END)
+      expect(view).toMatchObject({ status: 'accepted', accepted: { by: 'c', at: END }, takerAmount: 1200 })
+      expect(view.bidding?.result).toEqual({ how: 'end', at: END, bid: o.auction?.bids[1].id })
+      expect(view.outcome?.phase).toBe('marking')
+      expect(isOfferView(view)).toBe(true)
+      // Встречное в миг конца уже не действует
+      expect(checkBid(o, 'b', 1300, room, END)).toBe(AUCTION_OVER)
+      expect(one([auc(), bid('b', 1000, T + 10), bid('c', 1200, END)]).auction?.bids).toHaveLength(1)
+    })
+
+    it('дальше — обычное пари: отметки сторон, гарант, итог', () => {
+      const recs = [auc(), bid('c', 1200, T + 20), mark('a', 'author', END + 10), mark('c', 'taker', END + 20)]
+      const o = one(recs)
+      // Свёртка приняла торг перед первой записью после конца
+      expect(o.accepted).toEqual({ by: 'c', at: END })
+      // Отметки разошлись — решает гарант
+      expect(offerOutcome(o, END + 20)?.phase).toBe('guarantor')
+      const decided = one([...recs, decide('h', 'taker', END + 30)])
+      expect(offerOutcome(decided, END + 30)?.approved).toMatchObject({ winner: 'taker', how: 'guarantor' })
+      expect(offerResult(decided, END + 30 + FINAL_TIME)).toEqual([
+        { memberId: 'a', net: -300 },
+        { memberId: 'c', net: 300 },
+      ])
+      // До конца торга сторона — только автор; отметка не действует
+      expect(checkMark(one([auc(), bid('c', 1200, T + 20)]), 'c', 'taker')).toBe(MARK_EARLY)
+      expect(one([auc(), bid('c', 1200, T + 20), mark('c', 'taker', T + 30)]).marks).toEqual([])
+    })
+
+    it('без встречных — «не состоялось»: никто никому не должен', () => {
+      const o = one([auc()])
+      expect(offerStatus(o, END - 1)).toBe('open')
+      expect(offerStatus(o, END)).toBe('failed')
+      const view = offerView(o, END)
+      expect(view).toMatchObject({ status: 'failed', accepted: null, outcome: null, takerAmount: 1000 })
+      expect(view.bidding).toEqual({ bids: [], best: null, endsAt: END, result: { how: 'failed', at: END } })
+      expect(isOfferView(view)).toBe(true)
+      expect(offerResult(o, END + DAY)).toEqual([])
+      expect(checkBid(o, 'b', 1000, room, END)).toBe(AUCTION_OVER)
+    })
+
+    it('торг с «без гаранта»: разошлись — сразу суд', () => {
+      const o = one([
+        auc({ guarantor: null, guarantorRule: true }),
+        bid('h', 1000, T + 10),
+        mark('a', 'author', EXPECT + 10),
+        mark('h', 'taker', EXPECT + 20),
+      ])
+      expect(o.accepted).toEqual({ by: 'h', at: END })
+      expect(offerOutcome(o, EXPECT + 20)).toMatchObject({ phase: 'need-guarantor', guarantorId: null, turnAt: EXPECT + 20 })
+      expect(courtDue(o, EXPECT + 20)).toBe(true)
+      // Совпали — окончательно сразу
+      const agreed = one([auc({ guarantor: null }), bid('h', 1000, T + 10), mark('a', 'taker', END + 1), mark('h', 'taker', END + 2)])
+      expect(offerResult(agreed, END + 2)).toEqual([
+        { memberId: 'a', net: -300 },
+        { memberId: 'h', net: 300 },
+      ])
+    })
+  })
+
+  describe('отзыв', () => {
+    it('автор — только пока нет ни одного встречного', () => {
+      expect(checkWithdraw(one([auc()]), 'a')).toBeNull()
+      expect(checkWithdraw(one([auc()]), 'b')).toBe(ONLY_AUTHOR)
+      expect(checkWithdraw(one([auc(), bid('b', 1000, T + 10)]), 'a')).toBe(AUCTION_HAS_BIDS)
+      const withdrawn = one([auc(), act('offer.withdrawn', 'a', T + 5), bid('b', 1000, T + 10)])
+      expect(withdrawn.withdrawnAt).toBe(T + 5)
+      expect(withdrawn.auction?.bids).toEqual([])
+      expect(checkBid(withdrawn, 'b', 1000, room, T + 10)).toBe(WITHDRAWN)
+      expect(offerStatus(withdrawn, END)).toBe('withdrawn')
+      expect(offerView(withdrawn, END).bidding?.result).toBeNull()
+      expect(one([auc(), bid('b', 1000, T + 10), act('offer.withdrawn', 'a', T + 20)]).withdrawnAt).toBeNull()
+    })
+  })
+
+  describe('суммы — не кэф', () => {
+    it('40 000 против 300: суммы автора и принятого встречного, предел кэфа не действует', () => {
+      const o = one([auc(), bid('b', 40_000, T + 10), mark('a', 'author', END + 1), mark('b', 'author', END + 2)])
+      expect(offerAmounts(o)).toEqual({ ok: true, value: { author: 300, taker: 40_000, bank: 40_300, exact: true } })
+      expect(offerInfo(o)).toMatchObject({ amount: 300, takerAmount: 40_000, odds: { a: 300, b: 40_000 } })
+      expect(offerResult(o, END + 2)).toEqual([
+        { memberId: 'a', net: 40_000 },
+        { memberId: 'b', net: -40_000 },
+      ])
+      // Без встречных — старт
+      expect(offerAmounts(one([auc()]))).toMatchObject({ ok: true, value: { taker: 1000, bank: 1300 } })
+    })
+  })
+
+  describe('журнал комнаты', () => {
+    it('offer.bid и offer.bid-accepted — записи пари; торг — поле offer.created', () => {
+      const roomLog: LogEntry[] = [
+        { id: 'r', at: 0, memberId: 'h', type: 'room.created', roomId: 'R', name: 'Дача', currency: 'RUB' },
+        ...['h', 'a', 'b', 'c'].map((m): LogEntry => ({ id: 'm' + m, at: 0, memberId: 'h', type: 'member.added', member: m, name: m })),
+      ]
+      const { type: _t, subject: _s, guarantorRule: _g, ...c } = auc()
+      void _t
+      void _s
+      void _g
+      const e: LogEntry = { ...c, type: 'offer.created', requestId: 'q' }
+      expect(isOfferEntry(e) && offerRecord(e)).toEqual(auc())
+      const b1: LogEntry = { id: 'b1', at: T + 10, memberId: 'b', type: 'offer.bid', offer: 'o1', amount: 1000, requestId: 'q1' }
+      const b2: LogEntry = { id: 'b2', at: T + 20, memberId: 'c', type: 'offer.bid', offer: 'o1', amount: 1100, requestId: 'q2' }
+      const t: LogEntry = { id: 't', at: T + 30, memberId: 'a', type: 'offer.bid-accepted', offer: 'o1', requestId: 'q3' }
+      expect([b1, b2, t].every(isOfferEntry)).toBe(true)
+      expect(offerRecord(b1 as Extract<LogEntry, { type: 'offer.bid' }>)).toEqual({ type: 'offer.bid', id: 'b1', at: T + 10, memberId: 'b', offer: 'o1', amount: 1000 })
+      const [o] = logOffers([...roomLog, e, b1, b2, t])
+      expect(o.accepted).toEqual({ by: 'c', at: T + 30 })
+      expect(o.auction?.bids.map((x) => x.id)).toEqual(['b1', 'b2'])
+      // У обычного пари поля торга нет ни в правилах, ни в ответе
+      expect('auction' in one([created()])).toBe(false)
+      expect('auction' in offerInfo(one([created()]))).toBe(false)
+      expect('bidding' in offerView(one([created()]), T)).toBe(false)
+    })
+
+    it('ответ торга проходит проверку протокола; кривой — нет', () => {
+      const view = offerView(one([auc(), bid('b', 1000, T + 10)]), T + 20)
+      expect(isOfferView(view)).toBe(true)
+      expect(isOfferView({ ...view, bidding: { ...view.bidding, endsAt: '1' } })).toBe(false)
+      expect(isOfferView({ ...view, bidding: { ...view.bidding, result: { how: 'now', at: 1 } } })).toBe(false)
+      expect(isOfferView({ ...view, auction: { start: 1000, step: 100 } })).toBe(false)
+    })
+  })
 })

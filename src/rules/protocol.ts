@@ -133,11 +133,29 @@ export type OfferInfo = {
   // Правило гаранта (Р-31): часы гаранта — с «исход к», 3 дня без общего гаранта — суд. У пари,
   // предложенных до выкатки, — false: прежние часы, без суда
   guarantorRule: boolean
+  // «Торг до …» (Р-37): старт (наименьшая сумма соперника), шаг и latestEnd — «торг закончится не позже …»
+  // (исходный конец closesAt + 30 минут продлений). У торга takerAmount — принятое встречное, до конца —
+  // лучшее, без встречных — старт; odds — отношение сумм { a: amount, b: takerAmount }, только для
+  // показа. У обычного пари поля нет
+  auction?: AuctionInfo
+}
+export type AuctionInfo = { start: number; step: number; latestEnd: number }
+
+// Встречное в торге (Р-37): кто, когда, сколько ставит против суммы автора
+export type OfferBid = { id: string; at: number; by: string; amount: number }
+// Ход торга на now: все встречные по порядку (видны всем, Р-11), лучшее (последнее), конец с
+// продлениями; result — итог: принято лучшее («принять сейчас» — now, к концу торга — end) — каким
+// встречным и когда; «не состоялось» (failed) — в миг конца; торг идёт или отозван — null
+export type BiddingView = {
+  bids: OfferBid[]
+  best: OfferBid | null
+  endsAt: number
+  result: { how: 'now' | 'end'; at: number; bid: string } | { how: 'failed'; at: number } | null
 }
 
 // «открыто» / «истекло» (приём до прошёл, по времени сервера) / «отозвано» / «закрыто встречным» /
-// «принято»
-export type OfferStatus = 'open' | 'expired' | 'withdrawn' | 'countered' | 'accepted'
+// «принято» / «не состоялось» (торг без встречных к концу, Р-37: никто никому не должен)
+export type OfferStatus = 'open' | 'expired' | 'withdrawn' | 'countered' | 'accepted' | 'failed'
 
 // Действие с пари: кто (by), когда, с каким пари
 export type OfferAct = { id: string; at: number; by: string; offer: string }
@@ -225,9 +243,11 @@ export type OfferOutcomeView = {
 
 // Пари в состоянии комнаты: статус на now; accepted — кто принял и когда; withdrawnAt — когда
 // отозвано; closedBy — каким встречным закрыто; outcome — исход (Р-23; не принято — null); times —
-// сроки пари, закреплённые при создании (Р-35; у старых — обычный набор; сервер до темпа поля не шлёт)
+// сроки пари, закреплённые при создании (Р-35; у старых — обычный набор; сервер до темпа поля не шлёт);
+// bidding — ход торга (Р-37; у обычного пари поля нет)
 export type OfferView = OfferInfo & {
   times?: TimesView
+  bidding?: BiddingView
   status: OfferStatus
   accepted: { by: string; at: number } | null
   withdrawnAt: number | null
@@ -740,7 +760,7 @@ export function isVoteOutcomeResponse(x: unknown): x is VoteOutcomeResponse {
   return markIn(x, 'vote')
 }
 
-const OFFER_STATUSES: readonly unknown[] = ['open', 'expired', 'withdrawn', 'countered', 'accepted']
+const OFFER_STATUSES: readonly unknown[] = ['open', 'expired', 'withdrawn', 'countered', 'accepted', 'failed']
 
 function orNull(x: unknown, type: 'string' | 'number'): boolean {
   return x === null || typeof x === type
@@ -758,7 +778,33 @@ function isOfferInfo(r: Record<string, unknown>): boolean {
     orNull(r.to, 'string') &&
     orNull(r.counterTo, 'string') &&
     orNull(r.subjectId, 'string') &&
-    typeof r.guarantorRule === 'boolean'
+    typeof r.guarantorRule === 'boolean' &&
+    optionalAuction(r.auction)
+  )
+}
+
+// Условия торга (Р-37): нет поля — обычное пари
+function optionalAuction(x: unknown): boolean {
+  const a = record(x)
+  return x === undefined || (!!a && numbers(a, 'start', 'step', 'latestEnd'))
+}
+
+function isBid(r: Record<string, unknown>): boolean {
+  return strings(r, 'id', 'by') && numbers(r, 'at', 'amount')
+}
+
+// Ход торга (Р-37): нет поля — обычное пари
+function optionalBidding(x: unknown): boolean {
+  if (x === undefined) return true
+  const r = record(x)
+  return (
+    !!r &&
+    list(r.bids, isBid) &&
+    nullable(r.best, isBid) &&
+    numbers(r, 'endsAt') &&
+    nullable(r.result, (v) =>
+      v.how === 'failed' ? numbers(v, 'at') : (v.how === 'now' || v.how === 'end') && numbers(v, 'at') && strings(v, 'bid'),
+    )
   )
 }
 
@@ -801,6 +847,7 @@ export function isOfferView(x: unknown): x is OfferView {
     !!r &&
     isOfferInfo(r) &&
     optionalTimes(r.times) &&
+    optionalBidding(r.bidding) &&
     OFFER_STATUSES.includes(r.status) &&
     nullable(r.accepted, (a) => strings(a, 'by') && numbers(a, 'at')) &&
     orNull(r.withdrawnAt, 'number') &&

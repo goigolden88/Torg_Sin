@@ -2,12 +2,12 @@
 // кэфу, принять / отозвать / встречное, исход отметками сторон и гарантом. Здесь — проверка формы и
 // состояние пари из записей OfferRecord (автор, время сервера at, порядок — порядок журнала); из
 // журнала комнаты их берёт logOffers (Р-22: offer.created, offer.accepted, offer.revoked; Р-23: offer.marked,
-// offer.decided, offer.declined, offer.nominated; Р-31: court.drawn — суд по «ждёт суда»). Итоги и
-// статусы считаются, не хранятся. Ни DOM, ни Cloudflare
+// offer.decided, offer.declined, offer.nominated; Р-31: court.drawn — суд по «ждёт суда»; Р-37: торг —
+// offer.bid, offer.bid-accepted). Итоги и статусы считаются, не хранятся. Ни DOM, ни Cloudflare
 import { checkAmount, FINAL_TIME, MAX_EVENT_TEXT, NEED_CHECK, NEED_CONDITION, LONG_CHECK, LONG_CONDITION } from './event'
 import { appealView, courtVerdict, courtView, type CourtCase } from './court'
 import { NORMAL_TIMES, recordTimes, timesOf, type Times } from './pace'
-import type { AppealView, CourtView, OfferInfo, OfferView } from './protocol'
+import type { AppealView, BiddingView, CourtView, OfferInfo, OfferView } from './protocol'
 import { foldLog, type LogEntry, type RoomState } from './room'
 
 // Сроки пари — обычного темпа (Р-35): все три — срок молчания (silence), окончательность — срок
@@ -76,6 +76,37 @@ export const NO_GUARANTOR_JUDGES = 'Без гаранта судить неко�
 export const NO_GUARANTOR_CHOSEN = '«Без гаранта» — тогда гаранта не выбирают'
 export const NO_GUARANTOR = 'У пари нет гаранта'
 
+// «Торг до …» (Р-37): автор закрепляет сторону и свою сумму, участники до конца торга перебивают друг
+// друга, сколько поставят против него (встречное в торге — bid; слово «встречное» в коде — у counterTo).
+// Сроки — постоянные решения, не темпа: торг — от 10 минут до 3 дней с создания; встречное за 2 минуты
+// до конца переносит конец на 2 минуты после себя, но не дальше исходного конца + 30 минут
+const MINUTE = 60 * 1000
+export const AUCTION_MIN = 10 * MINUTE
+export const AUCTION_MAX = 3 * 24 * 60 * MINUTE
+export const AUCTION_EXTEND = 2 * MINUTE
+export const AUCTION_EXTEND_MAX = 30 * MINUTE
+// Отказы торга: форма
+export const AUCTION_ADDRESSED = 'Торг — только открытое пари: адресата у него нет'
+export const BAD_START = 'Старт — сумма соперника: целое число больше нуля'
+export const BAD_STEP = 'Шаг торга — целое число больше нуля'
+export const AUCTION_SHORT = 'Торг — не меньше 10 минут'
+export const AUCTION_LONG = 'Торг — не дольше 3 дней'
+export const AUCTION_EXPECTED = '«Исход к» — не раньше чем через 30 минут после конца торга'
+// Встречное в торге, «принять сейчас», отзыв
+export const NOT_AUCTION = 'Это пари не в торге'
+export const AUCTION_OVER = 'Торг закончен'
+export const OWN_BID = 'Против своего пари не торгуются'
+export const GUARANTOR_BIDS = 'Гарант не торгуется'
+export const SUBJECT_BIDS = 'Вы — предмет спора: торговаться можно, только если автор — за «не сбудется»'
+export const BAD_BID = 'Встречное — сумма: целое число больше нуля'
+export const BID_LOW = 'Первое встречное — не меньше старта'
+export const BID_STEP = 'Встречное — больше лучшего хотя бы на шаг'
+export const AUCTION_ACCEPT = 'Пари в торге не принимают — перебейте лучшее встречное'
+export const AUCTION_COUNTER = 'К пари в торге встречных пари нет — перебейте лучшее встречное'
+export const ONLY_AUTHOR_TAKES = 'Принять лучшее может только автор пари'
+export const NO_BIDS = 'Встречных ещё нет — принимать нечего'
+export const AUCTION_HAS_BIDS = 'Встречные уже есть — торг не отозвать'
+
 type Checked<T> = { ok: true; value: T } | { ok: false; error: string }
 
 // Кэф «a к b»: автор рискует a·k, соперник b·k
@@ -106,6 +137,47 @@ export function offerNets(stakes: OfferStakes, winner: OfferSide): { author: num
     : { author: -stakes.author, taker: stakes.author }
 }
 
+// Торг (Р-37): старт — наименьшая сумма соперника, шаг — на сколько новое встречное больше лучшего
+export type AuctionTerms = { start: number; step: number }
+// Встречное в торге: кто, когда, сколько ставит против суммы автора
+export type AuctionBid = { id: string; at: number; by: string; amount: number }
+// Торг в состоянии пари: endsAt — конец с продлениями; bids — действующие встречные по порядку (каждое
+// больше прежнего — последнее лучшее); taken — как принято лучшее: «принять сейчас» или конец торга
+export type AuctionState = AuctionTerms & { endsAt: number; bids: AuctionBid[]; taken: 'now' | 'end' | null }
+
+// Шаг по умолчанию — 10 % старта вниз до целой единицы, не меньше одной
+export function auctionStep(start: number): number {
+  return Math.max(1, Math.floor(start / 10))
+}
+
+// Позже этого торг не закончится: исходный конец (closesAt) + 30 минут продлений
+export function auctionLatestEnd(o: { closesAt: number }): number {
+  return o.closesAt + AUCTION_EXTEND_MAX
+}
+
+export function bestBid(a: AuctionState): AuctionBid | null {
+  return a.bids[a.bids.length - 1] ?? null
+}
+
+// Пари на now (время сервера): торг кончился по времени, встречное было — лучшее принято в миг конца,
+// без записи и будильника (Р-37). Иначе — то же пари
+export function offerAt(o: OfferState, now: number): OfferState {
+  const a = o.auction
+  if (!a || o.accepted || o.withdrawnAt !== null || now < a.endsAt) return o
+  const best = bestBid(a)
+  if (!best) return o
+  return { ...o, accepted: { by: best.by, at: a.endsAt }, auction: { ...a, taken: 'end' } }
+}
+
+// Суммы сторон пари: обычное — по кэфу (offerStakes); в торге — сумма автора и лучшего встречного
+// (принятого — оно и есть лучшее), без встречных — старт; кэф торга только для показа, предел 1…100 к
+// нему не применяется (Р-37)
+export function offerAmounts(o: OfferState): Checked<OfferStakes> {
+  if (!o.auction) return offerStakes(o.odds, o.amount)
+  const taker = bestBid(o.auction)?.amount ?? o.auction.start
+  return { ok: true, value: { author: o.amount, taker, bank: o.amount + taker, exact: true } }
+}
+
 function odd(x: unknown): x is number {
   return Number.isInteger(x) && (x as number) >= MIN_ODDS && (x as number) <= MAX_ODDS
 }
@@ -119,7 +191,8 @@ function text(x: unknown, need: string, long: string): Checked<string> {
 
 // Проверенная форма пари. to — адресат (null — открытое), guarantor — выбранный (null — ведущий),
 // noGuarantor — без гаранта (Р-36; guarantor тогда null; нет поля — с гарантом), subject — о ком
-// спор (null — ни о ком; Р-26)
+// спор (null — ни о ком; Р-26). auction — торг (Р-37; нет поля — обычное пари): closesAt тогда — конец
+// торга, odds — стартовый кэф { a: amount, b: start }
 export type OfferInput = {
   condition: string
   check: string
@@ -132,15 +205,30 @@ export type OfferInput = {
   guarantor: string | null
   noGuarantor?: boolean
   subject: string | null
+  auction?: AuctionTerms
+}
+
+// Условия торга из формы: старт — целое > 0, банк (сумма автора + старт) — точное целое; шаг не задан —
+// 10 % старта (auctionStep)
+function auctionTerms(x: unknown, amount: number): Checked<AuctionTerms> {
+  if (typeof x !== 'object' || x === null) return { ok: false, error: BAD_START }
+  const t = x as { start?: unknown; step?: unknown }
+  if (!Number.isSafeInteger(t.start) || (t.start as number) < 1) return { ok: false, error: BAD_START }
+  const start = t.start as number
+  if (!Number.isSafeInteger(amount + start)) return { ok: false, error: BANK_TOO_BIG }
+  const step = t.step === undefined || t.step === null ? auctionStep(start) : t.step
+  if (!Number.isSafeInteger(step) || (step as number) < 1) return { ok: false, error: BAD_STEP }
+  return { ok: true, value: { start, step: step as number } }
 }
 
 // Проверка формы без времени сервера и участников (их — checkOfferTimes, offerGuarantor,
-// checkOfferSubject). Сторона не задана — «сбудется»
+// checkOfferSubject). Сторона не задана — «сбудется». Торг (Р-37): auction { start, step? } вместо кэфа
+// (odds тогда не смотрится), только открытое
 export function checkOfferInput(x: {
   condition: unknown
   check: unknown
   side?: unknown
-  odds: unknown
+  odds?: unknown
   amount: unknown
   to?: unknown
   closesAt: unknown
@@ -148,6 +236,7 @@ export function checkOfferInput(x: {
   guarantor?: unknown
   noGuarantor?: unknown
   subject?: unknown
+  auction?: unknown
 }): Checked<OfferInput> {
   const condition = text(x.condition, NEED_CONDITION, LONG_CONDITION)
   if (!condition.ok) return condition
@@ -155,13 +244,24 @@ export function checkOfferInput(x: {
   if (!check.ok) return check
   const side = x.side === undefined || x.side === null ? 'yes' : x.side
   if (side !== 'yes' && side !== 'no') return { ok: false, error: BAD_SIDE }
+  const isAuction = x.auction !== undefined && x.auction !== null
   const o = x.odds as { a?: unknown; b?: unknown } | null
-  if (typeof o !== 'object' || o === null || !odd(o.a) || !odd(o.b)) return { ok: false, error: BAD_ODDS }
-  const odds = { a: o.a as number, b: o.b as number }
+  if (!isAuction && (typeof o !== 'object' || o === null || !odd(o.a) || !odd(o.b))) return { ok: false, error: BAD_ODDS }
   const amount = checkAmount(x.amount)
   if (!amount.ok) return amount
-  const stakes = offerStakes(odds, amount.value)
-  if (!stakes.ok) return stakes
+  let odds: Odds
+  let auction: AuctionTerms | null = null
+  if (isAuction) {
+    const terms = auctionTerms(x.auction, amount.value)
+    if (!terms.ok) return terms
+    if (x.to !== undefined && x.to !== null) return { ok: false, error: AUCTION_ADDRESSED }
+    auction = terms.value
+    odds = { a: amount.value, b: auction.start }
+  } else {
+    odds = { a: (o as { a: number }).a, b: (o as { b: number }).b }
+    const stakes = offerStakes(odds, amount.value)
+    if (!stakes.ok) return stakes
+  }
   if (!Number.isSafeInteger(x.closesAt) || !Number.isSafeInteger(x.expectedAt)) return { ok: false, error: NEED_TIMES }
   const member = (v: unknown) => v === undefined || v === null || (typeof v === 'string' && v !== '')
   if (!member(x.to)) return { ok: false, error: BAD_ADDRESSEE }
@@ -184,12 +284,21 @@ export function checkOfferInput(x: {
       guarantor: typeof x.guarantor === 'string' ? x.guarantor : null,
       ...(none === true && { noGuarantor: true }),
       subject: typeof x.subject === 'string' ? x.subject : null,
+      ...(auction && { auction }),
     },
   }
 }
 
-// Сроки по времени сервера: «приём до» — впереди, «исход к» — не раньше него. Ошибки нет — null
-export function checkOfferTimes(input: { closesAt: number; expectedAt: number }, now: number): string | null {
+// Сроки по времени сервера: «приём до» — впереди, «исход к» — не раньше него. Торг (Р-37): конец — не
+// раньше чем через 10 минут и не позже чем через 3 дня, «исход к» — не раньше конца + 30 минут (так
+// продления не уведут торг за исход). Ошибки нет — null
+export function checkOfferTimes(input: { closesAt: number; expectedAt: number; auction?: AuctionTerms | null }, now: number): string | null {
+  if (input.auction) {
+    if (input.closesAt < now + AUCTION_MIN) return AUCTION_SHORT
+    if (input.closesAt > now + AUCTION_MAX) return AUCTION_LONG
+    if (input.expectedAt < auctionLatestEnd(input)) return AUCTION_EXPECTED
+    return null
+  }
   if (input.closesAt <= now) return CLOSE_PASSED
   if (input.expectedAt < input.closesAt) return EXPECTED_EARLY
   return null
@@ -268,6 +377,9 @@ export type OfferCreated = {
   guarantorRule?: boolean
   // Сроки (Р-35), закреплённые при создании; нет (у пари до темпа) — обычный набор
   times?: Times
+  // «Торг до …» (Р-37): только открытое и не встречное; closesAt — исходный конец торга, odds — стартовый
+  // кэф { a: amount, b: start }. Нет — обычное пари
+  auction?: AuctionTerms
 }
 type OfferAct<T extends string, X = object> = { type: T; id: string; at: number; memberId: string; offer: string } & X
 export type OfferRecord =
@@ -280,11 +392,17 @@ export type OfferRecord =
   | OfferAct<'offer.nominated', { guarantor: string }> // сторона называет нового гаранта
   // Суд по «ждёт суда» собран (запись court.drawn журнала, Р-31): дальше решает только суд
   | OfferAct<'court.drawn'>
+  // Торг (Р-37): встречное — сколько ставит против суммы автора; «принять сейчас» — автор принимает лучшее
+  | OfferAct<'offer.bid', { amount: number }>
+  | OfferAct<'offer.bid-accepted'>
 
 export type OfferMark = { by: OfferSide; winner: OfferSide; at: number }
 
-// Пари из записей; times — сроки пари (Р-35), нет — обычный набор (timesOf)
-export type OfferState = Omit<OfferCreated, 'type' | 'memberId' | 'guarantor' | 'guarantorRule'> & {
+// Пари из записей; times — сроки пари (Р-35), нет — обычный набор (timesOf). auction — торг (Р-37), нет —
+// обычное пари. Торг, кончившийся по времени, свёртка принимает перед следующей записью о пари, а на now —
+// offerAt: пари из свёртки до проверки без now (checkMark, checkWithdraw, sideOf) берут через offerAt
+export type OfferState = Omit<OfferCreated, 'type' | 'memberId' | 'guarantor' | 'guarantorRule' | 'auction'> & {
+  auction?: AuctionState
   guarantorRule: boolean // правило гаранта (Р-31)
   courtAt: number | null // суд по «ждёт суда» собран (Р-31); нет — null
   authorId: string
@@ -301,19 +419,26 @@ export type OfferState = Omit<OfferCreated, 'type' | 'memberId' | 'guarantor' | 
   nominations: Partial<Record<OfferSide, string>> // кого называют стороны, пока нужен другой гарант
 }
 
-export type OfferStatus = 'open' | 'expired' | 'withdrawn' | 'countered' | 'accepted'
+// failed — торг «не состоялся» (Р-37): к концу ни одного встречного, никто никому не должен
+export type OfferStatus = 'open' | 'expired' | 'withdrawn' | 'countered' | 'accepted' | 'failed'
 
-// Статус предложения на now (время сервера): приём закрывается в срок, «приём до» — не включая
+// Статус предложения на now (время сервера): приём закрывается в срок, «приём до» — не включая. Торг
+// (Р-37) — по концу с продлениями (endsAt), не по closesAt: идёт — open, кончился со встречным — accepted
+// (offerAt), без — failed
 export function offerStatus(o: OfferState, now: number): OfferStatus {
-  if (o.accepted) return 'accepted'
-  if (o.withdrawnAt !== null) return 'withdrawn'
-  if (o.closedBy) return 'countered'
-  return now >= o.closesAt ? 'expired' : 'open'
+  const x = offerAt(o, now)
+  if (x.accepted) return 'accepted'
+  if (x.withdrawnAt !== null) return 'withdrawn'
+  if (x.closedBy) return 'countered'
+  if (x.auction) return now >= x.auction.endsAt ? 'failed' : 'open'
+  return now >= x.closesAt ? 'expired' : 'open'
 }
 
 // Принять: адресное — только адресат; открытое — любой участник, кроме автора и гаранта; до «приём до».
-// Предмет спора (Р-26) принимает, только если автор — за «не сбудется»: сам он тогда — за «сбудется»
+// Предмет спора (Р-26) принимает, только если автор — за «не сбудется»: сам он тогда — за «сбудется».
+// Пари в торге (Р-37) так не принимают — иначе его приняли бы по старту
 export function checkAccept(o: OfferState, memberId: string, room: RoomRoles, now: number): string | null {
+  if (o.auction) return AUCTION_ACCEPT
   const status = offerStatus(o, now)
   if (status === 'withdrawn') return WITHDRAWN
   if (status === 'accepted') return ALREADY_ACCEPTED
@@ -327,17 +452,49 @@ export function checkAccept(o: OfferState, memberId: string, room: RoomRoles, no
   return null
 }
 
-// Отозвать — автор, пока не принято
+// Отозвать — автор, пока не принято; торг (Р-37) — только пока нет ни одного встречного
 export function checkWithdraw(o: OfferState, memberId: string): string | null {
   if (memberId !== o.authorId) return ONLY_AUTHOR
   if (o.accepted) return ACCEPTED_NO_WITHDRAW
   if (o.withdrawnAt !== null) return WITHDRAWN
   if (o.closedBy) return COUNTERED
+  if (o.auction && o.auction.bids.length > 0) return AUCTION_HAS_BIDS
   return null
 }
 
-// Встречное — тот, кто мог бы принять исходное, и пока его можно принять
+// Встречное в торге (Р-37): amount — сколько ставишь против суммы автора; первое — не меньше старта,
+// следующее — больше лучшего хотя бы на шаг; до конца торга (с продлениями). Не ставят автор, гарант и
+// предмет спора не на своей стороне (Р-26, как у принятия). Встречное не отзывается; перебитое — свободно
+export function checkBid(o: OfferState, memberId: string, amount: unknown, room: RoomRoles, now: number): string | null {
+  const a = o.auction
+  if (!a) return NOT_AUCTION
+  const status = offerStatus(o, now)
+  if (status === 'withdrawn') return WITHDRAWN
+  if (status !== 'open') return AUCTION_OVER
+  if (memberId === o.authorId) return OWN_BID
+  if (memberId === o.guarantorId) return GUARANTOR_BIDS
+  if (memberId === o.subject && o.side !== 'no') return SUBJECT_BIDS
+  if (!room.members.includes(memberId)) return NOT_MEMBER
+  if (!Number.isSafeInteger(amount) || (amount as number) < 1) return BAD_BID
+  if (!Number.isSafeInteger(o.amount + (amount as number))) return BANK_TOO_BIG
+  const best = bestBid(a)
+  if (!best) return (amount as number) < a.start ? BID_LOW : null
+  return (amount as number) < best.amount + a.step ? BID_STEP : null
+}
+
+// «Принять сейчас» (Р-37): автор принимает лучшее встречное в любой миг торга — торг закончен
+export function checkTakeBid(o: OfferState, memberId: string, now: number): string | null {
+  if (!o.auction) return NOT_AUCTION
+  if (memberId !== o.authorId) return ONLY_AUTHOR_TAKES
+  const status = offerStatus(o, now)
+  if (status === 'withdrawn') return WITHDRAWN
+  if (status !== 'open') return AUCTION_OVER
+  return bestBid(o.auction) ? null : NO_BIDS
+}
+
+// Встречное — тот, кто мог бы принять исходное, и пока его можно принять. К пари в торге (Р-37) — нет
 export function checkCounter(o: OfferState, memberId: string, room: RoomRoles, now: number): string | null {
+  if (o.auction) return AUCTION_COUNTER
   const status = offerStatus(o, now)
   if (status === 'withdrawn') return COUNTER_WITHDRAWN
   if (status === 'accepted') return COUNTER_ACCEPTED
@@ -456,7 +613,8 @@ function phaseOf(o: OfferState, now: number) {
 // С какого мига дело уходит в суд (Р-31): срок молчания пари (3 дня у обычного темпа; Р-35) с мига,
 // как нужен другой гарант. Без гаранта (Р-36) — сразу с мига хода гаранта (turnAt). Правила нет или
 // другой гарант не нужен — null
-export function courtFrom(o: OfferState, now: number): number | null {
+export function courtFrom(state: OfferState, now: number): number | null {
+  const o = offerAt(state, now)
   if (!o.accepted) return null
   const { phase, needSince } = basePhase(o, now)
   if (phase !== 'need-guarantor' || needSince === null) return null
@@ -473,7 +631,8 @@ export function courtDue(o: OfferState, now: number): boolean {
 }
 
 // Решение гаранта: только нынешний гарант, когда решение перешло к нему и его 3 дня не прошли
-export function checkDecide(o: OfferState, memberId: string, winner: unknown, now: number): string | null {
+export function checkDecide(state: OfferState, memberId: string, winner: unknown, now: number): string | null {
+  const o = offerAt(state, now)
   if (winner !== 'author' && winner !== 'taker') return BAD_MARK
   if (o.guarantorId === null) return NO_GUARANTOR
   const settled = settledError(o)
@@ -487,7 +646,8 @@ export function checkDecide(o: OfferState, memberId: string, winner: unknown, no
 
 // Отказ гаранта: нынешний гарант принятого пари, пока исход не утверждён и его не сменяют. Решить и
 // отказаться у пари без гаранта (Р-36) некому — NO_GUARANTOR
-export function checkDecline(o: OfferState, memberId: string, now: number): string | null {
+export function checkDecline(state: OfferState, memberId: string, now: number): string | null {
+  const o = offerAt(state, now)
   if (o.guarantorId === null) return NO_GUARANTOR
   const settled = settledError(o)
   if (settled) return settled
@@ -498,7 +658,8 @@ export function checkDecline(o: OfferState, memberId: string, now: number): stri
 
 // Новый гарант: называет сторона, когда нужен другой; кандидат — участник, не сторона и не предмет
 // спора (Р-26; у пари до выкатки предмета нет — как раньше)
-export function checkNominate(o: OfferState, memberId: string, guarantor: unknown, room: RoomRoles, now: number): string | null {
+export function checkNominate(state: OfferState, memberId: string, guarantor: unknown, room: RoomRoles, now: number): string | null {
+  const o = offerAt(state, now)
   const settled = settledError(o)
   if (settled) return settled
   if (!sideOf(o, memberId)) return NOT_SIDE
@@ -510,8 +671,24 @@ export function checkNominate(o: OfferState, memberId: string, guarantor: unknow
   return null
 }
 
+// Торг в записи offer.created (Р-37): открытое, не встречное; старт и шаг — целые > 0; odds — стартовый
+// кэф { a: amount, b: start }; банк — точное целое
+function auctionRecordOk(r: OfferCreated, a: AuctionTerms): boolean {
+  const whole = (x: unknown) => Number.isSafeInteger(x) && (x as number) >= 1
+  return (
+    r.to === null &&
+    r.counterTo === null &&
+    whole(a.start) &&
+    whole(a.step) &&
+    r.odds.a === r.amount &&
+    r.odds.b === a.start &&
+    Number.isSafeInteger(r.amount + a.start)
+  )
+}
+
 // Пари комнаты из записей по порядку создания. Запись действует, если её разрешают правила выше на
-// её время at (так сервер и свёртка не расходятся); записи о неизвестном пари не действуют
+// её время at (так сервер и свёртка не расходятся); записи о неизвестном пари не действуют. Торг,
+// кончившийся к at записи о пари, принимается до неё (offerAt): встречное в миг конца уже не действует
 export function roomOffers(records: readonly OfferRecord[], room: RoomRoles): OfferState[] {
   const offers = new Map<string, OfferState>()
   for (const r of records) {
@@ -521,11 +698,13 @@ export function roomOffers(records: readonly OfferRecord[], room: RoomRoles): Of
         const original = offers.get(r.counterTo)
         if (!original || r.to !== original.authorId || checkCounter(original, r.memberId, room, r.at)) continue
       }
+      if (r.auction !== undefined && !auctionRecordOk(r, r.auction)) continue
       const g = offerGuarantor({ to: r.to, guarantor: r.guarantor, noGuarantor: r.guarantor === null, subject: r.subject }, r.memberId, room)
       if (!g.ok || g.value !== r.guarantor || checkOfferTimes(r, r.at) || checkOfferSubject(r, r.memberId, room)) continue
       const times = recordTimes(r.times)
       offers.set(r.id, {
         ...(times && { times }),
+        ...(r.auction && { auction: { start: r.auction.start, step: r.auction.step, endsAt: r.closesAt, bids: [], taken: null } }),
         id: r.id,
         at: r.at,
         authorId: r.memberId,
@@ -557,7 +736,24 @@ export function roomOffers(records: readonly OfferRecord[], room: RoomRoles): Of
     }
     const o = offers.get(r.offer)
     if (!o) continue
+    const settled = offerAt(o, r.at)
+    if (settled !== o) [o.accepted, o.auction] = [settled.accepted, settled.auction]
     switch (r.type) {
+      case 'offer.bid': {
+        if (checkBid(o, r.memberId, r.amount, room, r.at)) break
+        const a = o.auction as AuctionState
+        a.bids.push({ id: r.id, at: r.at, by: r.memberId, amount: r.amount })
+        // Продление: встречное за 2 минуты до конца — конец через 2 минуты после него, не дальше предела
+        a.endsAt = Math.min(auctionLatestEnd(o), Math.max(a.endsAt, r.at + AUCTION_EXTEND))
+        break
+      }
+      case 'offer.bid-accepted': {
+        if (checkTakeBid(o, r.memberId, r.at)) break
+        const a = o.auction as AuctionState
+        o.accepted = { by: (bestBid(a) as AuctionBid).by, at: r.at }
+        a.taken = 'now'
+        break
+      }
       case 'offer.accepted': {
         if (checkAccept(o, r.memberId, room, r.at)) break
         o.accepted = { by: r.memberId, at: r.at }
@@ -629,7 +825,8 @@ export type OfferOutcome = {
 // «оставить» (или большинства нет) — прежний исход; «изменить» — утверждён судом; «отменить» — без выплат.
 // Суд по «ждёт суда» (Р-31, без апелляции): «прав автор» / «прав соперник» — утверждён судом,
 // окончательно сразу; «отменить» или большинства нет — без выплат
-export function offerOutcome(o: OfferState, now: number, court: CourtCase | null = null): OfferOutcome | null {
+export function offerOutcome(state: OfferState, now: number, court: CourtCase | null = null): OfferOutcome | null {
+  const o = offerAt(state, now)
   if (!o.accepted) return null
   const base = phaseOf(o, now)
   const { turnAt, until, needSince } = base
@@ -674,11 +871,13 @@ export function offerOutcome(o: OfferState, now: number, court: CourtCase | null
   }
 }
 
-// Итог пари для «Расчёта»: только окончательное — плюс или минус каждой стороны; иначе пусто
-export function offerResult(o: OfferState, now: number, court: CourtCase | null = null): { memberId: string; net: number }[] {
+// Итог пари для «Расчёта»: только окончательное — плюс или минус каждой стороны; иначе пусто. Суммы —
+// offerAmounts: у торга (Р-37) — автора и принятого встречного; «не состоялось» не принято — пусто
+export function offerResult(state: OfferState, now: number, court: CourtCase | null = null): { memberId: string; net: number }[] {
+  const o = offerAt(state, now)
   const out = offerOutcome(o, now, court)
   if (!o.accepted || !out?.approved || out.phase !== 'final') return []
-  const stakes = offerStakes(o.odds, o.amount)
+  const stakes = offerAmounts(o)
   if (!stakes.ok) return []
   const nets = offerNets(stakes.value, out.approved.winner)
   return [
@@ -696,6 +895,8 @@ const OFFER_ENTRIES = [
   'offer.decided',
   'offer.declined',
   'offer.nominated',
+  'offer.bid',
+  'offer.bid-accepted',
 ] as const
 export type OfferEntry = Extract<LogEntry, { type: (typeof OFFER_ENTRIES)[number] }>
 
@@ -719,6 +920,10 @@ export function offerRecord(e: OfferEntry): OfferRecord {
       return { ...base, type: 'offer.declined', offer: e.offer }
     case 'offer.nominated':
       return { ...base, type: 'offer.nominated', offer: e.offer, guarantor: e.guarantor }
+    case 'offer.bid':
+      return { ...base, type: 'offer.bid', offer: e.offer, amount: e.amount }
+    case 'offer.bid-accepted':
+      return { ...base, type: 'offer.bid-accepted', offer: e.offer }
     case 'offer.created':
       return {
         ...base,
@@ -738,6 +943,8 @@ export function offerRecord(e: OfferEntry): OfferRecord {
         ...(e.guarantorRule === 1 && { guarantorRule: true }),
         // Сроки (Р-35): у пари до темпа поля нет — и в записи правил его нет
         ...(e.times !== undefined && { times: e.times }),
+        // Торг (Р-37): у обычного пари поля нет
+        ...(e.auction !== undefined && { auction: { start: e.auction.start, step: e.auction.step } }),
       }
   }
 }
@@ -762,9 +969,13 @@ export function logOffers(log: readonly LogEntry[]): OfferState[] {
   return roomOffers(records, roomRoles(state))
 }
 
-// Условия пари для ответа: сумма соперника — по кэфу (offerStakes); гарант — нынешний
+// Условия пари для ответа: сумма соперника — по кэфу (offerStakes); гарант — нынешний. Торг (Р-37):
+// сумма соперника — принятое встречное, до конца — лучшее, без встречных — старт (offerAmounts); кэф —
+// отношение сумм { a: сумма автора, b: сумма соперника } (только для показа); auction — старт, шаг и
+// «торг закончится не позже …»
 export function offerInfo(o: OfferState): OfferInfo {
-  const stakes = offerStakes(o.odds, o.amount)
+  const stakes = offerAmounts(o)
+  const taker = stakes.ok ? stakes.value.taker : 0
   return {
     id: o.id,
     at: o.at,
@@ -772,9 +983,9 @@ export function offerInfo(o: OfferState): OfferInfo {
     condition: o.condition,
     check: o.check,
     side: o.side,
-    odds: { a: o.odds.a, b: o.odds.b },
+    odds: o.auction ? { a: o.amount, b: taker } : { a: o.odds.a, b: o.odds.b },
     amount: o.amount,
-    takerAmount: stakes.ok ? stakes.value.taker : 0,
+    takerAmount: taker,
     to: o.to,
     closesAt: o.closesAt,
     expectedAt: o.expectedAt,
@@ -782,12 +993,35 @@ export function offerInfo(o: OfferState): OfferInfo {
     counterTo: o.counterTo,
     subjectId: o.subject,
     guarantorRule: o.guarantorRule,
+    ...(o.auction && { auction: { start: o.auction.start, step: o.auction.step, latestEnd: auctionLatestEnd(o) } }),
   }
 }
 
+// Торг на now (Р-37): встречные (кто, сколько, когда — видны всем, Р-11), лучшее, конец с продлениями и
+// итог: принято («принять сейчас» — now, к концу — end) — каким встречным и когда; «не состоялось» —
+// failed в миг конца; торг идёт или отозван — null
+export function biddingView(o: OfferState, now: number): BiddingView | null {
+  const x = offerAt(o, now)
+  const a = x.auction
+  if (!a) return null
+  const bid = (b: AuctionBid) => ({ id: b.id, at: b.at, by: b.by, amount: b.amount })
+  const best = bestBid(a)
+  const status = offerStatus(x, now)
+  const result: BiddingView['result'] =
+    x.accepted && best
+      ? { how: a.taken === 'now' ? 'now' : 'end', at: x.accepted.at, bid: best.id }
+      : status === 'failed'
+        ? { how: 'failed', at: a.endsAt }
+        : null
+  return { bids: a.bids.map(bid), best: best && bid(best), endsAt: a.endsAt, result }
+}
+
 // Пари для ответа GET /rooms/<номер>: статус на now (время сервера), кто принял, отзыв, встречное;
-// исход (Р-23) — offerOutcome на now, у непринятого — null; court — дело суда по пари (Р-24)
-export function offerView(o: OfferState, now: number, court: CourtCase | null = null): OfferView {
+// исход (Р-23) — offerOutcome на now, у непринятого — null; court — дело суда по пари (Р-24); торг
+// (Р-37) — на now (offerAt), bidding — его ход (biddingView); у обычного пари поля нет
+export function offerView(state: OfferState, now: number, court: CourtCase | null = null): OfferView {
+  const o = offerAt(state, now)
+  const bidding = biddingView(o, now)
   return {
     ...offerInfo(o),
     status: offerStatus(o, now),
@@ -795,5 +1029,6 @@ export function offerView(o: OfferState, now: number, court: CourtCase | null = 
     withdrawnAt: o.withdrawnAt,
     closedBy: o.closedBy && { offer: o.closedBy.offer, at: o.closedBy.at },
     outcome: offerOutcome(o, now, court),
+    ...(bidding && { bidding }),
   }
 }
