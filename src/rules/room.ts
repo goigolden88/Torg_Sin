@@ -111,6 +111,10 @@ export type LogEntry =
       guarantorRule?: 1
       // Сроки исхода, апелляции и суда (Р-35) — темп комнаты на миг создания; нет поля — обычный набор
       times?: Times
+      // «Торг до …» (Р-37): старт — наименьшая сумма соперника, шаг — на сколько новое встречное больше
+      // лучшего. Только открытое и не встречное; closesAt тогда — исходный конец торга, odds — стартовый
+      // кэф { a: amount, b: start }. Нет поля — обычное пари
+      auction?: { start: number; step: number }
       requestId: string
     })
   // Пари принято; автор записи — принявший (соперник)
@@ -125,6 +129,11 @@ export type LogEntry =
   | (EntryBase & { type: 'offer.declined'; offer: string; requestId: string })
   // Сторона называет нового гаранта; обе назвали одного — он гарант
   | (EntryBase & { type: 'offer.nominated'; offer: string; guarantor: string; requestId: string })
+  // Торг (Р-37, offer.ts). Встречное (автор записи — кто торгуется): сколько ставит против суммы автора;
+  // не отзывается. Конец торга записи не даёт — лучшее принимается по времени
+  | (EntryBase & { type: 'offer.bid'; offer: string; amount: number; requestId: string })
+  // «Принять сейчас»: автор пари принимает лучшее встречное — торг закончен
+  | (EntryBase & { type: 'offer.bid-accepted'; offer: string; requestId: string })
   // Апелляция и суд (этап 4, Р-24, Р-25; правила — appeal.ts). target — событие-пул или пари; requestId —
   // номер запроса телефона. Апелляция подана (автор — ставивший или сторона); суд собран в этот миг:
   // seed — зерно жребия (случайные байты сервера, hex), candidates — кандидаты на этот миг
@@ -200,6 +209,8 @@ export function applyEntry(state: RoomState | null, e: LogEntry): RoomState | nu
     case 'offer.decided':
     case 'offer.declined':
     case 'offer.nominated':
+    case 'offer.bid':
+    case 'offer.bid-accepted':
       return state
     // Апелляции и суд считает logAppeals (appeal.ts)
     case 'appeal.filed':

@@ -72,6 +72,8 @@ const LOG_TYPES: Record<LogEntry['type'], true> = {
   'offer.decided': true,
   'offer.declined': true,
   'offer.nominated': true,
+  'offer.bid': true,
+  'offer.bid-accepted': true,
   'appeal.filed': true,
   'appeal.joined': true,
   'court.drawn': true,

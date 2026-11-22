@@ -6,7 +6,7 @@
 import { caseOf } from './appeal'
 import type { CourtCase } from './court'
 import { checkAmount, eventOutcome, type EventState } from './event'
-import { offerNets, offerOutcome, offerStakes, type OfferState } from './offer'
+import { offerAmounts, offerAt, offerNets, offerOutcome, type OfferState } from './offer'
 
 // Режим «кто кому» (Р-32): «по ставкам» — долги пар по каждому окончательному событию и пари (по
 // умолчанию); «меньше переводов» — из балансов, жадно. Хранит сервер (запись комнаты)
@@ -346,10 +346,13 @@ export function roomSettlement(input: SettleInput, now: number, mode: SettleMode
     for (const [m, amount] of stake) count(row(m).inPlay, amount, 'events')
   }
 
-  for (const o of input.offers) {
+  // Пари — только принятые: торг (Р-37) — на now (offerAt), до конца лучшее встречное не в счёт, «не
+  // состоялось» — нет; суммы — offerAmounts (у торга — автора и принятого встречного)
+  for (const raw of input.offers) {
+    const o = offerAt(raw, now)
     if (!o.accepted) continue
     const out = offerOutcome(o, now, caseOf(input.cases, o.id))
-    const stakes = offerStakes(o.odds, o.amount)
+    const stakes = offerAmounts(o)
     if (!out || !stakes.ok || out.phase === 'cancelled') continue
     const taker = o.accepted.by
     if (out.approved) {
