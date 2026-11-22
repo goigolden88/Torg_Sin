@@ -285,6 +285,51 @@ describe('три числа у участника', () => {
     expect(s.members.reduce((x, m) => x + m.total.amount, 0)).toBe(0)
     expect(s.members.reduce((x, m) => x + m.balance, 0)).toBe(0)
   })
+
+  it('пари «Торг до …» (Р-37): в игре — только принятое, суммы — автора и встречного, «не состоялось» — не в счёт', () => {
+    const MIN = 60 * 1000
+    const DAY = 24 * HOUR
+    const END = 1_000 + 60 * MIN
+    // Торг A: 300 на «сбудется», старт 1000; B — 1000, C — 40 000
+    const auction = (id: string): OfferCreated => ({
+      type: 'offer.created',
+      id,
+      at: 1_000,
+      memberId: 'A',
+      condition: 'Торг ' + id,
+      check: 'Видео',
+      side: 'yes',
+      odds: { a: 300, b: 1000 },
+      amount: 300,
+      to: null,
+      closesAt: END,
+      expectedAt: END + DAY,
+      guarantor: 'H',
+      counterTo: null,
+      subject: null,
+      auction: { start: 1000, step: 100 },
+    })
+    const act = (type: 'offer.bid' | 'offer.marked', memberId: string, at: number, more: object): OfferRecord =>
+      ({ type, id: nid('r'), at, memberId, offer: 'T1', ...more }) as OfferRecord
+    const bids = [auction('T1'), act('offer.bid', 'B', 2_000, { amount: 1000 }), act('offer.bid', 'C', 3_000, { amount: 40_000 })]
+    // Торг идёт: лучшее встречное не в игре
+    const running = settle({ offers: bids }, END - 1)
+    for (const m of ['A', 'B', 'C']) expect(member(running, m).inPlay).toEqual(sum(0))
+    // Конец торга: принято лучшее (C) — в игре суммы сторон
+    const ended = settle({ offers: bids }, END)
+    expect(member(ended, 'A').inPlay).toEqual(sum(300, 0, 1))
+    expect(member(ended, 'C').inPlay).toEqual(sum(40_000, 0, 1))
+    expect(member(ended, 'B').inPlay).toEqual(sum(0))
+    // Совпали «прав автор» — окончательно: A +40 000, C −40 000
+    const marks = [act('offer.marked', 'A', END + 1, { winner: 'author' }), act('offer.marked', 'C', END + 2, { winner: 'author' })]
+    const done = settle({ offers: [...bids, ...marks] }, END + 2)
+    expect(member(done, 'A').total).toEqual(sum(40_000, 0, 1))
+    expect(member(done, 'C').total).toEqual(sum(-40_000, 0, 1))
+    expect(done.suggestions).toEqual([{ from: 'C', to: 'A', amount: 40_000 }])
+    // Без встречных — «не состоялось»: ни в одном числе
+    const failed = settle({ offers: [auction('T1')] }, END + DAY)
+    expect(member(failed, 'A')).toMatchObject({ total: sum(0), pending: sum(0), inPlay: sum(0), balance: 0 })
+  })
 })
 
 describe('переводы', () => {
