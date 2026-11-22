@@ -31,6 +31,36 @@ import {
   SUBJECT_YES_ONLY,
 } from '../../src/rules/event'
 import {
+  AUCTION_ACCEPT,
+  AUCTION_ADDRESSED,
+  AUCTION_COUNTER,
+  AUCTION_EXPECTED,
+  AUCTION_EXTEND,
+  AUCTION_EXTEND_MAX,
+  AUCTION_HAS_BIDS,
+  AUCTION_LONG,
+  AUCTION_OVER,
+  AUCTION_SHORT,
+  BAD_BID,
+  BAD_START,
+  BAD_STEP,
+  BANK_TOO_BIG,
+  BID_LOW,
+  BID_STEP,
+  GUARANTOR_BIDS,
+  NO_BIDS,
+  NOT_AUCTION,
+  ONLY_AUTHOR_TAKES,
+  OWN_BID,
+  SUBJECT_BIDS,
+} from '../../src/rules/offer'
+import {
+  isBidOfferResponse,
+  isTakeBidResponse,
+  type BidOfferResponse,
+  type TakeBidResponse,
+} from '../../src/rules/protocol'
+import {
   ACCEPTED_NO_WITHDRAW,
   AGREED,
   ALREADY_ACCEPTED,
@@ -2012,6 +2042,304 @@ export function roomsSuite(
         expect(await newOffer(s, room.roomId, borya.key, form)).toEqual(first)
       })
 
+      describe('«Торг до …» (Р-37)', () => {
+        const MINUTE = 60 * 1000
+
+        // Боря за «сбудется» ставит 300; старт — 100, шаг — 20; торг — час, гарант — ведущая Аня
+        function auctionForm(s: TestServer, change: Record<string, unknown> = {}): Record<string, unknown> {
+          return offerForm(s, { odds: undefined, auction: { start: 100, step: 20 }, ...change })
+        }
+
+        function bid(s: TestServer, roomId: string, key: string | undefined, offerId: string, amount: unknown, requestId?: string) {
+          return offerAct(s, roomId, key, offerId, 'bid', { amount, requestId })
+        }
+
+        function take(s: TestServer, roomId: string, key: string | undefined, offerId: string, requestId?: string) {
+          return offerAct(s, roomId, key, offerId, 'bid/accept', { requestId })
+        }
+
+        async function bidOk(s: TestServer, roomId: string, key: string, offerId: string, amount: number, requestId?: string): Promise<BidOfferResponse> {
+          const r = await ok<BidOfferResponse>(bid(s, roomId, key, offerId, amount, requestId))
+          expect(isBidOfferResponse(r)).toBe(true)
+          return r
+        }
+
+        async function viewOf(s: TestServer, roomId: string, key: string, offerId: string): Promise<OfferView | undefined> {
+          return (await offersOf(s, roomId, key)).find((o) => o.id === offerId)
+        }
+
+        it('пари в торге: старт, шаг, конец; встречные перебивают друг друга, видны всем; повтор встречного — тот же ответ', async () => {
+          const s = await server()
+          const { room, borya, vera, gosha } = await room4(s)
+          const form = auctionForm(s)
+          const { offer } = await newOffer(s, room.roomId, borya.key, form)
+          const closesAt = form.closesAt as number
+          expect(offer).toMatchObject({
+            authorId: borya.memberId,
+            side: 'yes',
+            amount: 300,
+            takerAmount: 100,
+            odds: { a: 300, b: 100 },
+            to: null,
+            closesAt,
+            guarantorId: room.memberId,
+            counterTo: null,
+            auction: { start: 100, step: 20, latestEnd: closesAt + AUCTION_EXTEND_MAX },
+          })
+          // В журнале — условия торга; кэф — стартовый «сумма автора к старту»
+          expect((await readLog(s.storage(room.roomId))).at(-1)).toMatchObject({ type: 'offer.created', auction: { start: 100, step: 20 }, odds: { a: 300, b: 100 }, to: null })
+          expect(await viewOf(s, room.roomId, gosha.key, offer.id)).toMatchObject({ status: 'open', accepted: null, outcome: null, bidding: { bids: [], best: null, endsAt: closesAt, result: null } })
+          // Шаг не задан — 10 % старта
+          const plain = await newOffer(s, room.roomId, borya.key, auctionForm(s, { auction: { start: 150 } }))
+          expect(plain.offer.auction).toMatchObject({ start: 150, step: 15 })
+
+          // Вера — 100 (старт), Гоша — 120, Вера перебила — 140
+          s.clock.now += 1000
+          const requestId = ulid(s.clock.now)
+          const first = await bidOk(s, room.roomId, vera.key, offer.id, 100, requestId)
+          expect(first).toEqual({ v: PROTOCOL_VERSION, bid: { id: expect.any(String), at: s.clock.now, by: vera.memberId, offer: offer.id, amount: 100 }, offer: { ...offer, takerAmount: 100 } })
+          expect((await readLog(s.storage(room.roomId))).at(-1)).toMatchObject({ type: 'offer.bid', memberId: vera.memberId, offer: offer.id, amount: 100, requestId })
+          s.clock.now += 1000
+          const second = await bidOk(s, room.roomId, gosha.key, offer.id, 120)
+          s.clock.now += 1000
+          const third = await bidOk(s, room.roomId, vera.key, offer.id, 140)
+          expect(third.offer).toMatchObject({ takerAmount: 140, odds: { a: 300, b: 140 } })
+          const bids = [first.bid, second.bid, third.bid].map(({ id, at, by, amount }) => ({ id, at, by, amount }))
+          for (const key of [room.key, borya.key, vera.key, gosha.key]) {
+            expect(await viewOf(s, room.roomId, key, offer.id)).toMatchObject({
+              status: 'open',
+              takerAmount: 140,
+              bidding: { bids, best: bids[2], endsAt: closesAt, result: null },
+            })
+          }
+          // Повтор встречного с тем же номером — тот же ответ без записи (условия — нынешние); другая сумма или
+          // другой участник — 409
+          expect((await ok<BidOfferResponse>(bid(s, room.roomId, vera.key, offer.id, 100, requestId))).bid).toEqual(first.bid)
+          await refused(bid(s, room.roomId, vera.key, offer.id, 200, requestId), 409, REQUEST_USED)
+          await refused(bid(s, room.roomId, gosha.key, offer.id, 100, requestId), 409, REQUEST_USED)
+          expect(await offerEntries(s, room.roomId)).toEqual(['offer.created', 'offer.created', 'offer.bid', 'offer.bid', 'offer.bid'])
+        })
+
+        it('продление: встречное на последних 2 минутах — конец через 2 минуты после него, не дальше исходного конца + 30 минут', async () => {
+          const s = await server()
+          const { room, borya, vera, gosha } = await room4(s)
+          const { offer } = await newOffer(s, room.roomId, borya.key, auctionForm(s))
+          const closesAt = offer.closesAt
+          const latestEnd = closesAt + AUCTION_EXTEND_MAX
+          const endsAt = async () => (await viewOf(s, room.roomId, gosha.key, offer.id))?.bidding?.endsAt
+          // За 5 минут до конца — без продления
+          s.clock.now = closesAt - 5 * MINUTE
+          await bidOk(s, room.roomId, vera.key, offer.id, 100)
+          expect(await endsAt()).toBe(closesAt)
+          // За минуту — конец через 2 минуты после встречного
+          s.clock.now = closesAt - MINUTE
+          await bidOk(s, room.roomId, gosha.key, offer.id, 120)
+          expect(await endsAt()).toBe(closesAt + MINUTE)
+          // После исходного конца, но до продлённого — встречное действует и продлевает ещё
+          s.clock.now = closesAt + 30 * 1000
+          await bidOk(s, room.roomId, vera.key, offer.id, 140)
+          expect(await endsAt()).toBe(closesAt + 30 * 1000 + AUCTION_EXTEND)
+          // Перебивают за секунду до конца — до предела
+          let amount = 140
+          let end = (await endsAt()) as number
+          const who = [gosha, vera]
+          for (let i = 0; end < latestEnd; i++) {
+            s.clock.now = end - 1000
+            amount += 20
+            await bidOk(s, room.roomId, who[i % 2].key, offer.id, amount)
+            end = (await endsAt()) as number
+            expect(end).toBe(Math.min(latestEnd, s.clock.now + AUCTION_EXTEND))
+          }
+          expect(end).toBe(latestEnd)
+          // На пределе — дальше не продлевается; в миг конца встречное уже не действует
+          s.clock.now = latestEnd - 1000
+          await bidOk(s, room.roomId, gosha.key, offer.id, amount + 20)
+          expect(await endsAt()).toBe(latestEnd)
+          s.clock.now = latestEnd
+          await refused(bid(s, room.roomId, vera.key, offer.id, amount + 40), 409, AUCTION_OVER)
+          expect(await viewOf(s, room.roomId, borya.key, offer.id)).toMatchObject({
+            status: 'accepted',
+            accepted: { by: gosha.memberId, at: latestEnd },
+            takerAmount: amount + 20,
+            bidding: { endsAt: latestEnd, best: { by: gosha.memberId, amount: amount + 20 }, result: { how: 'end', at: latestEnd } },
+          })
+        })
+
+        it('«принять сейчас»: только автор и только при встречных; лучшее принято, торг закончен; повтор — тот же ответ', async () => {
+          const s = await server()
+          const { room, borya, vera, gosha } = await room4(s)
+          const { offer } = await newOffer(s, room.roomId, borya.key, auctionForm(s))
+          await refused(take(s, room.roomId, borya.key, offer.id), 409, NO_BIDS)
+          s.clock.now += 1000
+          await bidOk(s, room.roomId, vera.key, offer.id, 100)
+          s.clock.now += 1000
+          const best = await bidOk(s, room.roomId, gosha.key, offer.id, 150)
+          await refused(take(s, room.roomId, vera.key, offer.id), 403, ONLY_AUTHOR_TAKES)
+          await refused(take(s, room.roomId, room.key, offer.id), 403, ONLY_AUTHOR_TAKES)
+          s.clock.now += 1000
+          const requestId = ulid(s.clock.now)
+          const taken = await ok<TakeBidResponse>(take(s, room.roomId, borya.key, offer.id, requestId))
+          expect(isTakeBidResponse(taken)).toBe(true)
+          const at = s.clock.now
+          expect(taken).toEqual({ v: PROTOCOL_VERSION, taken: { id: expect.any(String), at, by: borya.memberId, offer: offer.id, bid: best.bid.id }, offer: { ...offer, takerAmount: 150, odds: { a: 300, b: 150 } } })
+          expect((await readLog(s.storage(room.roomId))).at(-1)).toMatchObject({ type: 'offer.bid-accepted', memberId: borya.memberId, offer: offer.id, requestId })
+          for (const key of [room.key, vera.key, gosha.key]) {
+            expect(await viewOf(s, room.roomId, key, offer.id)).toMatchObject({
+              status: 'accepted',
+              accepted: { by: gosha.memberId, at },
+              takerAmount: 150,
+              bidding: { result: { how: 'now', at, bid: best.bid.id } },
+              outcome: { phase: 'marking', marks: { author: null, taker: null } },
+            })
+          }
+          // Торг закончен: встречное, второе «принять сейчас», отзыв — отказ
+          await refused(bid(s, room.roomId, vera.key, offer.id, 300), 409, AUCTION_OVER)
+          await refused(take(s, room.roomId, borya.key, offer.id), 409, AUCTION_OVER)
+          await refused(offerAct(s, room.roomId, borya.key, offer.id, 'revoke'), 409, ACCEPTED_NO_WITHDRAW)
+          // Повтор — тот же ответ и после конца торга; тот же номер у другого — 409
+          s.clock.now = offer.closesAt + HOUR
+          expect(await ok(take(s, room.roomId, borya.key, offer.id, requestId))).toEqual(taken)
+          await refused(take(s, room.roomId, vera.key, offer.id, requestId), 409, REQUEST_USED)
+          await refused(bid(s, room.roomId, vera.key, offer.id, 300, requestId), 409, REQUEST_USED)
+          expect(await offerEntries(s, room.roomId)).toEqual(['offer.created', 'offer.bid', 'offer.bid', 'offer.bid-accepted'])
+        })
+
+        it('конец без встречных — «не состоялось»: записи нет, торговаться и принимать нечего; без встречных автор отзывает', async () => {
+          const s = await server()
+          const { room, borya, vera, gosha } = await room4(s)
+          const { offer } = await newOffer(s, room.roomId, borya.key, auctionForm(s))
+          s.clock.now = offer.closesAt - 1
+          expect((await viewOf(s, room.roomId, gosha.key, offer.id))?.status).toBe('open')
+          s.clock.now = offer.closesAt
+          expect(await viewOf(s, room.roomId, gosha.key, offer.id)).toMatchObject({
+            status: 'failed',
+            accepted: null,
+            outcome: null,
+            takerAmount: 100,
+            bidding: { bids: [], best: null, endsAt: offer.closesAt, result: { how: 'failed', at: offer.closesAt } },
+          })
+          await refused(bid(s, room.roomId, vera.key, offer.id, 100), 409, AUCTION_OVER)
+          await refused(take(s, room.roomId, borya.key, offer.id), 409, AUCTION_OVER)
+          await refused(offerAct(s, room.roomId, vera.key, offer.id, 'mark', { winner: 'author' }), 409, MARK_EARLY)
+          // В расчёте торга нет: никто никому не должен
+          const state = await ok<RoomStateResponse>(get(s, room.roomId, borya.key))
+          expect(state.settlement?.members.every((m) => m.total.amount === 0 && m.inPlay.amount === 0)).toBe(true)
+          // Другой торг без встречных автор отзывает
+          const other = await newOffer(s, room.roomId, borya.key, auctionForm(s))
+          await ok(offerAct(s, room.roomId, borya.key, other.offer.id, 'revoke'))
+          expect((await viewOf(s, room.roomId, gosha.key, other.offer.id))?.status).toBe('withdrawn')
+          await refused(bid(s, room.roomId, vera.key, other.offer.id, 100), 409, WITHDRAWN)
+          expect(await offerEntries(s, room.roomId)).toEqual(['offer.created', 'offer.created', 'offer.revoked'])
+        })
+
+        it('конец со встречным — пари принято лучшим без записи; дальше обычное пари: отметки, гарант, расчёт', async () => {
+          const s = await server()
+          const { room, borya, vera, gosha } = await room4(s)
+          const { offer } = await newOffer(s, room.roomId, borya.key, auctionForm(s))
+          s.clock.now += 1000
+          const best = await bidOk(s, room.roomId, vera.key, offer.id, 100)
+          s.clock.now = offer.closesAt
+          expect(await viewOf(s, room.roomId, gosha.key, offer.id)).toMatchObject({
+            status: 'accepted',
+            accepted: { by: vera.memberId, at: offer.closesAt },
+            takerAmount: 100,
+            bidding: { result: { how: 'end', at: offer.closesAt, bid: best.bid.id } },
+            outcome: { phase: 'marking', guarantorId: room.memberId },
+          })
+          // Конец торга записи не даёт
+          expect(await offerEntries(s, room.roomId)).toEqual(['offer.created', 'offer.bid'])
+          // Стороны — Боря и Вера; Гоша не сторона, Аня — гарант
+          await refused(offerAct(s, room.roomId, gosha.key, offer.id, 'mark', { winner: 'author' }), 403, NOT_SIDE)
+          await refused(offerAct(s, room.roomId, room.key, offer.id, 'mark', { winner: 'author' }), 403, GUARANTOR_MARKS)
+          await refused(offerAct(s, room.roomId, borya.key, offer.id, 'revoke'), 409, ACCEPTED_NO_WITHDRAW)
+          await ok(offerAct(s, room.roomId, borya.key, offer.id, 'mark', { winner: 'author' }))
+          await ok(offerAct(s, room.roomId, vera.key, offer.id, 'mark', { winner: 'taker' }))
+          // Разошлись — с «исход к» решает гарант: прав соперник; окончательно через 7 дней
+          s.clock.now = offer.expectedAt
+          await ok(offerAct(s, room.roomId, room.key, offer.id, 'decide', { winner: 'taker' }))
+          s.clock.now += FINAL_TIME
+          const view = await viewOf(s, room.roomId, borya.key, offer.id)
+          expect(view?.outcome).toMatchObject({ phase: 'final', approved: { winner: 'taker', how: 'guarantor', by: room.memberId } })
+          // Вера забирает сумму автора: Боря −300, Вера +300
+          const state = await ok<RoomStateResponse>(get(s, room.roomId, gosha.key))
+          const total = (id: string) => state.settlement?.members.find((m) => m.memberId === id)?.total.amount
+          expect([total(borya.memberId), total(vera.memberId), total(gosha.memberId)]).toEqual([-300, 300, 0])
+        })
+
+        it('торг без гаранта (Р-36): конец со встречным, стороны молчат — суд собран сам, соперник в нём не сидит', async () => {
+          const s = await server()
+          const { room, borya, vera, gosha } = await room4(s)
+          const { offer } = await newOffer(s, room.roomId, borya.key, auctionForm(s, { noGuarantor: true }))
+          expect(offer.guarantorId).toBeNull()
+          s.clock.now += 1000
+          await bidOk(s, room.roomId, vera.key, offer.id, 100)
+          // Ни одной записи после конца торга; стороны молчат — с «исход к» + срок молчания суд пора
+          s.clock.now = offer.expectedAt + SIDE_SILENCE
+          expect((await viewOf(s, room.roomId, gosha.key, offer.id))?.outcome?.phase).toBe('court')
+          const drawn = (await readLog(s.storage(room.roomId))).at(-1)
+          expect(drawn).toMatchObject({ type: 'court.drawn', target: offer.id, candidates: [room.memberId, gosha.memberId] })
+        })
+
+        it('отказы: форма торга — 400; автор, гарант, предмет — 403; меньше старта и шага — 409; кривая сумма — 400; обычные адреса пари к торгу — 409', async () => {
+          const s = await server()
+          const { room, borya, vera, gosha } = await room4(s)
+          const now = s.clock.now
+          const cases: [Record<string, unknown>, string][] = [
+            [{ auction: { start: 0 } }, BAD_START],
+            [{ auction: { start: 'сто' } }, BAD_START],
+            [{ auction: { start: 100, step: 0 } }, BAD_STEP],
+            [{ to: vera.memberId }, AUCTION_ADDRESSED],
+            [{ closesAt: now + 10 * MINUTE - 1 }, AUCTION_SHORT],
+            [{ closesAt: now + 3 * 24 * HOUR + 1, expectedAt: now + 5 * 24 * HOUR }, AUCTION_LONG],
+            [{ expectedAt: now + HOUR + AUCTION_EXTEND_MAX - 1 }, AUCTION_EXPECTED],
+          ]
+          for (const [change, error] of cases) await refused(send(s, room.roomId, 'offers', auctionForm(s, change), borya.key), 400, error)
+          expect(await offerEntries(s, room.roomId)).toEqual([])
+          // Торг на 10 минут и «исход к» ровно через 30 минут после конца — можно
+          await newOffer(s, room.roomId, borya.key, auctionForm(s, { closesAt: now + 10 * MINUTE, expectedAt: now + 40 * MINUTE }))
+
+          const { offer } = await newOffer(s, room.roomId, borya.key, auctionForm(s))
+          await refused(bid(s, room.roomId, borya.key, offer.id, 100), 403, OWN_BID)
+          await refused(bid(s, room.roomId, room.key, offer.id, 100), 403, GUARANTOR_BIDS)
+          for (const amount of [0, -5, 1.5, 'сто', undefined]) await refused(bid(s, room.roomId, vera.key, offer.id, amount), 400, BAD_BID)
+          await refused(bid(s, room.roomId, vera.key, offer.id, Number.MAX_SAFE_INTEGER), 400, BANK_TOO_BIG)
+          await refused(bid(s, room.roomId, vera.key, offer.id, 99), 409, BID_LOW)
+          await bidOk(s, room.roomId, vera.key, offer.id, 100)
+          await refused(bid(s, room.roomId, gosha.key, offer.id, 119), 409, BID_STEP)
+          // Свою перебить можно
+          await bidOk(s, room.roomId, vera.key, offer.id, 120)
+          // Обычные адреса пари к торгу — отказ правил торга
+          await refused(offerAct(s, room.roomId, gosha.key, offer.id, 'accept'), 409, AUCTION_ACCEPT)
+          await refused(offerAct(s, room.roomId, gosha.key, offer.id, 'counter', { closesAt: now + HOUR }), 409, AUCTION_COUNTER)
+          await refused(offerAct(s, room.roomId, borya.key, offer.id, 'revoke'), 409, AUCTION_HAS_BIDS)
+          // К обычному пари торга нет; нет пари, без ключа, без тела
+          const plain = await newOffer(s, room.roomId, borya.key, offerForm(s))
+          await refused(bid(s, room.roomId, vera.key, plain.offer.id, 100), 409, NOT_AUCTION)
+          await refused(take(s, room.roomId, borya.key, plain.offer.id), 409, NOT_AUCTION)
+          await refused(bid(s, room.roomId, vera.key, ulid(), 100), 404, NO_OFFER)
+          await refused(take(s, room.roomId, borya.key, ulid()), 404, NO_OFFER)
+          await refused(bid(s, room.roomId, undefined, offer.id, 100), 403, NEED_KEY)
+          await refused(bid(s, room.roomId, vera.key, offer.id, 140, 'abc'), 400, BAD_REQUEST_ID)
+          expect((await s.send(`/rooms/${room.roomId}/offers/${offer.id}/bid/accept`, { method: 'POST', headers: { Authorization: 'Bearer ' + borya.key } })).status).toBe(200)
+          // Предмет спора (Р-26) торгуется, только если автор — за «не сбудется»
+          const about = await newOffer(s, room.roomId, borya.key, auctionForm(s, { subject: gosha.memberId }))
+          await refused(bid(s, room.roomId, gosha.key, about.offer.id, 100), 403, SUBJECT_BIDS)
+          const against = await newOffer(s, room.roomId, borya.key, auctionForm(s, { subject: gosha.memberId, side: 'no' }))
+          await bidOk(s, room.roomId, gosha.key, against.offer.id, 100)
+          expect(await offerEntries(s, room.roomId)).toEqual([
+            'offer.created',
+            'offer.created',
+            'offer.bid',
+            'offer.bid',
+            'offer.created',
+            'offer.bid-accepted',
+            'offer.created',
+            'offer.created',
+            'offer.bid',
+          ])
+        })
+      })
+
       describe('исход пари (Р-23)', () => {
         const DAY = 24 * HOUR
 
@@ -3742,7 +4070,7 @@ export function roomsSuite(
         const borya = await member(s, room, 'Боря')
         const vera = await member(s, room, 'Вера')
         const gosha = await member(s, room, 'Гоша')
-        await member(s, room, 'Даша')
+        const dasha = await member(s, room, 'Даша')
         const id = room.roomId
         // Событие: Боря — 300 на «Да», Вера — 100 на «Нет»
         const eventForm = { v: PROTOCOL_VERSION, condition: 'Вася пробежит 10 км', check: 'Скрин', closesAt: s.clock.now + HOUR, expectedAt: s.clock.now + 2 * HOUR }
@@ -3753,6 +4081,12 @@ export function roomsSuite(
         const offerForm = { v: PROTOCOL_VERSION, condition: 'Вася бросит курить', check: 'Скажет сам', odds: { a: 3, b: 1 }, amount: 300, closesAt: s.clock.now + HOUR, expectedAt: s.clock.now + DAY }
         const { offer } = await ok<CreateOfferResponse>(send(s, id, 'offers', offerForm, gosha.key))
         await ok(send(s, id, `offers/${offer.id}/accept`, { v: PROTOCOL_VERSION }, vera.key))
+        // Торг Даши (Р-37): Боря — 100, Гоша перебил — 150, к концу принято само; второй торг без встречных
+        const auctionForm = { ...offerForm, odds: undefined, auction: { start: 100 }, closesAt: s.clock.now + HOUR, expectedAt: s.clock.now + DAY }
+        const auction = await ok<CreateOfferResponse>(send(s, id, 'offers', auctionForm, dasha.key))
+        await ok(send(s, id, `offers/${auction.offer.id}/bid`, { v: PROTOCOL_VERSION, amount: 100 }, borya.key))
+        await ok(send(s, id, `offers/${auction.offer.id}/bid`, { v: PROTOCOL_VERSION, amount: 150 }, gosha.key))
+        await ok(send(s, id, 'offers', auctionForm, dasha.key))
         // Исход: Боря предложил «Да», через сутки утверждён — Вера подала апелляцию, суд собран
         s.clock.now = event.closesAt
         await ok(send(s, id, `events/${event.id}/propose`, { v: PROTOCOL_VERSION, outcome: '1' }, borya.key))
@@ -3767,6 +4101,8 @@ export function roomsSuite(
         const before = await states(s)
         expect(before[0].events[0].outcome?.appeal).toBeTruthy()
         expect(before[0].offers?.[0].status).toBe('accepted')
+        expect(before[0].offers?.map((o) => o.status)).toEqual(['accepted', 'accepted', 'failed'])
+        expect(before[0].offers?.[1].bidding).toMatchObject({ result: { how: 'end' }, best: { by: gosha.memberId, amount: 150 } })
         expect(before[0].settlement?.transfers).toHaveLength(1)
         const copy = await fullCopy(s, id)
         // Туда: на другой обёртке — тот же ответ тем же ключам, та же копия

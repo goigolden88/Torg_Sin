@@ -9,6 +9,7 @@ import {
 } from '../../src/rules/protocol'
 import { checkAmount, checkClarification, checkEventInput, checkObjection, checkReason, eventView } from '../../src/rules/event'
 import {
+  BAD_BID,
   BAD_GUARANTOR,
   BAD_MARK,
   BAD_ODDS,
@@ -156,8 +157,8 @@ export async function handle(request: Request, deps: RoomsDeps): Promise<Respons
     const r = await eventAction(ev[1], ev[2], ev[3], request, deps)
     return json(r.status, r.body)
   }
-  // Пари (Р-22; исход — Р-23; апелляция и суд — Р-25): /rooms/<номер>/offers и /rooms/<номер>/offers/<пари>/<действие>
-  const of = /^\/rooms\/([^/]+)\/offers(?:\/([^/]+)\/(accept|revoke|counter|mark|decide|decline|nominate|appeal|appeal\/join|judge|replace))?$/.exec(path)
+  // Пари (Р-22; исход — Р-23; апелляция и суд — Р-25; торг — Р-37): /rooms/<номер>/offers и /rooms/<номер>/offers/<пари>/<действие>
+  const of = /^\/rooms\/([^/]+)\/offers(?:\/([^/]+)\/(accept|revoke|counter|bid|bid\/accept|mark|decide|decline|nominate|appeal|appeal\/join|judge|replace))?$/.exec(path)
   if (of && request.method === 'POST') {
     const r = await offerAction(of[1], of[2], of[3], request, deps)
     return json(r.status, r.body)
@@ -253,9 +254,11 @@ function settleModeOf(x: unknown): SettleMode | null {
 }
 
 // POST /rooms/<номер>/offers { condition, check, side?, odds: { a, b }, amount, to?, closesAt,
-// expectedAt, guarantor?, noGuarantor?, subject?, requestId? } — предложить; …/offers/<пари>/accept |
-// revoke { requestId? }; …/offers/<пари>/counter { odds?, amount?, closesAt, guarantor?, noGuarantor?,
-// requestId? } — встречное (noGuarantor — без гаранта, Р-36); исход (Р-23):
+// expectedAt, guarantor?, noGuarantor?, subject?, requestId? } — предложить; торг (Р-37) — auction
+// { start, step? } вместо odds; …/offers/<пари>/accept | revoke { requestId? }; …/offers/<пари>/counter
+// { odds?, amount?, closesAt, guarantor?, noGuarantor?, requestId? } — встречное (noGuarantor — без
+// гаранта, Р-36); торг: …/bid { amount, requestId? } — встречное в торге, …/bid/accept { requestId? } —
+// «принять сейчас»; исход (Р-23):
 // …/mark | decide { winner: "author" | "taker", requestId? }, …/decline { requestId? },
 // …/nominate { guarantor, requestId? }; апелляция и суд (Р-25) — courtAction
 async function offerAction(
@@ -269,7 +272,7 @@ async function offerAction(
   const raw: unknown = await request.json().catch(() => null)
   return withKey(roomId, authorization, async (keyHash) => {
     if (offerId !== undefined && !ULID_PATTERN.test(offerId)) return failure(404, NO_OFFER)
-    const read = readBody(raw, action === 'accept' || action === 'revoke' || action === 'decline' || action === 'appeal/join')
+    const read = readBody(raw, action === 'accept' || action === 'revoke' || action === 'decline' || action === 'appeal/join' || action === 'bid/accept')
     if (!read.ok) return read.reply
     const b = read.body
     if (offerId !== undefined && action !== undefined) {
@@ -290,6 +293,7 @@ async function offerAction(
         guarantor: b.guarantor,
         noGuarantor: b.noGuarantor,
         subject: b.subject,
+        auction: b.auction,
       })
       if (!checked.ok) return failure(400, checked.error)
       if (!requestId) return failure(400, BAD_REQUEST_ID)
@@ -331,6 +335,12 @@ async function offerAction(
         ? reply(await deps.act(roomId, { type: 'markOffer', ...a }))
         : reply(await deps.act(roomId, { type: 'decideOffer', ...a }))
     }
+    if (action === 'bid') {
+      // Сумма — целое > 0 (как в checkBid); старт, шаг и конец торга — в комнате
+      if (!Number.isSafeInteger(b.amount) || (b.amount as number) < 1) return failure(400, BAD_BID)
+      if (!requestId) return failure(400, BAD_REQUEST_ID)
+      return reply(await deps.act(roomId, { type: 'bidOffer', keyHash, offer: offerId, amount: b.amount as number, requestId }))
+    }
     if (action === 'nominate') {
       if (typeof b.guarantor !== 'string' || !b.guarantor) return failure(400, BAD_GUARANTOR)
       if (!requestId) return failure(400, BAD_REQUEST_ID)
@@ -339,6 +349,7 @@ async function offerAction(
     if (!requestId) return failure(400, BAD_REQUEST_ID)
     const a = { keyHash, offer: offerId, requestId }
     if (action === 'decline') return reply(await deps.act(roomId, { type: 'declineOffer', ...a }))
+    if (action === 'bid/accept') return reply(await deps.act(roomId, { type: 'takeBid', ...a }))
     return action === 'accept'
       ? reply(await deps.act(roomId, { type: 'acceptOffer', ...a }))
       : reply(await deps.act(roomId, { type: 'revokeOffer', ...a }))
