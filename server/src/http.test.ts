@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { BAD_LOT_VERDICT } from '../../src/rules/appeal'
 import { BAD_LOT_BID, BAD_LOT_START } from '../../src/rules/lot'
+import { BAD_STAKE, NO_OPTION } from '../../src/rules/choice'
 import { BAD_BID, BAD_START } from '../../src/rules/offer'
 import { BAD_PACE, FAST_TIMES } from '../../src/rules/pace'
 import { isHealth, PROTOCOL_VERSION } from '../../src/rules/protocol'
@@ -133,6 +134,48 @@ describe('лот (Р-38): POST …/lots и …/lots/<лот>/<действие>'
     expect(actions.at(-1)).toEqual({ type: 'judgeCourt', keyHash: expect.any(String), kind: 'lot', target: lotId, vote: { verdict: 'delivered' }, requestId: expect.any(String) })
     expect((await handle(request(`lots/${lotId}/appeal`, { v: PROTOCOL_VERSION, reason: 'Хочу' }), deps)).status).toBe(404)
     expect(actions).toHaveLength(6)
+  })
+})
+
+describe('выбор (Р-39): POST …/choices и …/choices/<выбор>/<действие>', () => {
+  const roomId = ulid(0)
+  const choiceId = ulid(1)
+  const request = (path: string, body?: unknown) =>
+    new Request(`https://x/rooms/${roomId}/${path}`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer phone-key' },
+      ...(body !== undefined && { body: JSON.stringify(body) }),
+    })
+
+  it('завести: форма — как прислана, её проверяет комната (нужны участники) — createChoice', async () => {
+    const { deps, actions } = fakeRooms()
+    const form = { question: 'Куда едем?', options: ['Дача', 'Озеро'], optionsUntil: 10 ** 6, closesAt: 10 ** 7 }
+    await handle(request('choices', { v: PROTOCOL_VERSION, ...form }), deps)
+    expect(actions).toEqual([
+      { type: 'createChoice', keyHash: expect.any(String), form: { ...form, recipient: undefined, cashbox: undefined }, requestId: expect.any(String) },
+    ])
+  })
+
+  it('вклад: кривая сумма или вариант — 400 до комнаты; годный — stakeChoice; вариант — addChoiceOption', async () => {
+    const { deps, actions } = fakeRooms()
+    for (const amount of [0, -1, 2.5, '100', null]) {
+      const r = await handle(request(`choices/${choiceId}/stake`, { v: PROTOCOL_VERSION, option: '1', amount }), deps)
+      expect(r.status).toBe(400)
+      expect(await r.json()).toEqual({ v: PROTOCOL_VERSION, error: BAD_STAKE })
+    }
+    const r = await handle(request(`choices/${choiceId}/stake`, { v: PROTOCOL_VERSION, amount: 100 }), deps)
+    expect(await r.json()).toEqual({ v: PROTOCOL_VERSION, error: NO_OPTION })
+    expect(actions).toEqual([])
+    await handle(request(`choices/${choiceId}/stake`, { v: PROTOCOL_VERSION, option: '2', amount: 300 }), deps)
+    await handle(request(`choices/${choiceId}/option`, { v: PROTOCOL_VERSION, title: ' Лес ' }), deps)
+    expect(actions).toEqual([
+      { type: 'stakeChoice', keyHash: expect.any(String), choice: choiceId, option: '2', amount: 300, requestId: expect.any(String) },
+      { type: 'addChoiceOption', keyHash: expect.any(String), choice: choiceId, title: ' Лес ', requestId: expect.any(String) },
+    ])
+    // Жребия адресом нет — его пишет сервер сам; кривой номер выбора — 404 до комнаты
+    expect((await handle(request(`choices/${choiceId}/draw`, { v: PROTOCOL_VERSION }), deps)).status).toBe(404)
+    expect((await handle(request('choices/не-номер/stake', { v: PROTOCOL_VERSION, option: '1', amount: 1 }), deps)).status).toBe(404)
+    expect(actions).toHaveLength(2)
   })
 })
 

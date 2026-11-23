@@ -47,6 +47,31 @@ describe('checkBackup', () => {
     expect(checkBackup({ ...member, log })).toEqual({ ok: true, backup: { ...member, log } })
   })
 
+  it('выбор (Р-39): записи choice.created, choice.option, choice.stake и жребий choice.drawn — годные, как есть', () => {
+    const log: LogEntry[] = [
+      created,
+      host,
+      bet,
+      {
+        id: 'C1',
+        at: 400,
+        memberId: 'M1',
+        type: 'choice.created',
+        question: 'Куда едем?',
+        options: ['Дача', 'Озеро'],
+        recipient: 'M1',
+        cashbox: true,
+        optionsUntil: 1000,
+        closesAt: 2000,
+        requestId: 'Q2',
+      },
+      { id: 'C2', at: 500, memberId: 'M1', type: 'choice.option', choice: 'C1', title: 'Лес', requestId: 'Q3' },
+      { id: 'C3', at: 1000, memberId: 'M1', type: 'choice.stake', choice: 'C1', option: '1', amount: 300, requestId: 'Q4' },
+      { id: 'C4', at: 4000, memberId: 'M1', type: 'choice.drawn', choice: 'C1', seed: 'ab', options: ['1', 'C2'] },
+    ]
+    expect(checkBackup({ ...full, log })).toEqual({ ok: true, backup: { ...full, log } })
+  })
+
   it('лишние поля сверху (версия протокола ответа) в копию не попадают', () => {
     expect(checkBackup({ v: 6, ...full })).toEqual({ ok: true, backup: full })
   })

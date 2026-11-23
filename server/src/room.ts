@@ -123,11 +123,15 @@ import {
 import * as appeal from '../../src/rules/appeal'
 import type { CourtCase } from '../../src/rules/court'
 import * as lot from '../../src/rules/lot'
+import * as choice from '../../src/rules/choice'
 import type {
   Agreement,
   AppealResponse,
   BetInfo,
   Cancellation,
+  ChoiceOptionAct,
+  ChoiceStakeAct,
+  ChoiceView,
   Clarification,
   CourtAct,
   CourtVerdict,
@@ -216,6 +220,8 @@ export { NO_OFFER }
 export const NO_COURT = 'Суда по этому спору нет'
 // Лот (Р-38): прочие отказы — тексты правил lot.ts
 export const NO_LOT = 'Нет такого лота'
+// Выбор (Р-39): прочие отказы — тексты правил choice.ts
+export const NO_CHOICE = 'Нет такого выбора'
 
 // Ссылка для другого устройства живёт сутки
 export const DEVICE_LINK_TTL = 24 * 60 * 60 * 1000
@@ -321,7 +327,8 @@ export type Failure = { ok: false; status: 400 | 403 | 404 | 409; error: string;
 
 // events, offers и lots — события, пари и лоты (Р-38) комнаты из журнала, cases — дела суда по ним (Р-25;
 // статус на время ответа считает http.ts); transfers — записи о переводах, settleMode — режим «кто кому»
-// (Р-32; свод на время ответа считает http.ts); pace — нынешний темп комнаты и его сроки (Р-35, logPace)
+// (Р-32; свод на время ответа считает http.ts); pace — нынешний темп комнаты и его сроки (Р-35, logPace);
+// choices — выборы комнаты (Р-39; статус и итог на время ответа считает http.ts)
 export type StateResult =
   | {
       ok: true
@@ -330,6 +337,7 @@ export type StateResult =
       events: EventState[]
       offers: OfferState[]
       lots: lot.LotState[]
+      choices: choice.ChoiceState[]
       cases: CourtCase[]
       transfers: settle.TransferRecord[]
       settleMode: settle.SettleMode
@@ -363,11 +371,11 @@ async function hostCaller(storage: RoomStorage, keyHash: string): Promise<Caller
   return c
 }
 
-// Состояние комнаты для владельца ключа (по хешу ключа). Сначала — суд по «ждёт суда», если пора
-// (drawDueCourts): чтение комнаты тоже может дописать запись, один раз на суд. seed — источник зёрен
-// жребия (тесты подставляют своё)
+// Состояние комнаты для владельца ключа (по хешу ключа). Сначала — суд по «ждёт суда» и жребий выбора
+// при ничьей, если пора (drawDue): чтение комнаты тоже может дописать запись, один раз на суд и на
+// выбор. seed — источник зёрен жребия (тесты подставляют своё)
 export async function roomState(storage: RoomStorage, keyHash: string, now: number, seed: () => string = randomSeed): Promise<StateResult> {
-  await drawDueCourts(storage, now, seed)
+  await drawDue(storage, now, seed)
   const c = await caller(storage, keyHash)
   if (!c.ok) return c
   const events = roomEvents(c.log)
@@ -380,6 +388,7 @@ export async function roomState(storage: RoomStorage, keyHash: string, now: numb
     events,
     offers,
     lots,
+    choices: choice.logChoices(c.log),
     cases: appeal.logAppeals(c.log, { events, offers, lots }),
     transfers: logTransfers(c.log),
     settleMode: logSettleMode(c.log),
@@ -418,6 +427,29 @@ export async function drawDueCourts(storage: RoomStorage, now: number, seed: () 
     entries.push({ id: ulid(now), at: now, memberId: state.hostId, type: 'court.drawn', target, seed: seed(), candidates })
   }
   if (entries.length > 0) await append(storage, entries)
+}
+
+// Жребий выбора при ничьей (Р-39, зерно сервера — как у жребия суда, Р-25) бросается сам — будильника
+// нет: при первом запросе к комнате после конца вкладов со всеми продлениями, если в конце ничья, —
+// запись choice.drawn (зерно, равные варианты на этот миг; автор — ведущий). Жребий уже брошен — второй
+// записи нет (choiceDrawOptions пусто); победителя по зерну считает правило drawChoice
+export async function drawDueChoices(storage: RoomStorage, now: number, seed: () => string): Promise<void> {
+  const log = await readLog(storage)
+  const state = foldLog(log)
+  if (!state) return
+  const entries: LogEntry[] = []
+  for (const c of choice.logChoices(log)) {
+    const options = choice.choiceDrawOptions(c, now)
+    if (options.length === 0) continue
+    entries.push({ id: ulid(now), at: now, memberId: state.hostId, type: 'choice.drawn', choice: c.id, seed: seed(), options })
+  }
+  if (entries.length > 0) await append(storage, entries)
+}
+
+// Всё, что сервер дописывает сам перед запросом: суд по «ждёт суда», затем жребий выбора
+async function drawDue(storage: RoomStorage, now: number, seed: () => string): Promise<void> {
+  await drawDueCourts(storage, now, seed)
+  await drawDueChoices(storage, now, seed)
 }
 
 // --- Копия комнаты (этап 6, Р-02; формат и проверка — src/rules/backup.ts)
@@ -524,6 +556,11 @@ export type RoomAction =
   | { type: 'createLot'; keyHash: string; input: lot.LotInput; requestId: string }
   | { type: 'bidLot'; keyHash: string; lot: string; amount: number; requestId: string }
   | { type: 'markLot'; keyHash: string; lot: string; mark: LotMark; requestId: string }
+  // Выбор (Р-39): форма — как прислана (её и получателя проверяет checkChoiceInput здесь: нужны участники);
+  // сроки — по времени сервера. Вариант — название как прислано; вклад — в какой вариант, сколько
+  | { type: 'createChoice'; keyHash: string; form: ChoiceForm; requestId: string }
+  | { type: 'addChoiceOption'; keyHash: string; choice: string; title: unknown; requestId: string }
+  | { type: 'stakeChoice'; keyHash: string; choice: string; option: string; amount: number; requestId: string }
   // Апелляция и суд (Р-25) у события-пул (kind: 'event') и пари ('offer'), суд по «Не получил» у лота
   // ('lot', Р-38; апелляции нет): правила — appeal.ts, на время сервера в момент запроса. Зерно жребия при
   // подаче — из источника seed у act
@@ -541,6 +578,9 @@ export type RoomAction =
   | { type: 'setPace'; keyHash: string; pace: pace.PaceInput; requestId: string }
 
 export type CourtKind = appeal.CourtTarget['kind']
+
+// Форма выбора из тела запроса: поля как присланы
+export type ChoiceForm = Parameters<typeof choice.checkChoiceInput>[0]
 
 export type JoinStatus = JoinRequest['status']
 
@@ -576,6 +616,9 @@ export type ActionValues = {
   createLot: { lot: LotView }
   bidLot: { bid: LotBidAct; lot: LotView }
   markLot: { marked: LotMarkAct; lot: LotView }
+  createChoice: { choice: ChoiceView }
+  addChoiceOption: { option: ChoiceOptionAct; choice: ChoiceView }
+  stakeChoice: { stake: ChoiceStakeAct; choice: ChoiceView }
   appealOutcome: { appeal: AppealResponse['appeal'] }
   joinAppeal: { joined: JoinAppealResponse['joined'] }
   judgeCourt: { voted: JudgeResponse['voted'] }
@@ -595,7 +638,7 @@ function ok<V>(value: V): { ok: true; value: V } {
 }
 
 // Одно действие комнаты; объект Room (и очередь Node-обёртки) вызывает их по одному. Сначала — суд по
-// «ждёт суда», если пора (drawDueCourts). seed — источник зёрен жребия (тесты подставляют своё)
+// «ждёт суда» и жребий выбора, если пора (drawDue). seed — источник зёрен жребия (тесты подставляют своё)
 export async function act<K extends ActionType>(
   storage: RoomStorage,
   action: Extract<RoomAction, { type: K }>,
@@ -603,7 +646,7 @@ export async function act<K extends ActionType>(
   seed: () => string = randomSeed,
 ): Promise<ActionResult<K>> {
   const a = action as RoomAction
-  await drawDueCourts(storage, now, seed)
+  await drawDue(storage, now, seed)
   let r: ActionResult
   switch (a.type) {
     case 'preview':
@@ -695,6 +738,15 @@ export async function act<K extends ActionType>(
       break
     case 'markLot':
       r = await markLot(storage, a, now)
+      break
+    case 'createChoice':
+      r = await createChoice(storage, a, now)
+      break
+    case 'addChoiceOption':
+      r = await addChoiceOption(storage, a, now)
+      break
+    case 'stakeChoice':
+      r = await stakeChoice(storage, a, now)
       break
     case 'appealOutcome':
       r = await appealOutcome(storage, a, now, seed)
@@ -1732,6 +1784,160 @@ async function markLot(
   return lotReply([...c.log, entry], l.id, now, { marked: lotMarkAct(entry, a.mark) })
 }
 
+// --- Выбор (Р-39). Правила — checkChoiceInput / checkChoiceTimes / checkChoiceOption / checkChoiceStake и
+// свёртка logChoices (choice.ts) на время сервера в момент запроса; конец с продлениями, победитель, итог
+// и долги — считаются, записи о них нет. Жребий при ничьей пишет drawDueChoices. Повтор с тем же номером
+// запроса — тот же ответ без новой записи (выбор — каким он сейчас); тот же номер у другого действия,
+// выбора, содержимого или от другого — 409
+
+type ChoiceCaller = Caller & { choices: choice.ChoiceState[]; room: choice.ChoiceRoom; again: LogEntry | undefined }
+
+async function choiceCaller(storage: RoomStorage, keyHash: string, requestId: string): Promise<ChoiceCaller | Failure> {
+  const c = await caller(storage, keyHash)
+  if (!c.ok) return c
+  const room = { hostId: c.state.hostId, members: c.state.members.map((m) => m.id) }
+  return { ...c, choices: choice.logChoices(c.log), room, again: byRequest(c.log, requestId) }
+}
+
+// Отказ правил выбора: «не вам» — 403; кривое название, сумма или вариант — 400; «уже не та фаза» и
+// прочее состояние — 409 (вклады могли кончиться, вариант — появиться, пока телефон отправлял)
+const CHOICE_BAD: readonly string[] = [choice.NEED_OPTION, choice.LONG_OPTION, choice.BAD_STAKE, choice.NO_OPTION]
+
+function choiceRefusal(error: string): Failure {
+  if (error === choice.NOT_MEMBER) return fail(403, error)
+  return fail(CHOICE_BAD.includes(error) ? 400 : 409, error)
+}
+
+function choiceReply<V extends object>(
+  log: readonly LogEntry[],
+  id: string,
+  now: number,
+  value: V,
+): { ok: true; value: V & { choice: ChoiceView } } | Failure {
+  const c = choice.logChoices(log).find((x) => x.id === id)
+  return c ? ok({ ...value, choice: choice.choiceView(c, now) }) : fail(404, NO_CHOICE)
+}
+
+type ChoiceCreatedEntry = Extract<LogEntry, { type: 'choice.created' }>
+type ChoiceOptionEntry = Extract<LogEntry, { type: 'choice.option' }>
+type ChoiceStakeEntry = Extract<LogEntry, { type: 'choice.stake' }>
+
+function sameChoice(e: ChoiceCreatedEntry, x: choice.ChoiceInput): boolean {
+  return (
+    e.question === x.question &&
+    e.options.length === x.options.length &&
+    e.options.every((t, i) => t === x.options[i]) &&
+    e.recipient === x.recipient &&
+    e.cashbox === x.cashbox &&
+    e.optionsUntil === x.optionsUntil &&
+    e.closesAt === x.closesAt
+  )
+}
+
+// Завести выбор: любой участник — автор; форма и получатель — checkChoiceInput (400); «варианты до» — не
+// раньше чем через 10 минут, «вклады до» — через 10 минут после них и не позже 3 дней с создания по
+// времени сервера (400). Сроки постоянные (решение), не темпа: times в запись не идут
+async function createChoice(
+  storage: RoomStorage,
+  a: { keyHash: string; form: ChoiceForm; requestId: string },
+  now: number,
+): Promise<ActionResult<'createChoice'>> {
+  const c = await choiceCaller(storage, a.keyHash, a.requestId)
+  if (!c.ok) return c
+  const checked = choice.checkChoiceInput(a.form, c.room)
+  if (!checked.ok) return fail(400, checked.error)
+  const input = checked.value
+  if (c.again) {
+    const e = c.again
+    return e.type === 'choice.created' && e.memberId === c.me && sameChoice(e, input) ? choiceReply(c.log, e.id, now, {}) : fail(409, REQUEST_USED)
+  }
+  const late = choice.checkChoiceTimes(input, now)
+  if (late) return fail(400, late)
+  const entry: ChoiceCreatedEntry = {
+    id: ulid(now),
+    at: now,
+    memberId: c.me,
+    type: 'choice.created',
+    question: input.question,
+    options: [...input.options],
+    recipient: input.recipient,
+    cashbox: input.cashbox,
+    optionsUntil: input.optionsUntil,
+    closesAt: input.closesAt,
+    requestId: a.requestId,
+  }
+  await append(storage, [entry])
+  return choiceReply([...c.log, entry], entry.id, now, {})
+}
+
+function choiceOptionAct(e: ChoiceOptionEntry): ChoiceOptionAct {
+  return { id: e.id, at: e.at, by: e.memberId, choice: e.choice, title: e.title }
+}
+
+// Вариант: участник, до «варианты до», не больше 10, без повторов (без учёта регистра). Название — без
+// пробелов по краям; номер варианта — номер записи. Ответ — вариант и выбор после него
+async function addChoiceOption(
+  storage: RoomStorage,
+  a: { keyHash: string; choice: string; title: unknown; requestId: string },
+  now: number,
+): Promise<ActionResult<'addChoiceOption'>> {
+  const c = await choiceCaller(storage, a.keyHash, a.requestId)
+  if (!c.ok) return c
+  if (c.again) {
+    const e = c.again
+    const title = choice.checkOptionTitle(a.title)
+    return e.type === 'choice.option' && e.choice === a.choice && e.memberId === c.me && title.ok && e.title === title.value
+      ? choiceReply(c.log, a.choice, now, { option: choiceOptionAct(e) })
+      : fail(409, REQUEST_USED)
+  }
+  const found = c.choices.find((x) => x.id === a.choice)
+  if (!found) return fail(404, NO_CHOICE)
+  const refused = choice.checkChoiceOption(found, c.me, a.title, c.room, now)
+  if (refused) return choiceRefusal(refused)
+  const title = (choice.checkOptionTitle(a.title) as { ok: true; value: string }).value
+  const entry: ChoiceOptionEntry = { id: ulid(now), at: now, memberId: c.me, type: 'choice.option', choice: found.id, title, requestId: a.requestId }
+  await append(storage, [entry])
+  return choiceReply([...c.log, entry], found.id, now, { option: choiceOptionAct(entry) })
+}
+
+function choiceStakeAct(e: ChoiceStakeEntry): ChoiceStakeAct {
+  return { id: e.id, at: e.at, by: e.memberId, choice: e.choice, option: e.option, amount: e.amount }
+}
+
+// Вклад: участник, с «варианты до» до конца с продлениями, вариантов хотя бы два; первый вклад выбирает
+// вариант — дальше только в него. Вклад за 2 минуты до конца продлевает (правило свёртки). Не отзывается;
+// ответ — вклад и выбор после него
+async function stakeChoice(
+  storage: RoomStorage,
+  a: { keyHash: string; choice: string; option: string; amount: number; requestId: string },
+  now: number,
+): Promise<ActionResult<'stakeChoice'>> {
+  const c = await choiceCaller(storage, a.keyHash, a.requestId)
+  if (!c.ok) return c
+  if (c.again) {
+    const e = c.again
+    return e.type === 'choice.stake' && e.choice === a.choice && e.memberId === c.me && e.option === a.option && e.amount === a.amount
+      ? choiceReply(c.log, a.choice, now, { stake: choiceStakeAct(e) })
+      : fail(409, REQUEST_USED)
+  }
+  const found = c.choices.find((x) => x.id === a.choice)
+  if (!found) return fail(404, NO_CHOICE)
+  const refused = choice.checkChoiceStake(found, c.me, a.option, a.amount, c.room, now)
+  if (refused) return choiceRefusal(refused)
+  const entry: ChoiceStakeEntry = {
+    id: ulid(now),
+    at: now,
+    memberId: c.me,
+    type: 'choice.stake',
+    choice: found.id,
+    option: a.option,
+    amount: a.amount,
+    requestId: a.requestId,
+  }
+  await append(storage, [entry])
+  return choiceReply([...c.log, entry], found.id, now, { stake: choiceStakeAct(entry) })
+}
+
 // --- Апелляция и суд (Р-24, Р-25). Правила — checkAppeal / checkJoin / checkCourtVote / checkReplace
 // (appeal.ts) на время сервера в момент запроса, на том же деле суда, что даёт свёртка журнала
 // (logAppeals): сервер и свёртка не расходятся. Повтор с тем же номером запроса — тот же ответ без
@@ -1960,7 +2166,7 @@ export function logTransfers(log: readonly LogEntry[]): settle.TransferRecord[] 
   return log.filter(isTransferEntry)
 }
 
-// Вход свода комнаты из журнала: события, пари, лоты (Р-38), дела суда и переводы
+// Вход свода комнаты из журнала: события, пари, лоты (Р-38), выборы (Р-39), дела суда и переводы
 function settleInput(log: readonly LogEntry[], state: RoomState): settle.SettleInput {
   const events = roomEvents(log)
   const offers = logOffers(log)
@@ -1971,6 +2177,7 @@ function settleInput(log: readonly LogEntry[], state: RoomState): settle.SettleI
     events,
     offers,
     lots,
+    choices: choice.logChoices(log),
     cases: appeal.logAppeals(log, { events, offers, lots }),
     transfers: logTransfers(log),
   }

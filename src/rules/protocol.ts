@@ -10,7 +10,8 @@
 // bidding у пари, адреса …/bid и …/bid/accept
 // 9 — «Лот» (Р-38): lots в состоянии комнаты, счётчик lots в числах «Расчёта», голоса суда «передано» /
 // «не передано», адреса …/lots
-export const PROTOCOL_VERSION = 9
+// 10 — «Выбор» (Р-39): choices в состоянии комнаты, счётчик choices в числах «Расчёта», адреса …/choices
+export const PROTOCOL_VERSION = 10
 
 // Ответ GET /health: сервер жив, его протокол и время (UTC, мс) — по нему закрываются сроки
 export type Health = { v: number; ok: true; time: number }
@@ -54,7 +55,8 @@ export type CreateRoomResponse = { v: number; roomId: string; invite: string; me
 // (UTC, мс): по нему сайт считает отсчёт до закрытия приёма, а не по часам телефона; settlement —
 // свод расчёта на now (Р-32; сервер до этапа 5 поля не шлёт), видят все участники; room.pace и
 // room.times — нынешний темп комнаты и его сроки (Р-35; сервер до темпа полей не шлёт); lots — лоты по
-// порядку создания (Р-38; все лоты комнаты со ставками — тайных нет; сервер до лотов поля не шлёт)
+// порядку создания (Р-38; все лоты комнаты со ставками — тайных нет; сервер до лотов поля не шлёт);
+// choices — выборы по порядку создания (Р-39; вклады видны всем; сервер до выбора поля не шлёт)
 export type RoomStateResponse = {
   v: number
   room: { id: string; name: string; currency: string; hostId: string; createdAt: number; pace?: PaceView; times?: TimesView }
@@ -63,6 +65,7 @@ export type RoomStateResponse = {
   events: EventView[]
   offers?: OfferView[]
   lots?: LotView[]
+  choices?: ChoiceView[]
   settlement?: SettlementView
   now: number
 }
@@ -71,8 +74,8 @@ export type RoomStateResponse = {
 // «меньше переводов»
 export type SettleModeView = 'stakes' | 'fewest'
 // Число с основанием: сумма и из скольких событий и пари она сложена; lots — из скольких лотов (Р-38;
-// сервер до лотов поля не шлёт)
-export type SettleSumView = { amount: number; events: number; offers: number; lots?: number }
+// сервер до лотов поля не шлёт); choices — из скольких выборов (Р-39; сервер до выбора поля не шлёт)
+export type SettleSumView = { amount: number; events: number; offers: number; lots?: number; choices?: number }
 // Участник: итог (окончательные), ждёт окончательности, в игре; отдал и получил — по переводам «ждёт
 // подтверждения» и «получен»; баланс = итог + отдал − получил (плюс — ему должны)
 export type MemberSettlementView = {
@@ -369,6 +372,33 @@ export type ChoiceView = {
   debts: { from: string; to: string; amount: number }[]
   closedAt: number | null
 }
+
+// «Выбор» на сервере (Р-39). Адреса — POST /rooms/<номер>/choices и …/choices/<выбор>/<действие>, по ключу
+// участника; requestId — номер запроса (ULID): повтор — тот же ответ без второй записи. Отказы — тексты
+// правил choice.ts; время — сервера. …/choices { question, options?, recipient?, cashbox?, optionsUntil,
+// closesAt } — завести: автор — кто прислал; options — варианты автора (можно ни одного); recipient не задан
+// — ведущий; optionsUntil — «варианты до», closesAt — «вклады до». Ответ — выбор на время сервера
+export type CreateChoiceRequest = {
+  v?: number
+  question: string
+  options?: string[]
+  recipient?: string
+  cashbox?: boolean
+  optionsUntil: number
+  closesAt: number
+  requestId?: string
+}
+export type ChoiceResponse = { v: number; choice: ChoiceView }
+// …/choices/<выбор>/option { title } — вариант в фазе вариантов; ответ — вариант (id — его номер) и выбор
+// после него
+export type ChoiceOptionRequest = { v?: number; title: string; requestId?: string }
+export type ChoiceOptionAct = { id: string; at: number; by: string; choice: string; title: string }
+export type ChoiceOptionResponse = { v: number; option: ChoiceOptionAct; choice: ChoiceView }
+// …/choices/<выбор>/stake { option, amount } — вклад в фазе вкладов: в какой вариант, сколько; ответ — вклад
+// и выбор после него. Жребий при ничьей адреса не имеет: его записывает сервер сам
+export type ChoiceStakeRequest = { v?: number; option: string; amount: number; requestId?: string }
+export type ChoiceStakeAct = ChoiceStake & { choice: string }
+export type ChoiceStakeResponse = { v: number; stake: ChoiceStakeAct; choice: ChoiceView }
 
 // POST /rooms/<номер>/offers — предложить пари. side не задана — «сбудется»; to не задан — открытое;
 // guarantor не задан — ведущий; noGuarantor: true — без гаранта (Р-36; guarantor тогда не задают).
@@ -678,6 +708,8 @@ export function isRoomStateResponse(x: unknown): x is RoomStateResponse {
   if (r.offers !== undefined && !list(r.offers, isOfferView)) return false
   // Лоты — с этапа 7 (Р-38): сервер без них (до выкатки) не ломает сайт
   if (r.lots !== undefined && !(Array.isArray(r.lots) && r.lots.every(isLotView))) return false
+  // Выборы — с этапа 7 (Р-39): сервер без них (до выкатки) не ломает сайт
+  if (r.choices !== undefined && !(Array.isArray(r.choices) && r.choices.every(isChoiceView))) return false
   // Свод расчёта — с этапа 5: сервер без него (до выкатки) не ломает сайт
   if (r.settlement !== undefined && !isSettlementView(r.settlement)) return false
   return r.members.every((m) => {
@@ -1034,6 +1066,18 @@ export function isChoiceView(x: unknown): x is ChoiceView {
   )
 }
 
+export function isChoiceResponse(x: unknown): x is ChoiceResponse {
+  return recordIn(x, 'choice', isChoiceView)
+}
+
+export function isChoiceOptionResponse(x: unknown): x is ChoiceOptionResponse {
+  return recordIn(x, 'option', (r) => strings(r, 'id', 'by', 'choice', 'title') && numbers(r, 'at')) && recordIn(x, 'choice', isChoiceView)
+}
+
+export function isChoiceStakeResponse(x: unknown): x is ChoiceStakeResponse {
+  return recordIn(x, 'stake', (r) => strings(r, 'id', 'by', 'choice', 'option') && numbers(r, 'at', 'amount')) && recordIn(x, 'choice', isChoiceView)
+}
+
 const LOT_MARKS: readonly unknown[] =['withdrawn', 'handed', 'declined', 'received', 'disputed']
 
 function isLotAct(r: Record<string, unknown>): boolean {
@@ -1131,7 +1175,12 @@ const TRANSFER_STATUSES: readonly unknown[] = ['pending', 'received', 'rejected'
 
 function isSettleSum(x: unknown): boolean {
   const r = record(x)
-  return !!r && numbers(r, 'amount', 'events', 'offers') && (r.lots === undefined || typeof r.lots === 'number')
+  return (
+    !!r &&
+    numbers(r, 'amount', 'events', 'offers') &&
+    (r.lots === undefined || typeof r.lots === 'number') &&
+    (r.choices === undefined || typeof r.choices === 'number')
+  )
 }
 
 function isTransferView(r: Record<string, unknown>): boolean {

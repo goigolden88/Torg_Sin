@@ -160,6 +160,16 @@ import {
   type LotResponse,
   type LotView,
 } from '../../src/rules/protocol'
+import * as C from '../../src/rules/choice'
+import {
+  isChoiceOptionResponse,
+  isChoiceResponse,
+  isChoiceStakeResponse,
+  type ChoiceOptionResponse,
+  type ChoiceResponse,
+  type ChoiceStakeResponse,
+  type ChoiceView,
+} from '../../src/rules/protocol'
 import * as T from '../../src/rules/settle'
 import * as P from '../../src/rules/pace'
 import { NORMAL_TIMES } from '../../src/rules/pace'
@@ -217,6 +227,7 @@ import {
   HOST_ONLY,
   JOIN_TAKEN,
   NO_EVENT,
+  NO_CHOICE,
   NO_COURT,
   NO_LOT,
   NO_MEMBER,
@@ -457,16 +468,17 @@ export function roomsSuite(
           me: created.memberId,
           events: [],
           offers: [],
-          // Лоты (Р-38): список и счётчик lots у чисел «Расчёта»
+          // Лоты (Р-38) и выборы (Р-39): списки и счётчики lots и choices у чисел «Расчёта»
           lots: [],
+          choices: [],
           settlement: {
             mode: 'stakes',
             members: [
               {
                 memberId: created.memberId,
-                total: { amount: 0, events: 0, offers: 0, lots: 0 },
-                pending: { amount: 0, events: 0, offers: 0, lots: 0 },
-                inPlay: { amount: 0, events: 0, offers: 0, lots: 0 },
+                total: { amount: 0, events: 0, offers: 0, lots: 0, choices: 0 },
+                pending: { amount: 0, events: 0, offers: 0, lots: 0, choices: 0 },
+                inPlay: { amount: 0, events: 0, offers: 0, lots: 0, choices: 0 },
                 sent: 0,
                 received: 0,
                 balance: 0,
@@ -3445,10 +3457,10 @@ export function roomsSuite(
         return state.settlement as SettlementView
       }
 
-      // Счётчик лотов (Р-38) у трёх чисел — 0, если не задан
+      // Счётчики лотов (Р-38) и выборов (Р-39) у трёх чисел — 0, если не заданы
       function row(memberId: string, change: Partial<MemberSettlementView> = {}): MemberSettlementView {
         const r = { memberId, total: ZERO, pending: ZERO, inPlay: ZERO, sent: 0, received: 0, balance: 0, ...change }
-        const sum = (x: SettleSumView): SettleSumView => ({ lots: 0, ...x })
+        const sum = (x: SettleSumView): SettleSumView => ({ lots: 0, choices: 0, ...x })
         return { ...r, total: sum(r.total), pending: sum(r.pending), inPlay: sum(r.inPlay) }
       }
 
@@ -4369,6 +4381,394 @@ export function roomsSuite(
       })
     })
 
+    describe('выбор (Р-39)', () => {
+      const MINUTE = 60 * 1000
+      const HOUR = 60 * MINUTE
+      const DAY = 24 * HOUR
+      const SEED = '5c'.repeat(16)
+      const ULID = /^[0-9A-HJKMNP-TV-Z]{26}$/
+
+      // Комната: Аня — ведущая, Боря, Вера и Гоша — участники
+      async function room4(s: TestServer) {
+        const room = await create(s)
+        const borya = await member(s, room, 'Боря')
+        const vera = await member(s, room, 'Вера')
+        const gosha = await member(s, room, 'Гоша')
+        return { room, borya, vera, gosha }
+      }
+
+      // «Куда едем в субботу?»: «Дача» и «Озеро»; варианты — час, вклады — ещё час
+      function choiceForm(s: TestServer, change: Record<string, unknown> = {}): Record<string, unknown> {
+        return {
+          v: PROTOCOL_VERSION,
+          question: 'Куда едем в субботу?',
+          options: ['Дача', 'Озеро'],
+          optionsUntil: s.clock.now + HOUR,
+          closesAt: s.clock.now + 2 * HOUR,
+          ...change,
+        }
+      }
+
+      async function newChoice(s: TestServer, roomId: string, key: string, body: unknown): Promise<ChoiceView> {
+        const r = await ok<ChoiceResponse>(send(s, roomId, 'choices', body, key))
+        expect(isChoiceResponse(r)).toBe(true)
+        return r.choice
+      }
+
+      function option(s: TestServer, roomId: string, key: string | undefined, choiceId: string, title: unknown, requestId?: string) {
+        return send(s, roomId, `choices/${choiceId}/option`, { v: PROTOCOL_VERSION, title, requestId }, key)
+      }
+
+      async function optionOk(s: TestServer, roomId: string, key: string, choiceId: string, title: string, requestId?: string): Promise<ChoiceOptionResponse> {
+        const r = await ok<ChoiceOptionResponse>(option(s, roomId, key, choiceId, title, requestId))
+        expect(isChoiceOptionResponse(r)).toBe(true)
+        return r
+      }
+
+      function stake(s: TestServer, roomId: string, key: string | undefined, choiceId: string, opt: unknown, amount: unknown, requestId?: string) {
+        return send(s, roomId, `choices/${choiceId}/stake`, { v: PROTOCOL_VERSION, option: opt, amount, requestId }, key)
+      }
+
+      async function stakeOk(s: TestServer, roomId: string, key: string, choiceId: string, opt: string, amount: number, requestId?: string): Promise<ChoiceStakeResponse> {
+        const r = await ok<ChoiceStakeResponse>(stake(s, roomId, key, choiceId, opt, amount, requestId))
+        expect(isChoiceStakeResponse(r)).toBe(true)
+        return r
+      }
+
+      async function stateOf(s: TestServer, roomId: string, key: string): Promise<RoomStateResponse> {
+        const state = await ok<RoomStateResponse>(get(s, roomId, key))
+        expect(isRoomStateResponse(state)).toBe(true)
+        expect(Array.isArray(state.choices)).toBe(true)
+        return state
+      }
+
+      async function choiceOf(s: TestServer, roomId: string, key: string, choiceId: string): Promise<ChoiceView> {
+        const found = (await stateOf(s, roomId, key)).choices?.find((c) => c.id === choiceId)
+        expect(found).toBeDefined()
+        return found as ChoiceView
+      }
+
+      async function choiceEntries(s: TestServer, roomId: string): Promise<string[]> {
+        return (await readLog(s.storage(roomId))).map((e) => e.type).filter((t) => t.startsWith('choice.'))
+      }
+
+      // Три числа участника в «Расчёте»: сумма и счётчик выборов
+      async function sums(s: TestServer, roomId: string, key: string, ...ids: string[]) {
+        const settlement = (await stateOf(s, roomId, key)).settlement
+        return ids.map((id) => {
+          const m = settlement?.members.find((x) => x.memberId === id)
+          const short = (x: SettleSumView | undefined) => [x?.amount, x?.choices]
+          return { total: short(m?.total), pending: short(m?.pending), inPlay: short(m?.inPlay) }
+        })
+      }
+
+      it('завести выбор: автор — кто прислал, получатель — ведущий; варианты автора — «1», «2»; видно всем; повтор — тот же выбор', async () => {
+        const s = await server()
+        const { room, borya, vera, gosha } = await room4(s)
+        const requestId = ulid(s.clock.now)
+        const form = choiceForm(s, { requestId })
+        const optionsUntil = form.optionsUntil as number
+        const closesAt = form.closesAt as number
+        const choice = await newChoice(s, room.roomId, borya.key, form)
+        const at = s.clock.now
+        expect(choice).toEqual({
+          id: expect.stringMatching(ULID),
+          at,
+          authorId: borya.memberId,
+          question: 'Куда едем в субботу?',
+          recipientId: room.memberId,
+          cashbox: false,
+          optionsUntil,
+          closesAt,
+          latestEnd: closesAt + AUCTION_EXTEND_MAX,
+          endsAt: closesAt,
+          status: 'options',
+          failed: null,
+          options: [
+            { id: '1', at, by: borya.memberId, title: 'Дача', total: 0 },
+            { id: '2', at, by: borya.memberId, title: 'Озеро', total: 0 },
+          ],
+          stakes: [],
+          winner: null,
+          how: null,
+          draw: null,
+          debts: [],
+          closedAt: null,
+        })
+        // Сроки выбора — постоянные решения, не темпа: times в записи нет
+        expect((await readLog(s.storage(room.roomId))).at(-1)).toEqual({
+          id: choice.id,
+          at,
+          memberId: borya.memberId,
+          type: 'choice.created',
+          question: 'Куда едем в субботу?',
+          options: ['Дача', 'Озеро'],
+          recipient: room.memberId,
+          cashbox: false,
+          optionsUntil,
+          closesAt,
+          requestId,
+        })
+        for (const key of [room.key, borya.key, vera.key, gosha.key]) expect(await choiceOf(s, room.roomId, key, choice.id)).toEqual(choice)
+        // Повтор — тот же выбор без записи; тот же номер с другим вопросом или от другого — 409
+        s.clock.now += 1000
+        expect(await newChoice(s, room.roomId, borya.key, form)).toEqual(choice)
+        await refused(send(s, room.roomId, 'choices', { ...form, question: 'Что едим?' }, borya.key), 409, REQUEST_USED)
+        await refused(send(s, room.roomId, 'choices', form, vera.key), 409, REQUEST_USED)
+        // Свой получатель и подпись «касса»; вариантов автора может не быть
+        const own = await newChoice(s, room.roomId, vera.key, choiceForm(s, { options: undefined, recipient: gosha.memberId, cashbox: true }))
+        expect(own).toMatchObject({ authorId: vera.memberId, recipientId: gosha.memberId, cashbox: true, options: [] })
+        expect(await choiceEntries(s, room.roomId)).toEqual(['choice.created', 'choice.created'])
+      })
+
+      it('отказы: форма — 400; вариант во второй фазе, вклад в первой, второй вариант одного участника — 409; нет выбора — 404', async () => {
+        const s = await server()
+        const { room, borya, vera, gosha } = await room4(s)
+        const now = s.clock.now
+        const cases: [Record<string, unknown>, string][] = [
+          [{ question: ' ' }, C.NEED_QUESTION],
+          [{ question: 'я'.repeat(301) }, C.LONG_QUESTION],
+          [{ options: 'Дача' }, C.BAD_OPTIONS],
+          [{ options: ['Дача', ' дача '] }, C.SAME_OPTION],
+          [{ options: ['Дача', ''] }, C.NEED_OPTION],
+          [{ options: ['я'.repeat(C.MAX_CHOICE_OPTION + 1)] }, C.LONG_OPTION],
+          [{ options: Array.from({ length: C.MAX_CHOICE_OPTIONS + 1 }, (_, i) => `Вариант ${i}`) }, C.TOO_MANY_OPTIONS],
+          [{ recipient: 'чужой' }, C.BAD_RECIPIENT],
+          [{ optionsUntil: undefined }, C.NEED_CHOICE_TIMES],
+          [{ closesAt: 'завтра' }, C.NEED_CHOICE_TIMES],
+          [{ optionsUntil: now + 10 * MINUTE - 1 }, C.OPTIONS_SHORT],
+          [{ optionsUntil: now + HOUR, closesAt: now + HOUR + 10 * MINUTE - 1 }, C.STAKES_SHORT],
+          [{ closesAt: now + 3 * DAY + 1 }, C.CHOICE_LONG],
+          [{ requestId: 'abc' }, BAD_REQUEST_ID],
+        ]
+        for (const [change, error] of cases) await refused(send(s, room.roomId, 'choices', choiceForm(s, change), borya.key), 400, error)
+        const dima = await join(s, room, 'Дима')
+        await refused(send(s, room.roomId, 'choices', choiceForm(s)), 403, NEED_KEY)
+        await refused(send(s, room.roomId, 'choices', choiceForm(s), dima.key), 403, WAITING, 'waiting')
+        expect((await send(s, room.roomId, 'choices', choiceForm(s, { v: PROTOCOL_VERSION + 1 }), borya.key)).status).toBe(400)
+        expect(await choiceEntries(s, room.roomId)).toEqual([])
+        // Ровно 10 минут на каждую фазу и ровно 3 дня — можно
+        await newChoice(s, room.roomId, borya.key, choiceForm(s, { optionsUntil: now + 10 * MINUTE, closesAt: now + 20 * MINUTE }))
+        await newChoice(s, room.roomId, borya.key, choiceForm(s, { closesAt: now + 3 * DAY }))
+        const choice = await newChoice(s, room.roomId, borya.key, choiceForm(s))
+
+        // Фаза вариантов: вклад — 409; вариант — любой участник; повтор, кривое название — отказы
+        await refused(stake(s, room.roomId, vera.key, choice.id, '1', 100), 409, C.STAKES_NOT_YET)
+        s.clock.now += 1000
+        const requestId = ulid(s.clock.now)
+        const added = await optionOk(s, room.roomId, vera.key, choice.id, ' Лес ', requestId)
+        expect(added.option).toEqual({ id: expect.stringMatching(ULID), at: s.clock.now, by: vera.memberId, choice: choice.id, title: 'Лес' })
+        expect(added.choice.options.map((o) => o.title)).toEqual(['Дача', 'Озеро', 'Лес'])
+        expect((await readLog(s.storage(room.roomId))).at(-1)).toEqual({
+          id: added.option.id,
+          at: s.clock.now,
+          memberId: vera.memberId,
+          type: 'choice.option',
+          choice: choice.id,
+          title: 'Лес',
+          requestId,
+        })
+        expect(await optionOk(s, room.roomId, vera.key, choice.id, ' Лес ', requestId)).toEqual(added)
+        await refused(option(s, room.roomId, vera.key, choice.id, 'Поле', requestId), 409, REQUEST_USED)
+        await refused(option(s, room.roomId, gosha.key, choice.id, 'Лес', requestId), 409, REQUEST_USED)
+        await refused(option(s, room.roomId, gosha.key, choice.id, 'ЛЕС'), 409, C.SAME_OPTION)
+        await refused(option(s, room.roomId, gosha.key, choice.id, ' '), 400, C.NEED_OPTION)
+        await refused(option(s, room.roomId, gosha.key, choice.id, 'я'.repeat(C.MAX_CHOICE_OPTION + 1)), 400, C.LONG_OPTION)
+        await refused(option(s, room.roomId, gosha.key, choice.id, 'Поле', 'abc'), 400, BAD_REQUEST_ID)
+        for (let i = 0; i < C.MAX_CHOICE_OPTIONS - 3; i++) await optionOk(s, room.roomId, gosha.key, choice.id, `Вариант ${i}`)
+        await refused(option(s, room.roomId, gosha.key, choice.id, 'Ещё один'), 409, C.TOO_MANY_OPTIONS)
+
+        // Фаза вкладов: вариант — 409; вклад — в один вариант; кривой вариант или сумма — 400
+        s.clock.now = choice.optionsUntil
+        await refused(option(s, room.roomId, gosha.key, choice.id, 'Поздно'), 409, C.OPTIONS_CLOSED)
+        expect((await choiceOf(s, room.roomId, gosha.key, choice.id)).status).toBe('open')
+        const stakeId = ulid(s.clock.now)
+        const first = await stakeOk(s, room.roomId, vera.key, choice.id, '1', 300, stakeId)
+        expect(first.stake).toEqual({ id: expect.stringMatching(ULID), at: s.clock.now, by: vera.memberId, choice: choice.id, option: '1', amount: 300 })
+        expect(first.choice.options[0]).toMatchObject({ id: '1', total: 300 })
+        expect((await readLog(s.storage(room.roomId))).at(-1)).toEqual({
+          id: first.stake.id,
+          at: s.clock.now,
+          memberId: vera.memberId,
+          type: 'choice.stake',
+          choice: choice.id,
+          option: '1',
+          amount: 300,
+          requestId: stakeId,
+        })
+        expect(await stakeOk(s, room.roomId, vera.key, choice.id, '1', 300, stakeId)).toEqual(first)
+        await refused(stake(s, room.roomId, vera.key, choice.id, '1', 500, stakeId), 409, REQUEST_USED)
+        await refused(stake(s, room.roomId, vera.key, choice.id, '2', 100), 409, C.ONE_OPTION)
+        await stakeOk(s, room.roomId, vera.key, choice.id, '1', 200)
+        await refused(stake(s, room.roomId, gosha.key, choice.id, 'нет-такого', 100), 400, C.NO_OPTION)
+        for (const amount of [0, -5, 1.5, 'сто', undefined]) await refused(stake(s, room.roomId, gosha.key, choice.id, '2', amount), 400, C.BAD_STAKE)
+        // Нет выбора, кривой номер, без ключа, чужой ключ
+        await refused(stake(s, room.roomId, vera.key, ulid(), '1', 100), 404, NO_CHOICE)
+        await refused(option(s, room.roomId, vera.key, ulid(), 'Лес'), 404, NO_CHOICE)
+        await refused(stake(s, room.roomId, vera.key, 'не-номер', '1', 100), 404, NO_CHOICE)
+        await refused(stake(s, room.roomId, undefined, choice.id, '1', 100), 403, NEED_KEY)
+        await refused(stake(s, room.roomId, 'someone-elses-key', choice.id, '1', 100), 403, WRONG_KEY)
+        // Жребия адресом нет
+        expect((await send(s, room.roomId, `choices/${choice.id}/draw`, { v: PROTOCOL_VERSION }, vera.key)).status).toBe(404)
+        // После конца вкладов — 409
+        s.clock.now = choice.closesAt
+        await refused(stake(s, room.roomId, vera.key, choice.id, '1', 100), 409, C.CHOICE_OVER)
+        expect(await choiceEntries(s, room.roomId)).toEqual([
+          'choice.created',
+          'choice.created',
+          'choice.created',
+          'choice.option',
+          ...Array.from({ length: C.MAX_CHOICE_OPTIONS - 3 }, () => 'choice.option'),
+          'choice.stake',
+          'choice.stake',
+        ])
+      })
+
+      it('не состоялся: меньше двух вариантов к «варианты до» — вкладов нет; вкладов к концу нет — не в счёт', async () => {
+        const s = await server()
+        const { room, borya, vera } = await room4(s)
+        const lonely = await newChoice(s, room.roomId, borya.key, choiceForm(s, { options: ['Дача'] }))
+        const empty = await newChoice(s, room.roomId, borya.key, choiceForm(s))
+        s.clock.now = lonely.optionsUntil
+        expect(await choiceOf(s, room.roomId, vera.key, lonely.id)).toMatchObject({ status: 'failed', failed: 'options', closedAt: lonely.optionsUntil })
+        await refused(stake(s, room.roomId, vera.key, lonely.id, '1', 100), 409, C.CHOICE_NO_OPTIONS)
+        s.clock.now = empty.closesAt
+        expect(await choiceOf(s, room.roomId, vera.key, empty.id)).toMatchObject({ status: 'failed', failed: 'stakes', closedAt: empty.closesAt, debts: [] })
+        expect(await sums(s, room.roomId, room.key, room.memberId, vera.memberId)).toEqual([
+          { total: [0, 0], pending: [0, 0], inPlay: [0, 0] },
+          { total: [0, 0], pending: [0, 0], inPlay: [0, 0] },
+        ])
+        expect(await choiceEntries(s, room.roomId)).toEqual(['choice.created', 'choice.created'])
+      })
+
+      it('продление: вклад на последних 2 минутах — конец через 2 минуты после него; к концу — решён большей суммой', async () => {
+        const s = await server()
+        const { room, borya, vera, gosha } = await room4(s)
+        const choice = await newChoice(s, room.roomId, borya.key, choiceForm(s))
+        const closesAt = choice.closesAt
+        const endsAt = async () => (await choiceOf(s, room.roomId, gosha.key, choice.id)).endsAt
+        s.clock.now = closesAt - 5 * MINUTE
+        await stakeOk(s, room.roomId, vera.key, choice.id, '1', 100)
+        expect(await endsAt()).toBe(closesAt)
+        s.clock.now = closesAt - MINUTE
+        await stakeOk(s, room.roomId, gosha.key, choice.id, '2', 50)
+        expect(await endsAt()).toBe(closesAt + MINUTE)
+        // После исходного конца, но до продлённого — вклад действует и продлевает ещё
+        s.clock.now = closesAt + 30 * 1000
+        await stakeOk(s, room.roomId, borya.key, choice.id, '2', 30)
+        expect(await endsAt()).toBe(closesAt + 150 * 1000)
+        s.clock.now = closesAt + 150 * 1000 - 1
+        expect((await choiceOf(s, room.roomId, gosha.key, choice.id)).status).toBe('open')
+        s.clock.now = closesAt + 150 * 1000
+        expect(await choiceOf(s, room.roomId, gosha.key, choice.id)).toMatchObject({
+          status: 'decided',
+          winner: '1',
+          how: 'sum',
+          draw: null,
+          closedAt: closesAt + 150 * 1000,
+          options: [{ id: '1', total: 100 }, { id: '2', total: 80 }],
+          debts: [{ from: vera.memberId, to: room.memberId, amount: 100 }],
+        })
+        await refused(stake(s, room.roomId, borya.key, choice.id, '2', 100), 409, C.CHOICE_OVER)
+        expect(await choiceEntries(s, room.roomId)).toEqual(['choice.created', 'choice.stake', 'choice.stake', 'choice.stake'])
+      })
+
+      it('ничья в конце: продления по 2 минуты до «вклады до» + 30 минут, затем жребий зерном сервера — один раз, первым запросом; повтор победителя не меняет', async () => {
+        const s = await server()
+        const { room, borya, vera, gosha } = await room4(s)
+        const choice = await newChoice(s, room.roomId, borya.key, choiceForm(s))
+        const closesAt = choice.closesAt
+        const latestEnd = closesAt + AUCTION_EXTEND_MAX
+        s.clock.now = choice.optionsUntil
+        await stakeOk(s, room.roomId, vera.key, choice.id, '1', 100)
+        await stakeOk(s, room.roomId, gosha.key, choice.id, '2', 100)
+        // Ничья в конце — ещё 2 минуты, снова и снова; вклады всё ещё идут
+        s.clock.now = closesAt
+        expect(await choiceOf(s, room.roomId, borya.key, choice.id)).toMatchObject({ status: 'open', endsAt: closesAt + AUCTION_EXTEND })
+        s.clock.now = latestEnd - 1
+        expect(await choiceOf(s, room.roomId, borya.key, choice.id)).toMatchObject({ status: 'open', endsAt: latestEnd, draw: null })
+        expect(await choiceEntries(s, room.roomId)).toEqual(['choice.created', 'choice.stake', 'choice.stake'])
+        // Конец продлений: первый запрос бросает жребий — запись choice.drawn (зерно, равные; автор — ведущий)
+        s.seeds.push(SEED)
+        s.clock.now = latestEnd
+        const winner = C.drawChoice(SEED, ['1', '2'])
+        const payer = winner === '1' ? vera : gosha
+        const decided = await choiceOf(s, room.roomId, borya.key, choice.id)
+        expect(decided).toMatchObject({
+          status: 'decided',
+          winner,
+          how: 'draw',
+          draw: { at: latestEnd, seed: SEED, options: ['1', '2'] },
+          closedAt: latestEnd,
+          debts: [{ from: payer.memberId, to: room.memberId, amount: 100 }],
+        })
+        expect((await readLog(s.storage(room.roomId))).at(-1)).toEqual({
+          id: expect.stringMatching(ULID),
+          at: latestEnd,
+          memberId: room.memberId,
+          type: 'choice.drawn',
+          choice: choice.id,
+          seed: SEED,
+          options: ['1', '2'],
+        })
+        await refused(stake(s, room.roomId, vera.key, choice.id, '1', 100), 409, C.CHOICE_OVER)
+        // Повтор: другое зерно в очереди не берётся, второй записи нет, победитель тот же
+        s.seeds.push('ff'.repeat(16))
+        s.clock.now += DAY
+        for (const key of [room.key, borya.key, vera.key, gosha.key]) expect(await choiceOf(s, room.roomId, key, choice.id)).toEqual(decided)
+        expect(s.seeds).toEqual(['ff'.repeat(16)])
+        expect(await choiceEntries(s, room.roomId)).toEqual(['choice.created', 'choice.stake', 'choice.stake', 'choice.drawn'])
+      })
+
+      it('«Расчёт»: идущие вклады — в игре (кроме получателя); решён — долги вложившихся в победивший получателю, в итог сразу', async () => {
+        const s = await server()
+        const { room, borya, vera, gosha } = await room4(s)
+        // Получатель — Гоша («касса»)
+        const choice = await newChoice(s, room.roomId, borya.key, choiceForm(s, { recipient: gosha.memberId, cashbox: true }))
+        s.clock.now = choice.optionsUntil
+        await stakeOk(s, room.roomId, vera.key, choice.id, '1', 300)
+        await stakeOk(s, room.roomId, borya.key, choice.id, '1', 200)
+        await stakeOk(s, room.roomId, gosha.key, choice.id, '1', 100)
+        await stakeOk(s, room.roomId, room.key, choice.id, '2', 250)
+        const ids = [room.memberId, borya.memberId, vera.memberId, gosha.memberId]
+        expect(await sums(s, room.roomId, room.key, ...ids)).toEqual([
+          { total: [0, 0], pending: [0, 0], inPlay: [250, 1] },
+          { total: [0, 0], pending: [0, 0], inPlay: [200, 1] },
+          { total: [0, 0], pending: [0, 0], inPlay: [300, 1] },
+          { total: [0, 0], pending: [0, 0], inPlay: [0, 0] },
+        ])
+        s.clock.now = choice.closesAt
+        expect(await choiceOf(s, room.roomId, vera.key, choice.id)).toMatchObject({
+          status: 'decided',
+          winner: '1',
+          how: 'sum',
+          debts: [
+            { from: vera.memberId, to: gosha.memberId, amount: 300 },
+            { from: borya.memberId, to: gosha.memberId, amount: 200 },
+          ],
+        })
+        // Свой вклад получатель не платит; вложившаяся в проигравший Аня — не должна
+        expect(await sums(s, room.roomId, room.key, ...ids)).toEqual([
+          { total: [0, 0], pending: [0, 0], inPlay: [0, 0] },
+          { total: [-200, 1], pending: [0, 0], inPlay: [0, 0] },
+          { total: [-300, 1], pending: [0, 0], inPlay: [0, 0] },
+          { total: [500, 1], pending: [0, 0], inPlay: [0, 0] },
+        ])
+        const { settlement } = await stateOf(s, room.roomId, borya.key)
+        expect(settlement?.suggestions).toHaveLength(2)
+        expect(settlement?.suggestions).toEqual(
+          expect.arrayContaining([
+            { from: vera.memberId, to: gosha.memberId, amount: 300 },
+            { from: borya.memberId, to: gosha.memberId, amount: 200 },
+          ]),
+        )
+        // Долг по выбору держит режим «кто кому»: Вера рассчиталась, Боря ещё должен — сменить нельзя
+        const sent = await ok<TransferResponse>(send(s, room.roomId, 'transfers', { v: PROTOCOL_VERSION, to: gosha.memberId, amount: 300 }, vera.key))
+        await ok(send(s, room.roomId, `transfers/${sent.transfer.id}/receive`, { v: PROTOCOL_VERSION }, gosha.key))
+        await refused(send(s, room.roomId, 'settle-mode', { v: PROTOCOL_VERSION, mode: 'fewest' }, room.key), 409, T.MODE_LOCKED)
+      })
+    })
+
     describe('темп комнаты (Р-35)', () => {
       const HOUR = 60 * 60 * 1000
       const DAY = 24 * HOUR
@@ -4727,7 +5127,7 @@ export function roomsSuite(
         expect(all.backups.map((b) => b.roomId)).toEqual([room.roomId])
       })
 
-      it('круг: событие, пари, лот, суд и переводы — выгрузил на одной обёртке, загрузил в пустую на другой: ответ комнаты тем же ключам тот же', async () => {
+      it('круг: событие, пари, лот, выбор, суд и переводы — выгрузил на одной обёртке, загрузил в пустую на другой: ответ комнаты тем же ключам тот же', async () => {
         const s = await server()
         const room = await create(s)
         const borya = await member(s, room, 'Боря')
@@ -4765,7 +5165,17 @@ export function roomsSuite(
         await ok(send(s, id, `lots/${lot.id}/bid`, { v: PROTOCOL_VERSION, amount: 600 }, gosha.key))
         s.clock.now = lot.closesAt
         await ok(send(s, id, `lots/${lot.id}/handed`, { v: PROTOCOL_VERSION }, dasha.key))
-        s.clock.now += HOUR
+        // Выбор Веры (Р-39): Гоша добавил «Лес»; Боря — 200 на «Дачу», Гоша — 200 на «Лес»: ничья до конца
+        // продлений — жребий сервера при первом чтении ниже
+        const MINUTE = HOUR / 60
+        const choiceForm = { v: PROTOCOL_VERSION, question: 'Куда едем?', options: ['Дача', 'Озеро'], optionsUntil: s.clock.now + 10 * MINUTE, closesAt: s.clock.now + 30 * MINUTE }
+        const { choice } = await ok<ChoiceResponse>(send(s, id, 'choices', choiceForm, vera.key))
+        await ok(send(s, id, `choices/${choice.id}/option`, { v: PROTOCOL_VERSION, title: 'Лес' }, gosha.key))
+        s.clock.now = choice.optionsUntil
+        await ok(send(s, id, `choices/${choice.id}/stake`, { v: PROTOCOL_VERSION, option: '1', amount: 200 }, borya.key))
+        const forest = (await ok<RoomStateResponse>(get(s, id, gosha.key))).choices?.[0].options[2].id
+        await ok(send(s, id, `choices/${choice.id}/stake`, { v: PROTOCOL_VERSION, option: forest, amount: 200 }, gosha.key))
+        s.clock.now = choice.latestEnd + HOUR
         const people = [room, borya, vera, gosha]
         const states = async (x: TestServer) => Promise.all(people.map((p) => ok<RoomStateResponse>(get(x, id, p.key))))
         const before = await states(s)
@@ -4777,6 +5187,9 @@ export function roomsSuite(
         expect(before[0].lots).toHaveLength(1)
         expect(before[0].lots?.[0]).toMatchObject({ status: 'handed', winner: gosha.memberId, amount: 600, bids: [{ by: borya.memberId }, { by: gosha.memberId }] })
         expect(before[0].settlement?.members.find((m) => m.memberId === dasha.memberId)?.pending).toMatchObject({ amount: 600, lots: 1 })
+        expect(before[0].choices).toHaveLength(1)
+        expect(before[0].choices?.[0]).toMatchObject({ status: 'decided', how: 'draw', draw: { options: ['1', forest] }, stakes: [{ by: borya.memberId }, { by: gosha.memberId }] })
+        expect(before[0].settlement?.members.find((m) => m.memberId === room.memberId)?.total).toMatchObject({ amount: 200, choices: 1 })
         const copy = await fullCopy(s, id)
         // Туда: на другой обёртке — тот же ответ тем же ключам, та же копия
         const t = await other(s)
