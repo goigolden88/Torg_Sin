@@ -158,6 +158,29 @@ export type LogEntry =
   | (EntryBase & { type: 'lot.declined'; lot: string; requestId: string })
   | (EntryBase & { type: 'lot.received'; lot: string; requestId: string })
   | (EntryBase & { type: 'lot.disputed'; lot: string; requestId: string })
+  // «Выбор» (этап 7, Р-09, Р-39; правила — choice.ts). Номер выбора — id записи choice.created; автор — кто
+  // завёл; options — варианты автора по порядку (можно ни одного; номера — '1', '2', …); recipient —
+  // получатель, участник (по умолчанию ведущий); cashbox — подпись «касса»; optionsUntil — «варианты до»,
+  // closesAt — «вклады до» (каждая фаза — не меньше 10 минут, весь выбор — не дольше 3 дней с создания);
+  // requestId — номер запроса телефона: повтор узнаётся по нему. Конца с продлениями, победителя, итога и
+  // долгов в журнале нет — считаются
+  | (EntryBase & {
+      type: 'choice.created'
+      question: string
+      options: string[]
+      recipient: string
+      cashbox: boolean
+      optionsUntil: number
+      closesAt: number
+      requestId: string
+    })
+  // Вариант в фазе вариантов (автор — кто предложил); номер варианта — id записи
+  | (EntryBase & { type: 'choice.option'; choice: string; title: string; requestId: string })
+  // Вклад в фазе вкладов (автор — кто вкладывает): в какой вариант, сколько; не отзывается
+  | (EntryBase & { type: 'choice.stake'; choice: string; option: string; amount: number; requestId: string })
+  // Жребий при ничьей после всех продлений: дописывает сам сервер при первом запросе к комнате; seed —
+  // зерно (случайные байты сервера, hex), options — равные варианты; автор — ведущий (не проверяется)
+  | (EntryBase & { type: 'choice.drawn'; choice: string; seed: string; options: string[] })
   // Апелляция и суд (этап 4, Р-24, Р-25; правила — appeal.ts). target — событие-пул, пари или лот (Р-38); requestId —
   // номер запроса телефона. Апелляция подана (автор — ставивший или сторона); суд собран в этот миг:
   // seed — зерно жребия (случайные байты сервера, hex), candidates — кандидаты на этот миг
@@ -245,6 +268,12 @@ export function applyEntry(state: RoomState | null, e: LogEntry): RoomState | nu
     case 'lot.declined':
     case 'lot.received':
     case 'lot.disputed':
+      return state
+    // Выборы считает logChoices (choice.ts)
+    case 'choice.created':
+    case 'choice.option':
+    case 'choice.stake':
+    case 'choice.drawn':
       return state
     // Апелляции и суд считает logAppeals (appeal.ts)
     case 'appeal.filed':
