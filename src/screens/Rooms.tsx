@@ -8,7 +8,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { fetchRoom } from '../api'
 import { currencyLabel } from '../rules/currency'
 import type { DeviceLink, InviteLink } from '../rules/link'
-import { savedEvents, savedOffers, savedSettlement, store, withState, type SavedRoom } from '../store/db'
+import { savedEvents, savedLots, savedOffers, savedSettlement, store, withState, type SavedRoom } from '../store/db'
 import { BackLink } from './BackLink'
 import { ClaimDevice } from './ClaimDevice'
 import { roomAwaitsMyVote } from './courtParts'
@@ -16,7 +16,9 @@ import { CreateRoom } from './CreateRoom'
 import { EventScreen } from './EventScreen'
 import { HistoryScreen } from './HistoryScreen'
 import { JoinRoom } from './JoinRoom'
+import { LotScreen } from './LotScreen'
 import { NewEvent } from './NewEvent'
+import { NewLot } from './NewLot'
 import { NewOffer } from './NewOffer'
 import { OfferScreen } from './OfferScreen'
 import { PasteLink } from './PasteLink'
@@ -32,6 +34,8 @@ export type RoomsView =
   | { kind: 'event'; id: string; event: string } // событие комнаты id
   | { kind: 'new-offer'; id: string; repeat?: string } // предложить пари в комнате id; repeat — «Повторить» торг (Р-37)
   | { kind: 'offer'; id: string; offer: string } // пари комнаты id
+  | { kind: 'new-lot'; id: string } // выставить лот в комнате id (Р-38)
+  | { kind: 'lot'; id: string; lot: string } // лот комнаты id
   | { kind: 'settle'; id: string } // «Расчёт» комнаты id
   | { kind: 'history'; id: string } // «История» комнаты id
   | { kind: 'join'; link: InviteLink } // по ссылке-приглашению
@@ -68,11 +72,18 @@ export function Rooms({ view }: { view: RoomsView }) {
   }, [upsert])
 
   const wide =
-    view.kind === 'event' || view.kind === 'new-event' || view.kind === 'offer' || view.kind === 'new-offer' || view.kind === 'settle' || view.kind === 'history'
+    view.kind === 'event' ||
+    view.kind === 'new-event' ||
+    view.kind === 'offer' ||
+    view.kind === 'new-offer' ||
+    view.kind === 'lot' ||
+    view.kind === 'new-lot' ||
+    view.kind === 'settle' ||
+    view.kind === 'history'
   const inRoom = view.kind === 'room' || wide
   const openId = inRoom ? view.id : null
   const open = rooms?.find((r) => r.id === openId)
-  // Событие, пари, их формы, «Расчёт» и «История» — во всю ширину содержимого и на компьютере: список
+  // Событие, пари, лот, их формы, «Расчёт» и «История» — во всю ширину содержимого и на компьютере: список
   // комнат прячется, «Назад» ведёт в комнату (экрану события нужно ≥ 640 px, рядом со списком на 1024–1279
   // его нет; пари — как событие, Р-20: открытое пари и список пари комнаты рядом; «Расчёт» — таблица
   // участников; «История» — чтобы «Назад» в комнату был виден и на компьютере)
@@ -103,7 +114,7 @@ export function Rooms({ view }: { view: RoomsView }) {
                   <a className="room-item" href={'#/room/' + r.id} aria-current={r.id === openId ? 'page' : undefined}>
                     <span className="room-name">
                       {r.name}
-                      {roomAwaitsMyVote(r, savedEvents(r), savedOffers(r)) && <span className="badge court-badge">вы в суде</span>}
+                      {roomAwaitsMyVote(r, savedEvents(r), savedOffers(r), savedLots(r)) &&<span className="badge court-badge">вы в суде</span>}
                     </span>
                     <span className="hint">
                       {currencyLabel(r.currency)} · {participants(r.members.length)}
@@ -143,6 +154,10 @@ export function Rooms({ view }: { view: RoomsView }) {
               <OfferScreen key={open.id + '/' + view.offer} room={open} offerId={view.offer} onUpdate={upsert} />
             ) : view.kind === 'new-offer' ? (
               <NewOffer key={open.id + '/' + (view.repeat ?? '')} room={open} repeat={view.repeat} onUpdate={upsert} />
+            ) : view.kind === 'lot' ? (
+              <LotScreen key={open.id + '/' + view.lot} room={open} lotId={view.lot} onUpdate={upsert} />
+            ) : view.kind === 'new-lot' ? (
+              <NewLot key={open.id} room={open} onUpdate={upsert} />
             ) : view.kind === 'settle' ? (
               <SettleScreen key={open.id} room={open} onUpdate={upsert} />
             ) : view.kind === 'history' ? (

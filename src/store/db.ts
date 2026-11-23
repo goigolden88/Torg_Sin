@@ -3,9 +3,11 @@
 // не меняются. Настройки устройства (адрес сервера, пароль компании) — не здесь, а в settings.ts
 import {
   isEventView,
+  isLotView,
   isOfferView,
   isSettlementView,
   type EventView,
+  type LotView,
   type OfferView,
   type RoomStateResponse,
   type SettlementView,
@@ -40,6 +42,9 @@ export type SavedRoom = {
   // Свод расчёта — последнее известное с сервера (этап 5), так же: поле только добавлено, версия базы
   // та же; у записей до него и у сервера до этапа 5 поля нет — расчёта не показываем
   settlement?: SettlementView
+  // Лоты — последнее известное с сервера (этап 7, Р-38), так же: поле только добавлено, версия базы та
+  // же; у записей до него и у сервера до лотов поля нет — «лотов нет» до первого ответа сервера
+  lots?: LotView[]
 }
 
 // Копия с сервера на устройстве — только то, что проходит проверку протокола: запись, сохранённая
@@ -59,17 +64,24 @@ export function savedOffers(room: SavedRoom): OfferView[] {
   return fresh(room.offers, isOfferView)
 }
 
+// Лоты комнаты на устройстве — тем же путём: старая запись без поля — пусто; устаревший лот — пропущен
+export function savedLots(room: SavedRoom): LotView[] {
+  return fresh(room.lots, isLotView)
+}
+
 // Свод расчёта на устройстве: нет поля или не проходит проверку протокола — null (расчёта не показываем)
 export function savedSettlement(room: SavedRoom): SettlementView | null {
   return isSettlementView(room.settlement) ? room.settlement : null
 }
 
 // Ответ сервера о комнате поверх записанного на устройстве (с событиями, пари и сводом); syncedAt —
-// сейчас. Сервер без пари (до этапа 3) — пари нет; без свода (до этапа 5) — свода нет, прежний не остаётся
+// сейчас. Сервер без пари (до этапа 3) — пари нет; без свода (до этапа 5) — свода нет, прежний не остаётся;
+// без лотов (до этапа 7) — лотов нет
 export function withState(room: SavedRoom, state: RoomStateResponse, now: number): SavedRoom {
   const { room: s, members, events, settlement } = state
   const offers = state.offers ?? []
-  return { ...room, name: s.name, currency: s.currency, hostId: s.hostId, createdAt: s.createdAt, members, events, offers, settlement, syncedAt: now }
+  const lots = state.lots ?? []
+  return { ...room, name: s.name, currency: s.currency, hostId: s.hostId, createdAt: s.createdAt, members, events, offers, lots, settlement, syncedAt: now }
 }
 
 // Заявка на вход по ссылке, которую ещё не впустили: ключ заявки откроет комнату, когда ведущий

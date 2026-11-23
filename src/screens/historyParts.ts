@@ -1,13 +1,16 @@
 // «История» комнаты (Р-11, этап 5): что считается прошедшим, когда оно им стало, исход и мой результат
 // одной строкой. Прошедшее уходит из «Событий» и «Пари» комнаты сюда. Событие — исход окончательный или
 // событие отменено (и судом); пари — исход окончательный или отменён судом, либо пари не состоялось
-// (истекло, отозвано, закрыто встречным; торг — никто не дал старт, Р-37). Суммы торга — из сумм (stakesOf). Остальное — не прошедшее, в том числе «голосование», «снято»
+// (истекло, отозвано, закрыто встречным; торг — никто не дал старт, Р-37); лот (Р-38) — итог есть: снят,
+// не продан, получен, не состоялся, не передан. Суммы торга — из сумм (stakesOf). Остальное — не прошедшее, в том числе «голосование», «снято»
 // (Р-27), «ждёт суда», утверждён и идёт неделя апелляции; у пари — фазы гаранта (Р-31), суд, «утверждено».
 // Чистые функции без DOM — с тестами (historyParts.test.ts); статус и фазу считают правила (event.ts,
 // offer.ts), здесь — только выбор
+import type { LotOutcome } from '../rules/lot'
 import { offerNets, offerStatus, type OfferOutcome, type OfferSide } from '../rules/offer'
-import type { EventView, OfferStatus, OfferView, OutcomeView } from '../rules/protocol'
+import type { EventView, LotView, OfferStatus, OfferView, OutcomeView } from '../rules/protocol'
 import type { SavedRoom } from '../store/db'
+import { lotMine, lotOutcomeOf, lotOutcomeWords, lotPastAt } from './lotParts'
 import { offerOutcomeOf, offerState, stakesOf } from './offerParts'
 import { signedSum, sumText } from './settleParts'
 
@@ -65,9 +68,9 @@ export function offerPastNow(room: SavedRoom, o: OfferView, now: number): number
 // вернулось); не участвовал — none
 export type MyResult = { kind: 'none' } | { kind: 'net'; amount: number; refund: number }
 
-// Строка «Истории»: событие или пари, что и когда, исход словами, мой результат
+// Строка «Истории»: событие, пари или лот, что и когда, исход словами, мой результат
 export type HistoryItem = {
-  kind: 'event' | 'offer'
+  kind: 'event' | 'offer' | 'lot'
   id: string
   condition: string
   at: number // когда стало прошедшим
@@ -133,12 +136,38 @@ export function offerItem(o: OfferView, me: string, status: OfferStatus, out: Of
   return { ...base, outcome: offerVerdict(o, winner), mine: side ? { kind: 'net', amount: net, refund: 0 } : none }
 }
 
-// Всё прошедшее комнаты, новое сверху (по мигу, когда стало прошедшим; равные — по номеру, новый выше)
-export function historyItems(room: SavedRoom, events: readonly EventView[], offers: readonly OfferView[], now: number): HistoryItem[] {
+// Строка лота (этап 7, Р-38): прошедший — снят, не продан, получен, не состоялся («Не смогу передать»),
+// не передан (суд); исход — «продан — Вера, 1 500 ₽», «не продан — ставок не было», …; мой результат —
+// продавцу плюс ставка победителя, победителю минус, ставившему и у не состоявшегося — ноль. Участник —
+// продавец или ставивший. out — итог лота на now (lotOutcomeOf)
+export function lotItem(room: SavedRoom, v: LotView, out: Pick<LotOutcome, 'status' | 'winner' | 'closedAt'>): HistoryItem | null {
+  const at = lotPastAt(out)
+  if (at === null) return null
+  const mine = lotMine(v, room.memberId, out)
+  return {
+    kind: 'lot',
+    id: v.id,
+    condition: v.title,
+    at,
+    outcome: lotOutcomeWords(room, v, out),
+    mine: mine === null ? { kind: 'none' } : { kind: 'net', amount: mine, refund: 0 },
+  }
+}
+
+// Всё прошедшее комнаты, новое сверху (по мигу, когда стало прошедшим; равные — по номеру, новый выше);
+// lots — лоты комнаты (Р-38; нет — без лотов)
+export function historyItems(
+  room: SavedRoom,
+  events: readonly EventView[],
+  offers: readonly OfferView[],
+  now: number,
+  lots: readonly LotView[] = [],
+): HistoryItem[] {
   const me = room.memberId
   const items = [
     ...events.map((e) => eventItem(e, me, now)),
     ...offers.map((o) => offerItem(o, me, offerStatus(offerState(o), now), offerOutcomeOf(room, o, now))),
+    ...lots.map((l) => lotItem(room, l, lotOutcomeOf(room, l, now))),
   ].filter((x): x is HistoryItem => x !== null)
   return items.sort((a, b) => b.at - a.at || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0))
 }
@@ -155,7 +184,7 @@ export function myResultText(mine: MyResult, currency: string): string {
   return mine.refund > 0 ? `${text} — вернулось ${sumText(mine.refund, currency)}` : text
 }
 
-// Строка в комнате под «Пари»: «История · 12»; ноль — строки нет
+// Строка в комнате под «Лотами»: «История · 12»; ноль — строки нет
 export function historyLine(count: number): string | null {
   return count > 0 ? `История · ${count}` : null
 }

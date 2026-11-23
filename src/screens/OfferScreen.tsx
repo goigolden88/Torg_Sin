@@ -39,6 +39,7 @@ import { formKey, requestFor, type PendingRequest } from '../rules/request'
 import { ulid } from '../rules/ulid'
 import { savedOffers, type SavedRoom } from '../store/db'
 import { BackLink, useEscape } from './BackLink'
+import { BidList } from './BidList'
 import { money, nameOf } from './eventParts'
 import { historyHref, offerPastNow } from './historyParts'
 import { OfferList } from './OfferList'
@@ -533,16 +534,7 @@ function Bidding({ room, offer, now }: { room: SavedRoom; offer: OfferView; now:
       {bids.length === 0 ? (
         !open && <p className="hint">Встречных не было.</p>
       ) : (
-        <ul className="bid-list" aria-label="Встречные">
-          {[...bids].reverse().map((b) => (
-            <li key={b.id} className={b.id === best?.id ? 'bid best' : 'bid'}>
-              <span className="bid-who">{who(room, b.by)}</span>
-              <span className="bid-sum">{sum(b.amount)}</span>
-              <span className="hint">{formatDateTime(b.at)}</span>
-              {b.id === best?.id && <span className="badge">{open ? 'лучшее' : 'принято'}</span>}
-            </li>
-          ))}
-        </ul>
+        <BidList room={room} bids={bids} bestId={best?.id ?? null} badge={open ? 'лучшее' : 'принято'} label="Встречные" />
       )}
     </section>
   )

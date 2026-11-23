@@ -28,13 +28,24 @@ export function signedSum(units: number, currency: string): string {
   return (units > 0 ? '+' : '') + sumText(units, currency)
 }
 
-// Из чего сложено число: «по 1 событию», «по 3 событиям», «по 2 пари», «по 5 событиям и пари»; ни из чего — ''
+// Из чего сложено число: «по 1 событию», «по 3 событиям», «по 2 пари», «по 5 событиям и пари»; лоты (Р-38) —
+// «по 1 лоту», «по 3 событиям и 2 лотам», «по 5 событиям и пари, 1 лоту»; ни из чего — ''
 export function basisText(sum: SettleSumView): string {
   const { events, offers } = sum
-  if (events > 0 && offers > 0) return `по ${events + offers} событиям и пари`
-  if (events > 0) return `по ${events} ${plural(BigInt(events), ['событию', 'событиям', 'событиям'])}`
-  if (offers > 0) return `по ${offers} пари`
-  return ''
+  const lots = sum.lots ?? 0
+  const base =
+    events > 0 && offers > 0
+      ? `${events + offers} событиям и пари`
+      : events > 0
+        ? `${events} ${plural(BigInt(events), ['событию', 'событиям', 'событиям'])}`
+        : offers > 0
+          ? `${offers} пари`
+          : ''
+  const lot = lots > 0 ? `${lots} ${plural(BigInt(lots), ['лоту', 'лотам', 'лотам'])}` : ''
+  if (!base && !lot) return ''
+  if (!lot) return `по ${base}`
+  if (!base) return `по ${lot}`
+  return `по ${base}${base.includes(' и ') ? ', ' : ' и '}${lot}`
 }
 
 function withBasis(amount: string, sum: SettleSumView): string {
@@ -60,9 +71,9 @@ export function myTotalLine(settlement: SettlementView, me: string, currency: st
   return 'Ваш итог: ' + (m ? memberNumbers(m, currency).total : sumText(0, currency))
 }
 
-// Считать нечего: ни у кого нет окончательного события или пари и переводов нет
+// Считать нечего: ни у кого нет окончательного события, пари или полученного лота и переводов нет
 export function nothingFinal(settlement: SettlementView): boolean {
-  return settlement.transfers.length === 0 && settlement.members.every((m) => m.total.events === 0 && m.total.offers === 0)
+  return settlement.transfers.length === 0 && settlement.members.every((m) => m.total.events === 0 && m.total.offers === 0 && !m.total.lots)
 }
 
 // Сколько споров ждут окончательности: утверждённые, ещё не окончательные (как «ждёт окончательности»

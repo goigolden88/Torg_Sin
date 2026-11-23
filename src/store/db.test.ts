@@ -1,12 +1,13 @@
 import { IDBFactory } from 'fake-indexeddb'
 import { describe, expect, it } from 'vitest'
-import type { EventView, OfferView, RoomStateResponse, SettlementView } from '../rules/protocol'
+import type { EventView, LotView, OfferView, RoomStateResponse, SettlementView } from '../rules/protocol'
 import {
   createStore,
   DB_NAME,
   DB_VERSION,
   openDb,
   savedEvents,
+  savedLots,
   savedOffers,
   savedSettlement,
   withState,
@@ -254,6 +255,58 @@ describe('хранилище на устройстве', () => {
     const noOffers: RoomStateResponse = { ...state }
     delete noOffers.offers
     expect(savedOffers(withState(saved as SavedRoom, noOffers, 70))).toEqual([])
+  })
+
+  it('лоты (Р-38): старая запись без поля — пусто; ответ сервера — записан; сервер без лотов — пусто', async () => {
+    const lot: LotView = {
+      id: 'L1',
+      at: 10,
+      sellerId: 'MA',
+      title: 'Велосипед',
+      description: '',
+      start: 100000,
+      step: 10000,
+      closesAt: 100,
+      latestEnd: 100 + 30 * 60 * 1000,
+      endsAt: 100,
+      times: { objection: 1, appeal: 2, silence: 3, court: 4 },
+      status: 'open',
+      bids: [],
+      best: null,
+      winner: null,
+      amount: null,
+      withdrawnAt: null,
+      handedAt: null,
+      declinedAt: null,
+      disputedAt: null,
+      disputeFrom: null,
+      silenceUntil: null,
+      received: null,
+      closedAt: null,
+    }
+    const factory = new IDBFactory()
+    const first = createStore(factory)
+    await first.saveRoom(room('A', 1)) // как до лотов: поля lots нет
+    const old = (await first.getRoom('A')) as SavedRoom
+    expect(savedLots(old)).toEqual([])
+    const state: RoomStateResponse = {
+      v: 9,
+      room: { id: 'A', name: 'Дача', currency: 'RUB', hostId: 'MA', createdAt: 1 },
+      members: [{ id: 'MA', name: 'Аня' }],
+      me: 'MA',
+      events: [],
+      lots: [lot],
+      now: 50,
+    }
+    await first.saveRoom(withState(old, state, 60))
+    await first.close()
+    const saved = (await createStore(factory).getRoom('A')) as SavedRoom
+    expect(savedLots(saved)).toEqual([lot])
+    // Испорченный лот пропущен; сервер без лотов — пусто
+    expect(savedLots(room('A', 1, { lots: [{ id: 'L2' } as unknown as LotView, lot] }))).toEqual([lot])
+    const noLots: RoomStateResponse = { ...state }
+    delete noLots.lots
+    expect(savedLots(withState(saved, noLots, 70))).toEqual([])
   })
 
   it('пари: копия до нового поля протокола не отдаётся, свежая — отдаётся; запись не переписана', async () => {

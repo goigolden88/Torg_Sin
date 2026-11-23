@@ -3,7 +3,8 @@
 // ответа (courtCaseOf), без своих проверок; места, сроки и решение — courtState и courtVerdict, так что
 // срок места и решение идут между опросами. Голоса видны всем сразу (Р-11). Каждое действие — окном
 // подтверждения экрана (onAsk: номер запроса по спору, действию и выбору — Р-13). Esc закрывает форму
-// причины здесь, не уводя с экрана
+// причины здесь, не уводя с экрана. Лот (Р-38) — только суд по «Не получил»: апелляции нет, голоса —
+// «передано» / «не передано» (changes), большинства нет — не передано
 import { useState, type FormEvent, type KeyboardEvent } from 'react'
 import { fileAppeal, joinAppeal, judgeCourt, replaceJuror, type CourtKind, type Result } from '../api'
 import {
@@ -18,8 +19,8 @@ import {
   courtVerdict,
   NO_JUDGES,
   replaceReason,
-  type AppealTarget,
   type CourtCase,
+  type CourtTarget,
 } from '../rules/appeal'
 import { formatCountdown, formatDateTime } from '../rules/date'
 import { MAX_EVENT_TEXT } from '../rules/event'
@@ -57,8 +58,8 @@ export function CourtBlock({
 }: {
   room: SavedRoom
   kind: CourtKind
-  target: string // номер события или пари
-  dispute: AppealTarget // спор для правил (eventState / offerState)
+  target: string // номер события, пари или лота
+  dispute: CourtTarget // спор для правил (eventState / offerState / lotState; у лота апелляции нет — только суд)
   c: CourtCase | null // дело суда из ответа (courtCaseOf)
   now: number
   online: boolean
@@ -72,11 +73,11 @@ export function CourtBlock({
   const [form, setForm] = useState<Form>(null)
   const me = room.memberId
   const courtRoom = courtRoomOf(room)
-  const what = kind === 'event' ? 'событие' : 'пари'
+  const what = kind === 'event' ? 'событие' : kind === 'lot' ? 'лот' : 'пари'
   const who = (id: string) => nameOf(room, id) + (id === me ? ' (вы)' : '')
   const send = { server: room.server, roomId: room.id, key: room.key }
   // Сроки спора (Р-35), закреплённые при создании; у спора до темпа — обычные
-  const times = viewTimes(dispute.kind === 'event' ? dispute.event : dispute.offer)
+  const times = viewTimes(dispute.kind === 'event' ? dispute.event : dispute.kind === 'lot' ? dispute.lot : dispute.offer)
   const seatSpan = spanText(times.court) // на голос у места — срок суда
 
   const appealError = checkAppeal(dispute, c, me, '-', courtRoom, now)
@@ -130,12 +131,17 @@ export function CourtBlock({
   }
 
   function askVote(v: CourtVerdict) {
+    // Лот (Р-38): «передано» — получен, долг победителя продавцу; «не передано» — долга нет
     const effect =
       v.verdict === 'keep'
         ? 'Будет большинство за это — исход остаётся и становится окончательным.'
         : v.verdict === 'change'
           ? 'Будет большинство за это — исход меняется, итог считается по новому.'
-          : 'Будет большинство за это — ставки возвращаются, выплат нет.'
+          : v.verdict === 'delivered'
+            ? 'Будет большинство за это — лот получен, победитель должен продавцу свою ставку.'
+            : v.verdict === 'undelivered'
+              ? 'Будет большинство за это — лот не передан, никто никому не должен.'
+              : 'Будет большинство за это — ставки возвращаются, выплат нет.'
     onAsk({
       question: `Ваш голос: ${label(v)}?`,
       body: [effect, 'Суд решает большинством поданных голосов, когда проголосуют все или пройдут сроки мест.', 'Голос не изменить.'],
@@ -275,7 +281,11 @@ export function CourtBlock({
 
           {decision ? (
             <p className="outcome-head approved">
-              Решение суда: {decision.majority ? label(decision) : `большинства нет — ${c.appeal ? 'исход остаётся' : 'отменить — вернуть ставки'}`},{' '}
+              Решение суда:{' '}
+              {decision.majority
+                ? label(decision)
+                : `большинства нет — ${c.appeal ? 'исход остаётся' : kind === 'lot' ? 'не передано, никто никому не должен' : 'отменить — вернуть ставки'}`}
+              ,{' '}
               {formatDateTime(decision.at)}, голоса: {tally(state.seats, label)}. Решение окончательное.
             </p>
           ) : (
@@ -289,7 +299,7 @@ export function CourtBlock({
               </p>
               <div className="row">
                 {verdicts.map((v) => (
-                  <button key={label(v)} className={v.verdict === 'cancel' ? 'button secondary' : 'button'} type="button" onClick={() => askVote(v)} disabled={!online}>
+                  <button key={label(v)} className={v.verdict === 'cancel' || v.verdict === 'undelivered' ? 'button secondary' : 'button'} type="button" onClick={() => askVote(v)} disabled={!online}>
                     {cap(label(v))}
                   </button>
                 ))}

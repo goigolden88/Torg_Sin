@@ -377,9 +377,10 @@ export function auctionResultText(room: SavedRoom, o: OfferView, now: number): s
   return `Торг закончен${how} — соперник ${who(room, best.by)}, ${money(best.amount, room.currency)}`
 }
 
-// «Торг закончится не позже …» — исходный конец + 30 минут продлений (auctionLatestEnd)
-export function latestEndLine(closesAt: number): string {
-  return `Торг закончится не позже ${formatDateTime(auctionLatestEnd({ closesAt }))}: встречное за 2 минуты до конца продлевает торг на 2 минуты, всего — не больше чем на 30 минут.`
+// «Торг закончится не позже …» — исходный конец + 30 минут продлений (auctionLatestEnd); общее у торга
+// пари (bid — «встречное») и лота («ставка», Р-38)
+export function latestEndLine(closesAt: number, bid = 'встречное'): string {
+  return `Торг закончится не позже ${formatDateTime(auctionLatestEnd({ closesAt }))}: ${bid} за 2 минуты до конца продлевает торг на 2 минуты, всего — не больше чем на 30 минут.`
 }
 
 // Сумма в поле: минимальные единицы → «100» или «100,5» (подсказка во встречном, старт и шаг торга)
