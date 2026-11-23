@@ -6,14 +6,20 @@
 // …, соперник — …, банк …» (offerStakes). «Предложить» — окно подтверждения; повтор той же формы —
 // тот же номер запроса: двойное нажатие и повтор после «нет связи» дают одно пари (Р-13). Отказ
 // сервера — текстом под формой, введённое остаётся. Проверка до отправки — правила (offer.ts). Под
-// сроками — сроки комнаты (темп, Р-35)
+// сроками — сроки комнаты (темп, Р-35). «Как примут» (Р-37): «Принимает первый» или «Торг до …» — вместо
+// кэфа старт (наименьшая сумма соперника) и шаг (подставлен 10 % старта), «Приём до» — «Конец торга» со
+// строкой «Торг закончится не позже …», адресата нет. repeat — «Повторить» не состоявшийся торг: те же
+// условия, сроки — та же длительность от нового «сейчас» (repeatForm)
 import { useCallback, useRef, useState, type FormEvent } from 'react'
 import { createOffer } from '../api'
 import { currency as currencyOf, isCurrencyCode, parseAmount, type CurrencyCode } from '../rules/currency'
 import { formatDateTime, fromLocalInput, toLocalInput } from '../rules/date'
 import { MAX_EVENT_TEXT } from '../rules/event'
 import {
+  auctionStep,
   BAD_ODDS,
+  BAD_START,
+  BAD_STEP,
   checkOfferInput,
   checkOfferSubject,
   checkOfferTimes,
@@ -26,10 +32,22 @@ import {
 } from '../rules/offer'
 import { formKey, requestFor, type PendingRequest } from '../rules/request'
 import { ulid } from '../rules/ulid'
-import type { SavedRoom } from '../store/db'
+import { savedOffers, type SavedRoom } from '../store/db'
 import { BackLink, useEscape } from './BackLink'
 import { money, nameOf, SMALL_ROOM, SMALL_ROOM_NOTE } from './eventParts'
-import { OddsField, oddsLabel, oddsNumber, offerHref, roomRolesOf, sideLabel, validOdds } from './offerParts'
+import {
+  auctionSummary,
+  latestEndLine,
+  OddsField,
+  oddsLabel,
+  oddsNumber,
+  offerHref,
+  repeatForm,
+  roomRolesOf,
+  sideLabel,
+  unitsText,
+  validOdds,
+} from './offerParts'
 import { roomTimesLine, spanText } from './paceParts'
 import { NORMAL_TIMES } from '../rules/pace'
 import { serverTime, useRoom } from './useRoom'
@@ -48,21 +66,31 @@ const UNKNOWN_CURRENCY = 'Валюта комнаты незнакома это�
 // Проверенная форма и гарант, которого покажем в подтверждении
 type Ask = { input: OfferInput; guarantorId: string | null }
 
-export function NewOffer({ room, onUpdate }: { room: SavedRoom; onUpdate: (room: SavedRoom) => void }) {
+export function NewOffer({ room, repeat, onUpdate }: { room: SavedRoom; repeat?: string; onUpdate: (room: SavedRoom) => void }) {
   const { sync, clock, pace, refresh } = useRoom(room, onUpdate)
-  const [condition, setCondition] = useState('')
-  const [check, setCheck] = useState('')
-  const [side, setSide] = useState<'yes' | 'no'>('yes')
+  const code = isCurrencyCode(room.currency) ? room.currency : null
+  // «Повторить» (Р-37): условия не состоявшегося торга, сроки — от нового «сейчас»; пари нет — пустая форма
+  const [again] = useState(() => {
+    const source = repeat ? savedOffers(room).find((o) => o.id === repeat) : undefined
+    return source ? repeatForm(source, room.hostId, serverTime(clock)) : null
+  })
+  const field = (n: number | undefined) => (n !== undefined && code ? unitsText(n, code) : '')
+  const [condition, setCondition] = useState(again?.condition ?? '')
+  const [check, setCheck] = useState(again?.check ?? '')
+  const [side, setSide] = useState<'yes' | 'no'>(again?.side ?? 'yes')
+  const [mode, setMode] = useState<'first' | 'auction'>(again ? 'auction' : 'first') // «Принимает первый» / «Торг до …»
   const [a, setA] = useState('1')
   const [b, setB] = useState('1')
-  const [amount, setAmount] = useState('')
+  const [amount, setAmount] = useState(field(again?.amount))
+  const [start, setStart] = useState(field(again?.start)) // старт торга — наименьшая сумма соперника
+  const [step, setStep] = useState<string | null>(again ? field(again.step) : null) // null — подставлен 10 % старта
   const [to, setTo] = useState('') // пусто — открытое
   const [times] = useState(() => defaultTimes(Date.now()))
-  const [closes, setCloses] = useState(times.closes)
-  const [expected, setExpected] = useState(times.expected)
-  const [guarantor, setGuarantor] = useState('') // пусто — ведущий
-  const [none, setNone] = useState(false) // без гаранта (Р-36): разошлись — суд
-  const [subject, setSubject] = useState('') // о ком спор (Р-26); пусто — ни о ком
+  const [closes, setCloses] = useState(again ? toLocalInput(again.closesAt) : times.closes)
+  const [expected, setExpected] = useState(again ? toLocalInput(again.expectedAt) : times.expected)
+  const [guarantor, setGuarantor] = useState(again?.guarantor ?? '') // пусто — ведущий
+  const [none, setNone] = useState(again?.none ?? false) // без гаранта (Р-36): разошлись — суд
+  const [subject, setSubject] = useState(again?.subject ?? '') // о ком спор (Р-26); пусто — ни о ком
   const [error, setError] = useState('')
   const [ask, setAsk] = useState<Ask | null>(null)
   const [busy, setBusy] = useState(false)
@@ -79,8 +107,17 @@ export function NewOffer({ room, onUpdate }: { room: SavedRoom; onUpdate: (room:
     }, [ask, back]),
   )
 
-  const code = isCurrencyCode(room.currency) ? room.currency : null
   const sign = code ? currencyOf(code).sign || code : room.currency
+  const auction = mode === 'auction'
+  // Торг: старт и шаг из полей; шаг не трогали — подставлен 10 % старта (auctionStep)
+  const parse = (text: string) => {
+    if (!code || !text.trim()) return null
+    const p = parseAmount(text, code)
+    return p.ok ? p.units : null
+  }
+  const startUnits = parse(start)
+  const stepText = step ?? (startUnits !== null && code ? unitsText(auctionStep(startUnits), code) : '')
+  const endAt = fromLocalInput(closes) // конец торга — для строки «Торг закончится не позже …»
   const others = room.members.filter((m) => m.id !== room.memberId)
   // Ведущий — автор, адресат или предмет спора: гаранта по умолчанию нет, выбрать обязательно
   const hostIsSide = room.hostId === room.memberId || room.hostId === to
@@ -95,6 +132,12 @@ export function NewOffer({ room, onUpdate }: { room: SavedRoom; onUpdate: (room:
     offerGuarantor({ to: toId || null, guarantor: null, noGuarantor: true, subject: subjectId || null }, room.memberId, roomRolesOf(room)).ok
   const mayNone = noneOk(to, subject)
   const silence = spanText((pace?.times ?? NORMAL_TIMES).silence)
+
+  // Торг — только открытое (Р-37): адресат снимается
+  function chooseMode(next: 'first' | 'auction') {
+    setMode(next)
+    if (next === 'auction') chooseTo('')
+  }
 
   function chooseTo(id: string) {
     setTo(id)
@@ -135,13 +178,23 @@ export function NewOffer({ room, onUpdate }: { room: SavedRoom; onUpdate: (room:
     if (closesAt === null || expectedAt === null) return setError(NEED_TIMES)
     const sum = units()
     if (!sum.ok) return setError(sum.error)
+    // Торг (Р-37): старт и шаг — суммы валюты; пусто или не сумма — отказ правил своим текстом
+    let terms: { start: number; step: number } | null = null
+    if (auction) {
+      if (!code) return setError(UNKNOWN_CURRENCY)
+      const s = parseAmount(start, code)
+      if (!s.ok) return setError(start.trim() ? s.error : BAD_START)
+      const st = parseAmount(stepText, code)
+      if (!st.ok) return setError(stepText.trim() ? st.error : BAD_STEP)
+      terms = { start: s.units, step: st.units }
+    }
     const checked = checkOfferInput({
       condition,
       check,
       side: mySide,
-      odds: { a: oddsNumber(a), b: oddsNumber(b) },
+      ...(terms ? { auction: terms } : { odds: { a: oddsNumber(a), b: oddsNumber(b) } }),
       amount: sum.value,
-      to: to || null,
+      to: auction ? null : to || null,
       closesAt,
       expectedAt,
       guarantor: none ? null : guarantor || null,
@@ -162,7 +215,8 @@ export function NewOffer({ room, onUpdate }: { room: SavedRoom; onUpdate: (room:
   async function confirm() {
     if (!ask || sending.current) return
     const x = ask.input
-    const form = formKey(room.id, x.condition, x.check, x.side, String(x.odds.a), String(x.odds.b), String(x.amount), x.to ?? '', String(x.closesAt), String(x.expectedAt), x.noGuarantor ? 'none' : (x.guarantor ?? ''), x.subject ?? '')
+    const terms = x.auction ? ['auction', String(x.auction.start), String(x.auction.step)] : []
+    const form = formKey(room.id, x.condition, x.check, x.side, String(x.odds.a), String(x.odds.b), String(x.amount), x.to ?? '', String(x.closesAt), String(x.expectedAt), x.noGuarantor ? 'none' : (x.guarantor ?? ''), x.subject ?? '', ...terms)
     const request = requestFor(pending.current, form, ulid)
     pending.current = request
     sending.current = true
@@ -172,7 +226,8 @@ export function NewOffer({ room, onUpdate }: { room: SavedRoom; onUpdate: (room:
         condition: x.condition,
         check: x.check,
         side: x.side,
-        odds: x.odds,
+        // Торг (Р-37): старт и шаг вместо кэфа
+        ...(x.auction ? { auction: { start: x.auction.start, step: x.auction.step } } : { odds: x.odds }),
         amount: x.amount,
         ...(x.to ? { to: x.to } : {}),
         closesAt: x.closesAt,
@@ -199,6 +254,7 @@ export function NewOffer({ room, onUpdate }: { room: SavedRoom; onUpdate: (room:
     <div className="card event-form offer-form">
       <BackLink href={back} />
       <h2>Предложить пари</h2>
+      {again && <p className="hint">Повтор торга, который не состоялся: условия те же, сроки — от сейчас. Можно поправить до отправки.</p>}
       {sync.state === 'fail' && <p className="error">{sync.text}</p>}
       {/* Как «Новое событие»: две обёртки-колонки, до 1280 px одна под другой (styles.css) */}
       <form className="form" onSubmit={submit}>
@@ -268,14 +324,49 @@ export function NewOffer({ room, onUpdate }: { room: SavedRoom; onUpdate: (room:
             </div>
             <span className="hint">По желанию. Предмет спора бывает только на стороне «сбудется» и не бывает гарантом.</span>
           </fieldset>
-          <OddsField a={a} b={b} onA={setA} onB={setB} mine="Вы рискуете" theirs="Соперник" />
+          <fieldset className="field">
+            <legend>Как примут</legend>
+            <div className="chips">
+              <label className="chip">
+                <input type="radio" name="offer-mode" value="first" checked={!auction} onChange={() => chooseMode('first')} />
+                <span>Принимает первый</span>
+              </label>
+              <label className="chip">
+                <input type="radio" name="offer-mode" value="auction" checked={auction} onChange={() => chooseMode('auction')} />
+                <span>Торг до …</span>
+              </label>
+            </div>
+            <span className="hint">
+              {auction
+                ? 'Участники до конца торга перебивают друг друга: сколько поставят против вашей суммы. Кто даст больше всех — тот соперник; лучшее можно принять и раньше.'
+                : 'Ваш кэф и сумма — кто первый примет, тот соперник.'}
+            </span>
+          </fieldset>
+          {!auction && <OddsField a={a} b={b} onA={setA} onB={setB} mine="Вы рискуете" theirs="Соперник" />}
           <label className="field">
             <span>Ваша сумма, {sign}</span>
             <input className="input" inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="Например: 300" autoComplete="off" />
           </label>
+          {auction && (
+            <div className="times">
+              <label className="field">
+                <span>Старт, {sign}</span>
+                <input className="input" inputMode="decimal" value={start} onChange={(e) => setStart(e.target.value)} placeholder="Например: 1000" autoComplete="off" />
+                <span className="hint">Наименьшая сумма соперника</span>
+              </label>
+              <label className="field">
+                <span>Шаг, {sign}</span>
+                <input className="input" inputMode="decimal" value={stepText} onChange={(e) => setStep(e.target.value)} autoComplete="off" />
+                <span className="hint">{step === null ? 'Подставлено 10 % старта' : 'Новое встречное больше лучшего хотя бы на шаг'}</span>
+              </label>
+            </div>
+          )}
         </div>
 
         <div className="form-col">
+          {auction ? (
+            <p className="hint">Кому: торг — открытое пари, адресата у него нет. Перебивать может любой участник, кроме гаранта.</p>
+          ) : (
           <fieldset className="field">
             <legend>Кому</legend>
             <div className="chips">
@@ -292,10 +383,11 @@ export function NewOffer({ room, onUpdate }: { room: SavedRoom; onUpdate: (room:
             </div>
             <span className="hint">Открытое примет любой участник, кроме гаранта; адресное — только тот, кому предложено.</span>
           </fieldset>
+          )}
 
           <div className="times">
             <label className="field">
-              <span>Приём до</span>
+              <span>{auction ? 'Конец торга' : 'Приём до'}</span>
               <input className="input" type="datetime-local" value={closes} onChange={(e) => setCloses(e.target.value)} />
             </label>
             <label className="field">
@@ -303,7 +395,14 @@ export function NewOffer({ room, onUpdate }: { room: SavedRoom; onUpdate: (room:
               <input className="input" type="datetime-local" value={expected} onChange={(e) => setExpected(e.target.value)} />
             </label>
           </div>
-          <p className="hint">Время — местное, на этом устройстве. Приём закрывается по часам сервера.</p>
+          {auction ? (
+            <>
+              <p className="hint">Торг — от 10 минут до 3 дней; «исход к» — не раньше чем через 30 минут после конца торга. Время — местное, торг закрывается по часам сервера.</p>
+              {endAt !== null && <p className="hint">{latestEndLine(endAt)}</p>}
+            </>
+          ) : (
+            <p className="hint">Время — местное, на этом устройстве. Приём закрывается по часам сервера.</p>
+          )}
           {pace && <p className="hint">{roomTimesLine(pace)}</p>}
 
           <fieldset className="field">
@@ -346,7 +445,13 @@ export function NewOffer({ room, onUpdate }: { room: SavedRoom; onUpdate: (room:
           {room.members.length < SMALL_ROOM && <p className="hint">{SMALL_ROOM_NOTE}</p>}
         </div>
 
-        <Summary side={mySide} a={a} b={b} amount={amount} code={code} currency={room.currency} />
+        {auction ? (
+          <div className="offer-summary" aria-live="polite">
+            <p>{auctionSummary({ side: mySide, amount: parse(amount), start: startUnits, step: parse(stepText), currency: room.currency })}</p>
+          </div>
+        ) : (
+          <Summary side={mySide} a={a} b={b} amount={amount} code={code} currency={room.currency} />
+        )}
         {error && (
           <p className="error" role="alert">
             {error}
@@ -413,23 +518,34 @@ function ConfirmOffer({ room, ask, busy, onConfirm, onClose }: { room: SavedRoom
   const x = ask.input
   const s = offerStakes(x.odds, x.amount)
   const sum = (n: number) => money(n, room.currency)
+  const terms = x.auction
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal" role="dialog" aria-modal="true" aria-label="Подтверждение пари" onClick={(e) => e.stopPropagation()}>
-        <p className="modal-question">Предложить пари?</p>
+        <p className="modal-question">{terms ? 'Начать торг?' : 'Предложить пари?'}</p>
         <p>„{x.condition}“</p>
-        {s.ok && (
-          <p>
-            Вы ставите {sum(s.value.author)} на „{sideLabel(x.side)}“, соперник — {sum(s.value.taker)} (кэф {oddsLabel(x.odds)}), банк{' '}
-            {sum(s.value.bank)}.
-          </p>
+        {terms ? (
+          <p>{auctionSummary({ side: x.side, amount: x.amount, start: terms.start, step: terms.step, currency: room.currency })}</p>
+        ) : (
+          s.ok && (
+            <p>
+              Вы ставите {sum(s.value.author)} на „{sideLabel(x.side)}“, соперник — {sum(s.value.taker)} (кэф {oddsLabel(x.odds)}), банк{' '}
+              {sum(s.value.bank)}.
+            </p>
+          )
         )}
         <p className="hint">
-          Кому: {x.to ? nameOf(room, x.to) : 'открытое — любой'} · {ask.guarantorId === null ? 'без гаранта: разойдётесь — решит суд' : `гарант — ${nameOf(room, ask.guarantorId)}`}
-          {x.subject ? ` · о ком спор — ${nameOf(room, x.subject)}` : ''} · приём до {formatDateTime(x.closesAt)} · исход к{' '}
+          {terms ? 'Торг — открытое' : `Кому: ${x.to ? nameOf(room, x.to) : 'открытое — любой'}`} ·{' '}
+          {ask.guarantorId === null ? 'без гаранта: разойдётесь — решит суд' : `гарант — ${nameOf(room, ask.guarantorId)}`}
+          {x.subject ? ` · о ком спор — ${nameOf(room, x.subject)}` : ''} · {terms ? 'торг до' : 'приём до'} {formatDateTime(x.closesAt)} · исход к{' '}
           {formatDateTime(x.expectedAt)}
         </p>
-        <p className="hint">Пока пари не приняли, его можно отозвать.</p>
+        {terms && <p className="hint">{latestEndLine(x.closesAt)}</p>}
+        <p className="hint">
+          {terms
+            ? 'Лучшее встречное к концу торга примется само — отклонить его нельзя. Отозвать торг можно, пока встречных нет.'
+            : 'Пока пари не приняли, его можно отозвать.'}
+        </p>
         <div className="row">
           <button className="button" type="button" onClick={onConfirm} disabled={busy} autoFocus>
             {busy ? 'Предлагаю…' : 'Предложить'}

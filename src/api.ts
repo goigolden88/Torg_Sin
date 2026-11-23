@@ -48,9 +48,14 @@ import {
   type RejectResponse,
   type RoomStateResponse,
   isAcceptOfferResponse,
+  isBidOfferResponse,
   isCreateOfferResponse,
   isRevokeOfferResponse,
+  isTakeBidResponse,
   type AcceptOfferResponse,
+  type BidOfferRequest,
+  type BidOfferResponse,
+  type TakeBidResponse,
   type CounterOfferRequest,
   type CreateOfferRequest,
   type CreateOfferResponse,
@@ -304,6 +309,18 @@ export function acceptOffer(server: string, roomId: string, key: string, offerId
 // POST …/offers/<пари>/revoke — отозвать своё, пока не принято
 export function revokeOffer(server: string, roomId: string, key: string, offerId: string, request: Omit<OfferActRequest, 'v'>): Promise<Result<RevokeOfferResponse>> {
   return call(offerUrl(server, roomId, offerId, 'revoke'), post(request, key), isRevokeOfferResponse)
+}
+
+// Торг (Р-37): повтор с тем же requestId — тот же ответ без второй записи (Р-13)
+
+// POST …/offers/<пари>/bid — встречное в торге: сколько ставишь против суммы автора
+export function bidOffer(server: string, roomId: string, key: string, offerId: string, request: Omit<BidOfferRequest, 'v'>): Promise<Result<BidOfferResponse>> {
+  return call(offerUrl(server, roomId, offerId, 'bid'), post(request, key), isBidOfferResponse)
+}
+
+// POST …/offers/<пари>/bid/accept — «принять сейчас»: автор принимает лучшее встречное, торг закончен
+export function takeBid(server: string, roomId: string, key: string, offerId: string, request: Omit<OfferActRequest, 'v'>): Promise<Result<TakeBidResponse>> {
+  return call(offerUrl(server, roomId, offerId, 'bid/accept'), post(request, key), isTakeBidResponse)
 }
 
 // Исход пари (Р-23): повтор с тем же requestId — тот же ответ без второй записи (Р-13)

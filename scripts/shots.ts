@@ -16,6 +16,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { build, preview, runnerImport } from 'vite'
 import { Cdp, launchChrome, OUT, PASSWORD, PORT, SIZES, WIDE, type RoomsServer, type ServerModule, type Size } from './shots/common.ts'
+import { auction } from './shots/auction.ts'
 import { backup } from './shots/backup.ts'
 import { courts } from './shots/courts.ts'
 import { crash } from './shots/crash.ts'
@@ -123,6 +124,11 @@ const SCENARIOS: Scenario[] = [
     name: 'no-guarantor',
     about: 'пари без гаранта: выбор в форме, совпали — окончательно, разошлись — сразу суд, «вы в суде», недоступно в комнате из двоих (133–141)',
     perSize: (c, size) => noGuarantor(c.cdp, size, c.startServer),
+  },
+  {
+    name: 'auction',
+    about: 'пари «Торг до …»: форма, встречные у участника и автора, «вас перебили», вдвое больше, «Принять сейчас», не состоялось, «Повторить», «История» (142–152)',
+    perSize: (c, size) => auction(c.cdp, size, c.startServer),
   },
   {
     name: 'layout',

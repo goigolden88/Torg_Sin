@@ -6,13 +6,15 @@
 // «окончательно: +100 ₽ Аня»). Пари — последнее известное с сервера (у комнаты на устройстве),
 // статус и отсчёт — по времени сервера. На экране пари — тот же список рядом, открытое отмечено.
 // Участник — член суда по пари и ещё не голосовал — значок «вы в суде» (Р-24). Предмет спора —
-// сторона пари — пометка (Р-26). Пари без гаранта (Р-36) — строка «Гарант: нет — спор решит суд»
+// сторона пари — пометка (Р-26). Пари без гаранта (Р-36) — строка «Гарант: нет — спор решит суд».
+// Торг (Р-37) — «торг · автор — …», лучшее встречное или старт, «торг до …, осталось …»; моё встречное
+// перебили — значок «вас перебили»
 import { offerStatus } from '../rules/offer'
 import type { OfferView } from '../rules/protocol'
 import { savedOffers, type SavedRoom } from '../store/db'
 import { awaitsMyVote } from './courtParts'
 import { offerPastNow } from './historyParts'
-import { NO_GUARANTOR_LABEL, offerHref, offerState, OfferStatusLine, OfferSubjectFlag, stakesLine, toLabel, who } from './offerParts'
+import { NO_GUARANTOR_LABEL, offerHref, offerState, OfferStatusLine, OfferSubjectFlag, outbid, stakesLine, toLabel, who } from './offerParts'
 import { useServerNow, type Clock } from './useRoom'
 
 export function OfferList({ room, clock, current }: { room: SavedRoom; clock: Clock | null; current?: string }) {
@@ -20,7 +22,9 @@ export function OfferList({ room, clock, current }: { room: SavedRoom; clock: Cl
   const now = useServerNow(clock, offers.length > 0)
   const status = (o: OfferView) => offerStatus(offerState(o), now)
   const going = offers.filter((o) => offerPastNow(room, o, now) === null)
-  const open = going.filter((o) => status(o) === 'open').sort((a, b) => a.closesAt - b.closesAt)
+  // Торг (Р-37) — по концу с продлениями
+  const ends = (o: OfferView) => o.bidding?.endsAt ?? o.closesAt
+  const open = going.filter((o) => status(o) === 'open').sort((a, b) => ends(a) - ends(b))
   const accepted = going.filter((o) => status(o) === 'accepted').sort((a, b) => a.expectedAt - b.expectedAt)
   const live = [...open, ...accepted]
 
@@ -71,11 +75,12 @@ function Group({
                   {awaitsMyVote(o.outcome, room.memberId, now) && <span className="badge court-badge">вы в суде</span>}
                 </span>
                 <span className="hint">
-                  {o.counterTo !== null ? 'встречное · ' : ''}автор — {who(room, o.authorId)}, кому — {toLabel(room, o)}
+                  {o.auction ? `торг · автор — ${who(room, o.authorId)}` : `${o.counterTo !== null ? 'встречное · ' : ''}автор — ${who(room, o.authorId)}, кому — ${toLabel(room, o)}`}
                 </span>
-                <span className="hint">{stakesLine(room, o)}</span>
+                <span className="hint">{stakesLine(room, o, now)}</span>
                 {o.guarantorId === null && <span className="hint">Гарант: {NO_GUARANTOR_LABEL}</span>}
                 <OfferStatusLine room={room} offer={o} now={now} />
+                {outbid(o, room.memberId, now) && <span className="badge outbid-badge">вас перебили</span>}
                 <OfferSubjectFlag room={room} offer={o} />
                 {waiting && <span className="hint">встречное ждёт ответа автора</span>}
               </a>

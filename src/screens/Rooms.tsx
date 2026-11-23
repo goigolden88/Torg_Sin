@@ -30,7 +30,7 @@ export type RoomsView =
   | { kind: 'room'; id: string }
   | { kind: 'new-event'; id: string } // новое событие в комнате id
   | { kind: 'event'; id: string; event: string } // событие комнаты id
-  | { kind: 'new-offer'; id: string } // предложить пари в комнате id
+  | { kind: 'new-offer'; id: string; repeat?: string } // предложить пари в комнате id; repeat — «Повторить» торг (Р-37)
   | { kind: 'offer'; id: string; offer: string } // пари комнаты id
   | { kind: 'settle'; id: string } // «Расчёт» комнаты id
   | { kind: 'history'; id: string } // «История» комнаты id
@@ -142,7 +142,7 @@ export function Rooms({ view }: { view: RoomsView }) {
             ) : view.kind === 'offer' ? (
               <OfferScreen key={open.id + '/' + view.offer} room={open} offerId={view.offer} onUpdate={upsert} />
             ) : view.kind === 'new-offer' ? (
-              <NewOffer key={open.id} room={open} onUpdate={upsert} />
+              <NewOffer key={open.id + '/' + (view.repeat ?? '')} room={open} repeat={view.repeat} onUpdate={upsert} />
             ) : view.kind === 'settle' ? (
               <SettleScreen key={open.id} room={open} onUpdate={upsert} />
             ) : view.kind === 'history' ? (
