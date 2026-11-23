@@ -23,6 +23,7 @@ const BAD_DEVICE = 'Ссылка для другого устройства не
 // #/room/<номер>/event/new — новое событие, #/room/<номер>/event/<номер события> — событие;
 // #/room/<номер>/offer/new — предложить пари, #/room/<номер>/offer/<номер пари> — пари;
 // #/room/<номер>/lot/new — выставить лот, #/room/<номер>/lot/<номер лота> — лот;
+// #/room/<номер>/choice/new — начать выбор, #/room/<номер>/choice/<номер выбора> — выбор;
 // #/room/<номер>/settle — «Расчёт»; #/room/<номер>/history — «История»; #/join/<номер>/<токен>[?server=…] — ссылка-приглашение, #/device/<номер>/<токен>[?server=…] —
 // ссылка для другого устройства (src/rules/link.ts)
 function routeFromHash(): Route {
@@ -65,6 +66,12 @@ function routeFromHash(): Route {
   if (lot) {
     const id = decodeURIComponent(lot[1])
     return { tab: 'rooms', view: lot[2] === 'new' ? { kind: 'new-lot', id } : { kind: 'lot', id, lot: decodeURIComponent(lot[2]) } }
+  }
+  // #/room/<номер>/choice/new — «Новый выбор», #/room/<номер>/choice/<номер выбора> — выбор (Р-39)
+  const choice = /^#\/room\/([^/?]+)\/choice\/([^/?]+)$/.exec(hash)
+  if (choice) {
+    const id = decodeURIComponent(choice[1])
+    return { tab: 'rooms', view: choice[2] === 'new' ? { kind: 'new-choice', id } : { kind: 'choice', id, choice: decodeURIComponent(choice[2]) } }
   }
   return { tab: 'rooms', view: { kind: 'list' } }
 }

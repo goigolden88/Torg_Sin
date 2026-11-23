@@ -18,6 +18,7 @@ import { build, preview, runnerImport } from 'vite'
 import { Cdp, launchChrome, OUT, PASSWORD, PORT, SIZES, WIDE, type RoomsServer, type ServerModule, type Size } from './shots/common.ts'
 import { auction } from './shots/auction.ts'
 import { backup } from './shots/backup.ts'
+import { choices } from './shots/choices.ts'
 import { courts } from './shots/courts.ts'
 import { crash } from './shots/crash.ts'
 import { eventWidth } from './shots/event-width.ts'
@@ -135,6 +136,11 @@ const SCENARIOS: Scenario[] = [
     name: 'lots',
     about: '«Лот»: пусто, «Новый лот», торг и «вас перебили», комната с лотами, после торга у продавца и победителя, суд, «Расчёт», «История» (160–167)',
     perSize: (c, size) => lots(c.cdp, size, c.startServer),
+  },
+  {
+    name: 'choices',
+    about: '«Выбор»: пусто, «Новый выбор», фаза вариантов, комната, фаза вкладов, итог, ничья и жребий, «Расчёт», «История» (170–177)',
+    perSize: (c, size) => choices(c.cdp, size, c.startServer),
   },
   {
     name: 'layout',

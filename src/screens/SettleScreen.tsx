@@ -6,7 +6,7 @@
 // ответа комнаты (useRoom, раз в 5 с); сервер без свода — «Расчёта на этом сервере пока нет». Каждое
 // действие — окном подтверждения с синхронным замком и номером запроса (Р-13); Enter отправляет, Esc
 // закрывает. Колонки — как у события: .event-main и .event-side, от 1280 px — рядом. Полученные лоты (Р-38) —
-// «Долги по лотам» с основанием «лот „…“»
+// «Долги по лотам» с основанием «лот „…“»; решённые выборы (Р-39) — «Долги по выборам» с основанием «выбор „…“»
 import { useCallback, useRef, useState, type FormEvent, type MutableRefObject, type ReactNode } from 'react'
 import { answerTransfer, changeSettleMode, createTransfer, type Result, type TransferAct } from '../api'
 import { isCurrencyCode, parseAmount } from '../rules/currency'
@@ -14,8 +14,9 @@ import { formatDateTime } from '../rules/date'
 import type { SettlementView, SettleModeView, TransferView } from '../rules/protocol'
 import { formKey, requestFor, type PendingRequest } from '../rules/request'
 import { ulid } from '../rules/ulid'
-import { savedEvents, savedLots, savedOffers, savedSettlement, type SavedRoom } from '../store/db'
+import { savedChoices, savedEvents, savedLots, savedOffers, savedSettlement, type SavedRoom } from '../store/db'
 import { BackLink, useEscape } from './BackLink'
+import { choiceDebtLine, choiceDebtsOf, choiceHref, type ChoiceDebt } from './choiceParts'
 import { nameOf } from './eventParts'
 import { lotDebtLine, lotDebts, lotHref, type LotDebt } from './lotParts'
 import {
@@ -53,7 +54,8 @@ type Ask =
 export function SettleScreen({ room, onUpdate }: { room: SavedRoom; onUpdate: (room: SavedRoom) => void }) {
   const { sync, clock, refresh } = useRoom(room, onUpdate)
   const lots = savedLots(room)
-  const now = useServerNow(clock, lots.length > 0)
+  const choices = savedChoices(room)
+  const now = useServerNow(clock, lots.length + choices.length > 0)
   const [ask, setAsk] = useState<Ask | null>(null)
   const busy = useRef(false) // идёт запрос — окно не закрывается
   const back = '#/room/' + room.id
@@ -157,6 +159,7 @@ export function SettleScreen({ room, onUpdate }: { room: SavedRoom; onUpdate: (r
         )}
 
         <LotDebts room={room} debts={lotDebts(room, lots, now)} />
+        <ChoiceDebts room={room} debts={choiceDebtsOf(choices, now)} />
         {!points && <ModeLine settlement={s} change={change} online={online} onChange={() => setAsk({ kind: 'mode' })} />}
       </div>
 
@@ -238,6 +241,28 @@ function LotDebts({ room, debts }: { room: SavedRoom; debts: LotDebt[] }) {
             <a className={'event-item' + (d.from === room.memberId || d.to === room.memberId ? ' mine' : '')} href={lotHref(room.id, d.lot)}>
               <span className="event-name">{lotDebtLine(room, d)}</span>
               <span className="hint">получен {formatDateTime(d.at)} · уже в итоге и «кто кому»</span>
+            </a>
+          </li>
+        ))}
+      </ul>
+    </section>
+  )
+}
+
+// Долги по выборам (Р-39) — основание чисел выше: решённый выбор — вложившийся в победивший вариант должен
+// получателю свою сумму, «Вера (вы) → Аня: 500 ₽ — выбор „Куда едем?“», ссылкой на выбор; решённых с долгами
+// нет — блока нет
+function ChoiceDebts({ room, debts }: { room: SavedRoom; debts: ChoiceDebt[] }) {
+  if (debts.length === 0) return null
+  return (
+    <section className="settle-lots settle-choices" aria-label="Долги по выборам">
+      <h3>Долги по выборам</h3>
+      <ul className="event-list">
+        {debts.map((d) => (
+          <li key={d.choice + '/' + d.from}>
+            <a className={'event-item' + (d.from === room.memberId || d.to === room.memberId ? ' mine' : '')} href={choiceHref(room.id, d.choice)}>
+              <span className="event-name">{choiceDebtLine(room, d)}</span>
+              <span className="hint">решён {formatDateTime(d.at)} · уже в итоге и «кто кому»</span>
             </a>
           </li>
         ))}
