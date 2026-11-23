@@ -8,7 +8,9 @@
 // «Предложить пари» и во встречном, guarantor во встречном
 // 8 — «Торг до …» (Р-37): статус пари «не состоялось» (failed), auction у пари и в «Предложить пари»,
 // bidding у пари, адреса …/bid и …/bid/accept
-export const PROTOCOL_VERSION = 8
+// 9 — «Лот» (Р-38): lots в состоянии комнаты, счётчик lots в числах «Расчёта», голоса суда «передано» /
+// «не передано», адреса …/lots
+export const PROTOCOL_VERSION = 9
 
 // Ответ GET /health: сервер жив, его протокол и время (UTC, мс) — по нему закрываются сроки
 export type Health = { v: number; ok: true; time: number }
@@ -51,7 +53,8 @@ export type CreateRoomResponse = { v: number; roomId: string; invite: string; me
 // комнаты, адресные тоже — тайных нет; сервер до этапа 3 поля не шлёт); now — время сервера
 // (UTC, мс): по нему сайт считает отсчёт до закрытия приёма, а не по часам телефона; settlement —
 // свод расчёта на now (Р-32; сервер до этапа 5 поля не шлёт), видят все участники; room.pace и
-// room.times — нынешний темп комнаты и его сроки (Р-35; сервер до темпа полей не шлёт)
+// room.times — нынешний темп комнаты и его сроки (Р-35; сервер до темпа полей не шлёт); lots — лоты по
+// порядку создания (Р-38; все лоты комнаты со ставками — тайных нет; сервер до лотов поля не шлёт)
 export type RoomStateResponse = {
   v: number
   room: { id: string; name: string; currency: string; hostId: string; createdAt: number; pace?: PaceView; times?: TimesView }
@@ -59,6 +62,7 @@ export type RoomStateResponse = {
   me: string
   events: EventView[]
   offers?: OfferView[]
+  lots?: LotView[]
   settlement?: SettlementView
   now: number
 }
@@ -302,6 +306,33 @@ export type LotView = {
   closedAt: number | null
   court?: CourtView | null
 }
+
+// Лот на сервере (Р-38). Адреса — POST /rooms/<номер>/lots и …/lots/<лот>/<действие>, по ключу участника;
+// requestId — номер запроса (ULID): повтор — тот же ответ без второй записи. Отказы — тексты правил lot.ts.
+// …/lots { title, description?, start, step?, closesAt } — выставить: продавец — автор; шаг не задан — 10 %
+// старта; closesAt — конец торга (от 10 минут до 3 дней). Ответ — лот на время сервера
+export type CreateLotRequest = {
+  v?: number
+  title: string
+  description?: string
+  start: number
+  step?: number
+  closesAt: number
+  requestId?: string
+}
+export type LotResponse = { v: number; lot: LotView }
+// …/lots/<лот>/bid { amount } — ставка; ответ — ставка и лот после неё
+export type BidLotRequest = { v?: number; amount: number; requestId?: string }
+export type LotBidAct = { id: string; at: number; by: string; lot: string; amount: number }
+export type BidLotResponse = { v: number; bid: LotBidAct; lot: LotView }
+// Отметки по лоту {}: …/withdraw — «Снять лот» (продавец, пока ставок нет), …/handed — «Передал», …/cannot —
+// «Не смогу передать» (продавец), …/received — «Получил», …/not-received — «Не получил» (победитель). Ответ —
+// отметка (mark — какая) и лот после неё. Суд по «Не получил» — …/lots/<лот>/judge { verdict: "delivered" |
+// "undelivered" } и …/replace, как у событий и пари; апелляции нет
+export type LotMark = 'withdrawn' | 'handed' | 'declined' | 'received' | 'disputed'
+export type LotActRequest = { v?: number; requestId?: string }
+export type LotMarkAct = { id: string; at: number; by: string; lot: string; mark: LotMark }
+export type LotMarkResponse = { v: number; marked: LotMarkAct; lot: LotView }
 
 // POST /rooms/<номер>/offers — предложить пари. side не задана — «сбудется»; to не задан — открытое;
 // guarantor не задан — ведущий; noGuarantor: true — без гаранта (Р-36; guarantor тогда не задают).
@@ -609,6 +640,8 @@ export function isRoomStateResponse(x: unknown): x is RoomStateResponse {
   if (typeof r.now !== 'number' || !Array.isArray(r.events) || !r.events.every(isEventView)) return false
   // Пари — с этапа 3: сервер без них (до выкатки) не ломает сайт
   if (r.offers !== undefined && !list(r.offers, isOfferView)) return false
+  // Лоты — с этапа 7 (Р-38): сервер без них (до выкатки) не ломает сайт
+  if (r.lots !== undefined && !(Array.isArray(r.lots) && r.lots.every(isLotView))) return false
   // Свод расчёта — с этапа 5: сервер без него (до выкатки) не ломает сайт
   if (r.settlement !== undefined && !isSettlementView(r.settlement)) return false
   return r.members.every((m) => {
@@ -941,6 +974,24 @@ export function isLotView(x: unknown): x is LotView {
     orNull(r.closedAt, 'number') &&
     (r.court === undefined || nullable(r.court, isCourtView))
   )
+}
+
+const LOT_MARKS: readonly unknown[] = ['withdrawn', 'handed', 'declined', 'received', 'disputed']
+
+function isLotAct(r: Record<string, unknown>): boolean {
+  return strings(r, 'id', 'by', 'lot') && numbers(r, 'at')
+}
+
+export function isLotResponse(x: unknown): x is LotResponse {
+  return recordIn(x, 'lot', isLotView)
+}
+
+export function isBidLotResponse(x: unknown): x is BidLotResponse {
+  return recordIn(x, 'bid', (r) => isLotAct(r) && numbers(r, 'amount')) && recordIn(x, 'lot', isLotView)
+}
+
+export function isLotMarkResponse(x: unknown): x is LotMarkResponse {
+  return recordIn(x, 'marked', (r) => isLotAct(r) && LOT_MARKS.includes(r.mark)) && recordIn(x, 'lot', isLotView)
 }
 
 function isOfferAct(r: Record<string, unknown>): boolean {

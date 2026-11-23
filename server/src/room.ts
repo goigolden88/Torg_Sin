@@ -122,6 +122,7 @@ import {
 } from '../../src/rules/offer'
 import * as appeal from '../../src/rules/appeal'
 import type { CourtCase } from '../../src/rules/court'
+import * as lot from '../../src/rules/lot'
 import type {
   Agreement,
   AppealResponse,
@@ -133,6 +134,10 @@ import type {
   EventInfo,
   JoinAppealResponse,
   JudgeResponse,
+  LotBidAct,
+  LotMark,
+  LotMarkAct,
+  LotView,
   Objection,
   OfferAct,
   OfferBidAct,
@@ -209,6 +214,8 @@ export const OFFER_CLOSED = 'Приём закрыт — срок «приём �
 export { NO_OFFER }
 // Апелляция и суд (Р-25): прочие отказы — тексты правил appeal.ts
 export const NO_COURT = 'Суда по этому спору нет'
+// Лот (Р-38): прочие отказы — тексты правил lot.ts
+export const NO_LOT = 'Нет такого лота'
 
 // Ссылка для другого устройства живёт сутки
 export const DEVICE_LINK_TTL = 24 * 60 * 60 * 1000
@@ -312,9 +319,9 @@ export async function createRoom(storage: RoomStorage, input: CreateInput, now: 
 // Отказ комнаты; join — ключ заявки, которую ещё не впустили или отклонили (экран ожидания)
 export type Failure = { ok: false; status: 400 | 403 | 404 | 409; error: string; join?: 'waiting' | 'rejected' }
 
-// events и offers — события и пари комнаты из журнала, cases — дела суда по ним (Р-25; статус на
-// время ответа считает http.ts); transfers — записи о переводах, settleMode — режим «кто кому» (Р-32;
-// свод на время ответа считает http.ts); pace — нынешний темп комнаты и его сроки (Р-35, logPace)
+// events, offers и lots — события, пари и лоты (Р-38) комнаты из журнала, cases — дела суда по ним (Р-25;
+// статус на время ответа считает http.ts); transfers — записи о переводах, settleMode — режим «кто кому»
+// (Р-32; свод на время ответа считает http.ts); pace — нынешний темп комнаты и его сроки (Р-35, logPace)
 export type StateResult =
   | {
       ok: true
@@ -322,6 +329,7 @@ export type StateResult =
       me: string
       events: EventState[]
       offers: OfferState[]
+      lots: lot.LotState[]
       cases: CourtCase[]
       transfers: settle.TransferRecord[]
       settleMode: settle.SettleMode
@@ -364,13 +372,15 @@ export async function roomState(storage: RoomStorage, keyHash: string, now: numb
   if (!c.ok) return c
   const events = roomEvents(c.log)
   const offers = logOffers(c.log)
+  const lots = lot.logLots(c.log)
   return {
     ok: true,
     state: c.state,
     me: c.me,
     events,
     offers,
-    cases: appeal.logAppeals(c.log, { events, offers }),
+    lots,
+    cases: appeal.logAppeals(c.log, { events, offers, lots }),
     transfers: logTransfers(c.log),
     settleMode: logSettleMode(c.log),
     pace: pace.logPace(c.log),
@@ -379,10 +389,11 @@ export async function roomState(storage: RoomStorage, keyHash: string, now: numb
 
 // Суд по «ждёт суда» (Р-17, Р-25) собирается сам — будильника нет: при первом запросе к комнате после
 // того, как исход пула перешёл в «ждёт суда», стороны пари срок молчания не сошлись на новом гаранте
-// (Р-31) или стороны пари без гаранта разошлись либо одна молчит (Р-36), —
-// запись court.drawn (зерно, кандидаты на этот миг; автор — ведущий). Суд уже собран — второй записи
-// нет; кандидатов нет — записи нет: у пула исход остаётся «ждёт суда» (выход — отмена ведущим с
-// причиной, Р-19), у пари — «нужен другой гарант» (стороны по-прежнему могут сойтись на гаранте).
+// (Р-31) или стороны пари без гаранта разошлись либо одна молчит (Р-36), или победитель лота отметил
+// «Не получил» (Р-38), — запись court.drawn (зерно, кандидаты на этот миг; автор — ведущий). Суд уже
+// собран — второй записи нет; кандидатов нет — записи нет: у пула исход остаётся «ждёт суда» (выход —
+// отмена ведущим с причиной, Р-19), у пари — «нужен другой гарант» (стороны по-прежнему могут сойтись на
+// гаранте), у лота — «в споре» (пока одна сторона не уступит).
 // Пари — на now (offerAt, Р-37): торг, кончившийся со встречным, принят — его соперник в суд не попадёт
 export async function drawDueCourts(storage: RoomStorage, now: number, seed: () => string): Promise<void> {
   const log = await readLog(storage)
@@ -390,15 +401,17 @@ export async function drawDueCourts(storage: RoomStorage, now: number, seed: () 
   if (!state) return
   const events = roomEvents(log)
   const offers = logOffers(log).map((o) => offerAt(o, now))
-  const cases = appeal.logAppeals(log, { events, offers })
+  const lots = lot.logLots(log)
+  const cases = appeal.logAppeals(log, { events, offers, lots })
   const room = appeal.courtRoom(state)
-  const targets: appeal.AppealTarget[] = [
+  const targets: appeal.CourtTarget[] = [
     ...events.map((event) => ({ kind: 'event' as const, event })),
     ...offers.map((offer) => ({ kind: 'offer' as const, offer })),
+    ...lots.map((l) => ({ kind: 'lot' as const, lot: l })),
   ]
   const entries: LogEntry[] = []
   for (const t of targets) {
-    const target = t.kind === 'event' ? t.event.id : t.offer.id
+    const target = t.kind === 'event' ? t.event.id : t.kind === 'offer' ? t.offer.id : t.lot.id
     if (appeal.checkCourtDraw(t, appeal.caseOf(cases, target), now)) continue
     const candidates = appeal.courtCandidates(t, room, now)
     if (candidates.length === 0) continue
@@ -506,8 +519,14 @@ export type RoomAction =
   | { type: 'decideOffer'; keyHash: string; offer: string; winner: OfferSide; requestId: string }
   | { type: 'declineOffer'; keyHash: string; offer: string; requestId: string }
   | { type: 'nominateGuarantor'; keyHash: string; offer: string; guarantor: string; requestId: string }
-  // Апелляция и суд (Р-25) у события-пул (kind: 'event') и пари ('offer'): правила — appeal.ts, на
-  // время сервера в момент запроса. Зерно жребия при подаче — из источника seed у act
+  // Лот (Р-38): форма уже проверена (lot.ts, checkLotInput); конец торга — здесь, по времени сервера.
+  // Отметки — «Снять лот», «Передал», «Не смогу передать», «Получил», «Не получил»
+  | { type: 'createLot'; keyHash: string; input: lot.LotInput; requestId: string }
+  | { type: 'bidLot'; keyHash: string; lot: string; amount: number; requestId: string }
+  | { type: 'markLot'; keyHash: string; lot: string; mark: LotMark; requestId: string }
+  // Апелляция и суд (Р-25) у события-пул (kind: 'event') и пари ('offer'), суд по «Не получил» у лота
+  // ('lot', Р-38; апелляции нет): правила — appeal.ts, на время сервера в момент запроса. Зерно жребия при
+  // подаче — из источника seed у act
   | { type: 'appealOutcome'; keyHash: string; kind: CourtKind; target: string; reason: string; requestId: string }
   | { type: 'joinAppeal'; keyHash: string; kind: CourtKind; target: string; requestId: string }
   | { type: 'judgeCourt'; keyHash: string; kind: CourtKind; target: string; vote: CourtVerdict; requestId: string }
@@ -521,7 +540,7 @@ export type RoomAction =
   // Темп комнаты (Р-35): правила — pace.ts; форма уже проверена (checkPace); меняет ведущий
   | { type: 'setPace'; keyHash: string; pace: pace.PaceInput; requestId: string }
 
-export type CourtKind = appeal.AppealTarget['kind']
+export type CourtKind = appeal.CourtTarget['kind']
 
 export type JoinStatus = JoinRequest['status']
 
@@ -554,6 +573,9 @@ export type ActionValues = {
   decideOffer: { decided: OfferWinnerAct }
   declineOffer: { declined: OfferAct }
   nominateGuarantor: { nominated: OfferAct & { guarantor: string } }
+  createLot: { lot: LotView }
+  bidLot: { bid: LotBidAct; lot: LotView }
+  markLot: { marked: LotMarkAct; lot: LotView }
   appealOutcome: { appeal: AppealResponse['appeal'] }
   joinAppeal: { joined: JoinAppealResponse['joined'] }
   judgeCourt: { voted: JudgeResponse['voted'] }
@@ -664,6 +686,15 @@ export async function act<K extends ActionType>(
       break
     case 'nominateGuarantor':
       r = await nominateGuarantor(storage, a, now)
+      break
+    case 'createLot':
+      r = await createLot(storage, a, now)
+      break
+    case 'bidLot':
+      r = await bidLot(storage, a, now)
+      break
+    case 'markLot':
+      r = await markLot(storage, a, now)
       break
     case 'appealOutcome':
       r = await appealOutcome(storage, a, now, seed)
@@ -1556,6 +1587,151 @@ async function nominateGuarantor(
   return ok({ nominated: nominatedAct(entry) })
 }
 
+// --- Лот (Р-38). Правила — checkLotTimes / checkLotBid / checkLotWithdraw / checkHanded / checkDeclined /
+// checkReceived / checkDisputed и свёртка logLots (lot.ts) на время сервера в момент запроса; конец торга,
+// продление, победитель, молчание и итог — считаются, записи о них нет. Суд по «Не получил» собирает
+// drawDueCourts. Повтор с тем же номером запроса — тот же ответ без новой записи (лот — каким он сейчас);
+// тот же номер у другого действия, лота, содержимого или от другого — 409
+
+type LotCaller = Caller & { lots: lot.LotState[]; room: lot.LotRoom; again: LogEntry | undefined }
+
+async function lotCaller(storage: RoomStorage, keyHash: string, requestId: string): Promise<LotCaller | Failure> {
+  const c = await caller(storage, keyHash)
+  if (!c.ok) return c
+  const room = { members: c.state.members.map((m) => m.id) }
+  return { ...c, lots: lot.logLots(c.log), room, again: byRequest(c.log, requestId) }
+}
+
+// Отказ правил лота: «не вам» — 403, кривая сумма — 400, «уже не то состояние» — 409 (и ставка меньше
+// старта или шага: лучшую могли перебить, пока телефон отправлял)
+const LOT_FORBIDDEN: readonly string[] = [lot.OWN_LOT, lot.NOT_MEMBER, lot.ONLY_SELLER, lot.ONLY_WINNER]
+
+function lotRefusal(error: string): Failure {
+  if (error === lot.BAD_LOT_BID) return fail(400, error)
+  return fail(LOT_FORBIDDEN.includes(error) ? 403 : 409, error)
+}
+
+// Лот из журнала на now — с судом по нему (свёртке суда нужен лишь он)
+function lotOut(log: readonly LogEntry[], id: string, now: number): LotView | null {
+  const l = lot.logLots(log).find((x) => x.id === id)
+  if (!l) return null
+  const court = appeal.caseOf(appeal.logAppeals(log, { events: [], offers: [], lots: [l] }), id)
+  return lot.lotView(l, now, court)
+}
+
+function lotReply<V extends object>(log: readonly LogEntry[], id: string, now: number, value: V): { ok: true; value: V & { lot: LotView } } | Failure {
+  const view = lotOut(log, id, now)
+  return view ? ok({ ...value, lot: view }) : fail(404, NO_LOT)
+}
+
+type LotCreatedEntry = Extract<LogEntry, { type: 'lot.created' }>
+type LotBidEntry = Extract<LogEntry, { type: 'lot.bid' }>
+
+function sameLot(e: LotCreatedEntry, x: lot.LotInput): boolean {
+  return e.title === x.title && e.description === x.description && e.start === x.start && e.step === x.step && e.closesAt === x.closesAt
+}
+
+// Выставить лот: любой участник — продавец; конец торга — от 10 минут до 3 дней с создания по времени
+// сервера (400). Сроки нынешнего темпа комнаты (Р-35) — в запись: молчание и суд лота — по ним
+async function createLot(
+  storage: RoomStorage,
+  a: { keyHash: string; input: lot.LotInput; requestId: string },
+  now: number,
+): Promise<ActionResult<'createLot'>> {
+  const c = await lotCaller(storage, a.keyHash, a.requestId)
+  if (!c.ok) return c
+  const { input } = a
+  if (c.again) {
+    const e = c.again
+    return e.type === 'lot.created' && e.memberId === c.me && sameLot(e, input) ? lotReply(c.log, e.id, now, {}) : fail(409, REQUEST_USED)
+  }
+  const late = lot.checkLotTimes(input, now)
+  if (late) return fail(400, late)
+  const entry: LotCreatedEntry = {
+    id: ulid(now),
+    at: now,
+    memberId: c.me,
+    type: 'lot.created',
+    title: input.title,
+    description: input.description,
+    start: input.start,
+    step: input.step,
+    closesAt: input.closesAt,
+    times: { ...pace.logPace(c.log).times },
+    requestId: a.requestId,
+  }
+  await append(storage, [entry])
+  return lotReply([...c.log, entry], entry.id, now, {})
+}
+
+function lotBidAct(e: LotBidEntry): LotBidAct {
+  return { id: e.id, at: e.at, by: e.memberId, lot: e.lot, amount: e.amount }
+}
+
+// Ставка: участник, не продавец, до конца торга (с продлениями); первая — не меньше старта, следующая —
+// больше лучшей хотя бы на шаг. Не отзывается; ответ — ставка и лот после неё
+async function bidLot(
+  storage: RoomStorage,
+  a: { keyHash: string; lot: string; amount: number; requestId: string },
+  now: number,
+): Promise<ActionResult<'bidLot'>> {
+  const c = await lotCaller(storage, a.keyHash, a.requestId)
+  if (!c.ok) return c
+  if (c.again) {
+    const e = c.again
+    return e.type === 'lot.bid' && e.lot === a.lot && e.memberId === c.me && e.amount === a.amount
+      ? lotReply(c.log, a.lot, now, { bid: lotBidAct(e) })
+      : fail(409, REQUEST_USED)
+  }
+  const l = c.lots.find((x) => x.id === a.lot)
+  if (!l) return fail(404, NO_LOT)
+  const refused = lot.checkLotBid(l, c.me, a.amount, c.room, now)
+  if (refused) return lotRefusal(refused)
+  const entry: LotBidEntry = { id: ulid(now), at: now, memberId: c.me, type: 'lot.bid', lot: l.id, amount: a.amount, requestId: a.requestId }
+  await append(storage, [entry])
+  return lotReply([...c.log, entry], l.id, now, { bid: lotBidAct(entry) })
+}
+
+// Отметки по лоту: запись журнала и проверка правил на время сервера
+type LotMarkEntry = Extract<LogEntry, { type: 'lot.withdrawn' | 'lot.handed' | 'lot.declined' | 'lot.received' | 'lot.disputed' }>
+const LOT_MARKS: Record<LotMark, { type: LotMarkEntry['type']; check: (l: lot.LotState, memberId: string, now: number) => string | null }> = {
+  withdrawn: { type: 'lot.withdrawn', check: lot.checkLotWithdraw },
+  handed: { type: 'lot.handed', check: lot.checkHanded },
+  declined: { type: 'lot.declined', check: lot.checkDeclined },
+  received: { type: 'lot.received', check: lot.checkReceived },
+  disputed: { type: 'lot.disputed', check: lot.checkDisputed },
+}
+
+function lotMarkAct(e: LotMarkEntry, mark: LotMark): LotMarkAct {
+  return { id: e.id, at: e.at, by: e.memberId, lot: e.lot, mark }
+}
+
+// «Снять лот» — продавец, пока ставок нет; после торга: продавец — «Передал» / «Не смогу передать»,
+// победитель — «Получил» / «Не получил» (после «Передал» или когда со дня конца прошёл срок молчания).
+// Ответ — отметка и лот после неё; суд по «Не получил» собирается при следующем запросе к комнате
+async function markLot(
+  storage: RoomStorage,
+  a: { keyHash: string; lot: string; mark: LotMark; requestId: string },
+  now: number,
+): Promise<ActionResult<'markLot'>> {
+  const c = await lotCaller(storage, a.keyHash, a.requestId)
+  if (!c.ok) return c
+  const rule = LOT_MARKS[a.mark]
+  if (c.again) {
+    const e = c.again
+    return e.type === rule.type && (e as LotMarkEntry).lot === a.lot && e.memberId === c.me
+      ? lotReply(c.log, a.lot, now, { marked: lotMarkAct(e as LotMarkEntry, a.mark) })
+      : fail(409, REQUEST_USED)
+  }
+  const l = c.lots.find((x) => x.id === a.lot)
+  if (!l) return fail(404, NO_LOT)
+  const refused = rule.check(l, c.me, now)
+  if (refused) return lotRefusal(refused)
+  const entry = { id: ulid(now), at: now, memberId: c.me, type: rule.type, lot: l.id, requestId: a.requestId } as LotMarkEntry
+  await append(storage, [entry])
+  return lotReply([...c.log, entry], l.id, now, { marked: lotMarkAct(entry, a.mark) })
+}
+
 // --- Апелляция и суд (Р-24, Р-25). Правила — checkAppeal / checkJoin / checkCourtVote / checkReplace
 // (appeal.ts) на время сервера в момент запроса, на том же деле суда, что даёт свёртка журнала
 // (logAppeals): сервер и свёртка не расходятся. Повтор с тем же номером запроса — тот же ответ без
@@ -1569,7 +1745,7 @@ type ReplacedEntry = Extract<LogEntry, { type: 'court.replaced' }>
 
 // Спор для апелляции: событие или пари комнаты, дело суда по нему (или null) и участники для жребия;
 // again — запись журнала с этим номером запроса (повтор узнаётся до проверки спора)
-type CourtCaller = Caller & { again: undefined; dispute: appeal.AppealTarget; court: CourtCase | null; room: appeal.CourtRoom }
+type CourtCaller = Caller & { again: undefined; dispute: appeal.CourtTarget; court: CourtCase | null; room: appeal.CourtRoom }
 
 // Пари — на now (offerAt, Р-37): торг, кончившийся со встречным, принят — у него две стороны
 async function courtCaller(storage: RoomStorage, a: CourtAction, now: number): Promise<(Caller & { again: LogEntry }) | CourtCaller | Failure> {
@@ -1577,18 +1753,27 @@ async function courtCaller(storage: RoomStorage, a: CourtAction, now: number): P
   if (!c.ok) return c
   const again = c.log.find((e) => 'requestId' in e && e.requestId === a.requestId)
   if (again) return { ...c, again }
-  let dispute: appeal.AppealTarget
+  let dispute: appeal.CourtTarget
   if (a.kind === 'event') {
     const event = roomEvents(c.log).find((e) => e.id === a.target)
     if (!event) return fail(404, NO_EVENT)
     dispute = { kind: 'event', event }
-  } else {
+  } else if (a.kind === 'offer') {
     const offer = logOffers(c.log).find((o) => o.id === a.target)
     if (!offer) return fail(404, NO_OFFER)
     dispute = { kind: 'offer', offer: offerAt(offer, now) }
+  } else {
+    const found = lot.logLots(c.log).find((l) => l.id === a.target)
+    if (!found) return fail(404, NO_LOT)
+    dispute = { kind: 'lot', lot: found }
   }
   // Дело суда — только по этому спору: свёртке нужен лишь он
-  const one = dispute.kind === 'event' ? { events: [dispute.event], offers: [] } : { events: [], offers: [dispute.offer] }
+  const one =
+    dispute.kind === 'event'
+      ? { events: [dispute.event], offers: [] }
+      : dispute.kind === 'offer'
+        ? { events: [], offers: [dispute.offer] }
+        : { events: [], offers: [], lots: [dispute.lot] }
   const court = appeal.caseOf(appeal.logAppeals(c.log, one), a.target)
   return { ...c, again: undefined, dispute, court, room: appeal.courtRoom(c.state) }
 }
@@ -1609,6 +1794,7 @@ const COURT_BAD_BODY: readonly string[] = [
   appeal.NEED_APPEAL,
   appeal.LONG_APPEAL,
   appeal.BAD_VERDICT,
+  appeal.BAD_LOT_VERDICT,
   appeal.NO_KEEP,
   appeal.SAME_CHANGE,
   appeal.NOT_SEAT,
@@ -1774,16 +1960,18 @@ export function logTransfers(log: readonly LogEntry[]): settle.TransferRecord[] 
   return log.filter(isTransferEntry)
 }
 
-// Вход свода комнаты из журнала: события, пари, дела суда и переводы
+// Вход свода комнаты из журнала: события, пари, лоты (Р-38), дела суда и переводы
 function settleInput(log: readonly LogEntry[], state: RoomState): settle.SettleInput {
   const events = roomEvents(log)
   const offers = logOffers(log)
+  const lots = lot.logLots(log)
   return {
     currency: state.currency,
     members: state.members.map((m) => m.id),
     events,
     offers,
-    cases: appeal.logAppeals(log, { events, offers }),
+    lots,
+    cases: appeal.logAppeals(log, { events, offers, lots }),
     transfers: logTransfers(log),
   }
 }
