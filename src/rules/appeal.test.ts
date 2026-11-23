@@ -56,7 +56,18 @@ import {
   type CourtRoom,
 } from './appeal'
 import { eventOutcome, eventView, FINAL_TIME, OBJECTION_TIME, roomEvents, VOTING_TIME, type EventState } from './event'
-import { checkNominate, NEED_GUARANTOR_TIME, offerOutcome, offerResult, offerView, roomOffers, type OfferRecord, type OfferState } from './offer'
+import {
+  checkNominate,
+  NEED_GUARANTOR_TIME,
+  offerAt,
+  offerOutcome,
+  offerResult,
+  offerView,
+  roomOffers,
+  SIDE_SILENCE,
+  type OfferRecord,
+  type OfferState,
+} from './offer'
 import { FAST_TIMES, type Times } from './pace'
 import { isEventView, isOfferView, type CourtVerdict } from './protocol'
 import { foldLog, type LogEntry, type RoomState } from './room'
@@ -846,6 +857,62 @@ describe('пари без гаранта — разошлись, сразу су
     expect(courtCandidates(of(o), sides, EXPECT)).toEqual([])
     expect(offerOutcome(o, EXPECT + DAY)).toMatchObject({ phase: 'need-guarantor', needSince: EXPECT })
     expect(checkNominate(o, 'a', 'c', ROLES, EXPECT + DAY)).toBeNull()
+  })
+})
+
+// Торг кончился по сроку со встречным (Р-37): пари принято в миг конца без записи — у дел суда пари на
+// миг каждой записи (offerAt): соперник уже сторона
+describe('торг, кончившийся по сроку (Р-37)', () => {
+  // Торг автора a: 300 на «сбудется», старт 1000, шаг 100; встречное b — задолго до конца торга (CLOSE)
+  const auction = (guarantor: string | null): OfferRecord[] => {
+    const [created] = offerRecords('a', 'h')
+    const terms = { auction: { start: 1000, step: 100 }, odds: { a: 300, b: 1000 } }
+    return [
+      { ...created, ...terms, guarantor, ...(guarantor === null && { guarantorRule: true }) } as OfferRecord,
+      { type: 'offer.bid', id: 'b1', at: T + 10, memberId: 'b', offer: 'o1', amount: 1000 },
+    ]
+  }
+
+  it('без гаранта: суд собран сам по пари без записей после конца торга — дело есть, соперник в суде не сидит', () => {
+    // Записей пари после конца торга нет — в свёртке пари ещё не принято
+    const o = offerOf(auction(null))
+    expect(o.accepted).toBeNull()
+    const DUE = EXPECT + SIDE_SILENCE
+    const CANDIDATES = ['h', 'c', 'g', 'n']
+    const ORDER = drawCourt(SEED, CANDIDATES, 'h')
+    expect(courtCandidates(of(offerAt(o, DUE)), OFFER_ROOM, DUE)).toEqual(CANDIDATES)
+    const votes: CourtVerdict[] = [{ verdict: 'change', winner: 'taker' }, { verdict: 'change', winner: 'taker' }, { verdict: 'cancel' }]
+    const records = [drawn(DUE, CANDIDATES, 'o1'), ...votes.map((v, i) => voted(ORDER[i], DUE + 1 + i, v, 'o1'))]
+    const c = offerCase(records, o) as CourtCase
+    expect(c).toMatchObject({ appeal: null, drawnAt: DUE, candidates: CANDIDATES })
+    expect(courtState(c, DUE).seats.map((s) => s.member)).toEqual(ORDER.slice(0, 3))
+    expect(c.acts).toHaveLength(3)
+    // Решение суда — в итоге пари: соперник b забирает сумму автора
+    const inCourt = offerOf([...auction(null), { type: 'court.drawn', id: 'k1', at: DUE, memberId: 'h', offer: 'o1' }])
+    expect(offerOutcome(inCourt, DUE + 3, c)).toMatchObject({ phase: 'final', approved: { winner: 'taker', how: 'court' } })
+    expect(offerResult(inCourt, DUE + 3, c)).toEqual([
+      { memberId: 'a', net: -300 },
+      { memberId: 'b', net: 300 },
+    ])
+  })
+
+  it('с гарантом: решил гарант — апелляция соперника и суд по ней', () => {
+    const DECIDE = EXPECT
+    const o = offerOf([
+      ...auction('h'),
+      { type: 'offer.marked', id: 'm1', at: CLOSE + 1, memberId: 'a', offer: 'o1', winner: 'author' },
+      { type: 'offer.marked', id: 'm2', at: CLOSE + 2, memberId: 'b', offer: 'o1', winner: 'taker' },
+      { type: 'offer.decided', id: 'd1', at: DECIDE, memberId: 'h', offer: 'o1', winner: 'author' },
+    ])
+    expect(o.accepted).toEqual({ by: 'b', at: CLOSE })
+    const votes: CourtVerdict[] = [{ verdict: 'change', winner: 'taker' }, { verdict: 'change', winner: 'taker' }, { verdict: 'keep' }]
+    const c = offerCase([offerFiled('b', DECIDE + 1), joined('a', DECIDE + 2, 'o1'), ...votes.map((v, i) => voted(OFFER_ORDER[i], DECIDE + 3 + i, v, 'o1'))], o) as CourtCase
+    expect(c.appeal).toMatchObject({ by: 'b', joined: [{ by: 'a' }] })
+    expect(c.acts).toHaveLength(3)
+    expect(offerResult(o, DECIDE + 5, c)).toEqual([
+      { memberId: 'a', net: -300 },
+      { memberId: 'b', net: 300 },
+    ])
   })
 })
 

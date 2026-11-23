@@ -5,6 +5,8 @@ import {
   isJudgeResponse,
   isReplaceJurorResponse,
   isAcceptOfferResponse,
+  isBidOfferResponse,
+  isTakeBidResponse,
   isCreateOfferResponse,
   isDecideOfferResponse,
   isDeclineOfferResponse,
@@ -341,6 +343,15 @@ describe('пари (Р-22)', () => {
     expect(isRevokeOfferResponse({ v, revoked: act })).toBe(true)
     expect(isRevokeOfferResponse({ v, revoked: { ...act, at: 'вчера' } })).toBe(false)
     expect(isRevokeOfferResponse({ v, error: 'Нет такого пари' })).toBe(false)
+  })
+
+  it('ответы торга (Р-37): встречное и «принять сейчас»', () => {
+    expect(isBidOfferResponse({ v, bid: { ...act, amount: 120 }, offer })).toBe(true)
+    expect(isBidOfferResponse({ v, bid: act, offer })).toBe(false)
+    expect(isBidOfferResponse({ v, bid: { ...act, amount: 120 } })).toBe(false)
+    expect(isTakeBidResponse({ v, taken: { ...act, bid: 'B1' }, offer })).toBe(true)
+    expect(isTakeBidResponse({ v, taken: act, offer })).toBe(false)
+    expect(isTakeBidResponse({ taken: { ...act, bid: 'B1' }, offer })).toBe(false)
   })
 })
 

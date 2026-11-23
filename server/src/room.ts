@@ -67,9 +67,13 @@ import {
   type EventState,
 } from '../../src/rules/event'
 import {
+  BAD_BID,
   BAD_GUARANTOR,
   BAD_MARK,
+  BANK_TOO_BIG,
+  bestBid,
   checkAccept,
+  checkBid,
   checkCounter,
   checkDecide,
   checkDecline,
@@ -78,11 +82,13 @@ import {
   checkOfferInput,
   checkOfferSubject,
   checkOfferTimes,
+  checkTakeBid,
   checkWithdraw,
   CLOSE_PASSED,
   counterInput,
   currentMarks,
   EXPIRED,
+  GUARANTOR_BIDS,
   GUARANTOR_COUNTERS,
   GUARANTOR_MARKS,
   GUARANTOR_TAKES,
@@ -93,14 +99,18 @@ import {
   NOT_ADDRESSEE,
   NOT_MEMBER,
   NOT_SIDE,
+  offerAt,
   offerGuarantor,
   offerInfo,
   ONLY_AUTHOR,
+  ONLY_AUTHOR_TAKES,
   ONLY_GUARANTOR,
+  OWN_BID,
   OWN_COUNTER,
   OWN_OFFER,
   roomRoles,
   sideOf,
+  SUBJECT_BIDS,
   SUBJECT_GUARANTOR,
   SUBJECT_TAKES,
   type OfferEntry,
@@ -125,7 +135,9 @@ import type {
   JudgeResponse,
   Objection,
   OfferAct,
+  OfferBidAct,
   OfferInfo,
+  OfferTakeAct,
   OfferWinnerAct,
   OutcomeMark,
   ReplaceJurorResponse,
@@ -370,13 +382,14 @@ export async function roomState(storage: RoomStorage, keyHash: string, now: numb
 // (Р-31) или стороны пари без гаранта разошлись либо одна молчит (Р-36), —
 // запись court.drawn (зерно, кандидаты на этот миг; автор — ведущий). Суд уже собран — второй записи
 // нет; кандидатов нет — записи нет: у пула исход остаётся «ждёт суда» (выход — отмена ведущим с
-// причиной, Р-19), у пари — «нужен другой гарант» (стороны по-прежнему могут сойтись на гаранте)
+// причиной, Р-19), у пари — «нужен другой гарант» (стороны по-прежнему могут сойтись на гаранте).
+// Пари — на now (offerAt, Р-37): торг, кончившийся со встречным, принят — его соперник в суд не попадёт
 export async function drawDueCourts(storage: RoomStorage, now: number, seed: () => string): Promise<void> {
   const log = await readLog(storage)
   const state = foldLog(log)
   if (!state) return
   const events = roomEvents(log)
-  const offers = logOffers(log)
+  const offers = logOffers(log).map((o) => offerAt(o, now))
   const cases = appeal.logAppeals(log, { events, offers })
   const room = appeal.courtRoom(state)
   const targets: appeal.AppealTarget[] = [
@@ -485,6 +498,9 @@ export type RoomAction =
     }
   | { type: 'acceptOffer'; keyHash: string; offer: string; requestId: string }
   | { type: 'revokeOffer'; keyHash: string; offer: string; requestId: string }
+  // Торг (Р-37): встречное — сколько ставит против суммы автора; «принять сейчас» — автор берёт лучшее
+  | { type: 'bidOffer'; keyHash: string; offer: string; amount: number; requestId: string }
+  | { type: 'takeBid'; keyHash: string; offer: string; requestId: string }
   // Исход пари (Р-23): фазы — по времени сервера в момент запроса (будильника нет)
   | { type: 'markOffer'; keyHash: string; offer: string; winner: OfferSide; requestId: string }
   | { type: 'decideOffer'; keyHash: string; offer: string; winner: OfferSide; requestId: string }
@@ -532,6 +548,8 @@ export type ActionValues = {
   counterOffer: { offer: OfferInfo }
   acceptOffer: { accepted: OfferAct; offer: OfferInfo }
   revokeOffer: { revoked: OfferAct }
+  bidOffer: { bid: OfferBidAct; offer: OfferInfo }
+  takeBid: { taken: OfferTakeAct; offer: OfferInfo }
   markOffer: { marked: OfferWinnerAct }
   decideOffer: { decided: OfferWinnerAct }
   declineOffer: { declined: OfferAct }
@@ -628,6 +646,12 @@ export async function act<K extends ActionType>(
       break
     case 'revokeOffer':
       r = await revokeOffer(storage, a, now)
+      break
+    case 'bidOffer':
+      r = await bidOffer(storage, a, now)
+      break
+    case 'takeBid':
+      r = await takeBid(storage, a, now)
       break
     case 'markOffer':
       r = await markOffer(storage, a, now)
@@ -1133,15 +1157,19 @@ async function voteOutcome(storage: RoomStorage, a: OutcomeAction, now: number):
 
 type OfferCaller = Caller & { offers: OfferState[]; roles: RoomRoles; again: OfferEntry | undefined }
 
-async function offerCaller(storage: RoomStorage, keyHash: string, requestId: string): Promise<OfferCaller | Failure> {
+// Пари — на now (offerAt, Р-37): торг, кончившийся со встречным, уже принят — так его видят и проверки
+// без времени (checkMark, checkWithdraw, sideOf)
+async function offerCaller(storage: RoomStorage, keyHash: string, requestId: string, now: number): Promise<OfferCaller | Failure> {
   const c = await caller(storage, keyHash)
   if (!c.ok) return c
   const again = c.log.find((e): e is OfferEntry => isOfferEntry(e) && e.requestId === requestId)
-  return { ...c, offers: logOffers(c.log), roles: roomRoles(c.state), again }
+  return { ...c, offers: logOffers(c.log).map((o) => offerAt(o, now)), roles: roomRoles(c.state), again }
 }
 
 // Отказ правил пари: «не вам» — 403, «уже не то состояние» — 409, кривое тело — 400; истекло —
-// «Приём закрыт»
+// «Приём закрыт». Торг (Р-37): автор, гарант и предмет не на своей стороне не торгуются, «принять
+// сейчас» — только автор (403); кривая сумма — 400; меньше старта или шага — 409 (лучшее могли перебить,
+// пока телефон отправлял); торг кончился — 409 «Торг закончен»
 const OFFER_FORBIDDEN: readonly string[] = [
   OWN_OFFER,
   GUARANTOR_TAKES,
@@ -1154,8 +1182,12 @@ const OFFER_FORBIDDEN: readonly string[] = [
   NOT_SIDE,
   ONLY_GUARANTOR,
   SUBJECT_TAKES,
+  OWN_BID,
+  GUARANTOR_BIDS,
+  SUBJECT_BIDS,
+  ONLY_AUTHOR_TAKES,
 ]
-const OFFER_BAD_BODY: readonly string[] = [BAD_MARK, BAD_GUARANTOR, SUBJECT_GUARANTOR, NO_GUARANTOR_CHOSEN]
+const OFFER_BAD_BODY: readonly string[] = [BAD_MARK, BAD_GUARANTOR, SUBJECT_GUARANTOR, NO_GUARANTOR_CHOSEN, BAD_BID, BANK_TOO_BIG]
 
 function offerRefusal(error: string): Failure {
   if (error === EXPIRED) return fail(409, OFFER_CLOSED)
@@ -1210,6 +1242,8 @@ async function writeOffer(
     guarantorRule: 1,
     // Сроки нынешнего темпа комнаты (Р-35) — у всех новых пари, встречных тоже, и у обычного
     times: { ...pace.logPace(c.log).times },
+    // «Торг до …» (Р-37) — только у торга: у обычного пари поля нет
+    ...(input.auction && { auction: { start: input.auction.start, step: input.auction.step } }),
     requestId,
   }
   await append(storage, [entry])
@@ -1219,13 +1253,14 @@ async function writeOffer(
 
 // Предложить пари: любой участник; адресное — другому участнику, открытое — всем. Гарант не выбран —
 // ведущий (ведущий — сторона — отказ); «без гаранта» (Р-36) — guarantor null, если судить есть кому
-// (offerGuarantor). «Приём до» прошёл — 409
+// (offerGuarantor). «Приём до» прошёл — 409. Торг (Р-37): input.auction — старт и шаг, closesAt — конец
+// торга (checkOfferTimes: от 10 минут до 3 дней, 400)
 async function createOffer(
   storage: RoomStorage,
   a: { keyHash: string; input: OfferInput; requestId: string },
   now: number,
 ): Promise<ActionResult<'createOffer'>> {
-  const c = await offerCaller(storage, a.keyHash, a.requestId)
+  const c = await offerCaller(storage, a.keyHash, a.requestId, now)
   if (!c.ok) return c
   const { input } = a
   if (c.again) {
@@ -1234,6 +1269,8 @@ async function createOffer(
       (e) =>
         e.counterTo === null &&
         sameTerms(e, input) &&
+        e.auction?.start === input.auction?.start &&
+        e.auction?.step === input.auction?.step &&
         e.condition === input.condition &&
         e.check === input.check &&
         e.side === input.side &&
@@ -1263,7 +1300,7 @@ async function counterOffer(
   },
   now: number,
 ): Promise<ActionResult<'counterOffer'>> {
-  const c = await offerCaller(storage, a.keyHash, a.requestId)
+  const c = await offerCaller(storage, a.keyHash, a.requestId, now)
   if (!c.ok) return c
   const original = c.offers.find((o) => o.id === a.offer)
   const terms = original && {
@@ -1293,7 +1330,7 @@ async function acceptOffer(
   a: { keyHash: string; offer: string; requestId: string },
   now: number,
 ): Promise<ActionResult<'acceptOffer'>> {
-  const c = await offerCaller(storage, a.keyHash, a.requestId)
+  const c = await offerCaller(storage, a.keyHash, a.requestId, now)
   if (!c.ok) return c
   const o = c.offers.find((x) => x.id === a.offer)
   if (c.again) {
@@ -1310,13 +1347,13 @@ async function acceptOffer(
   return ok({ accepted: actOf(entry), offer: offerInfo(o) })
 }
 
-// Отозвать: только автор, пока не принято и не закрыто встречным
+// Отозвать: только автор, пока не принято и не закрыто встречным; торг (Р-37) — пока нет встречных
 async function revokeOffer(
   storage: RoomStorage,
   a: { keyHash: string; offer: string; requestId: string },
   now: number,
 ): Promise<ActionResult<'revokeOffer'>> {
-  const c = await offerCaller(storage, a.keyHash, a.requestId)
+  const c = await offerCaller(storage, a.keyHash, a.requestId, now)
   if (!c.ok) return c
   if (c.again) {
     const e = c.again
@@ -1329,6 +1366,64 @@ async function revokeOffer(
   const entry = { id: ulid(now), at: now, memberId: c.me, type: 'offer.revoked', offer: o.id, requestId: a.requestId } as const
   await append(storage, [entry])
   return ok({ revoked: actOf(entry) })
+}
+
+// --- Торг (Р-37). Правила — checkBid / checkTakeBid (offer.ts) на время сервера в момент запроса;
+// продление, конец торга и принятие лучшего к концу — свёртка и offerAt: будильника и записи о конце нет.
+// Ответ — действие и условия пари после него (takerAmount — лучшее встречное); ход торга — в ответе
+// комнаты (bidding)
+
+// Встречное в торге: amount — сколько ставит против суммы автора; первое — не меньше старта, дальше —
+// больше лучшего хотя бы на шаг; не автор, не гарант, предмет — только на своей стороне
+async function bidOffer(
+  storage: RoomStorage,
+  a: { keyHash: string; offer: string; amount: number; requestId: string },
+  now: number,
+): Promise<ActionResult<'bidOffer'>> {
+  const c = await offerCaller(storage, a.keyHash, a.requestId, now)
+  if (!c.ok) return c
+  const o = c.offers.find((x) => x.id === a.offer)
+  if (c.again) {
+    const e = c.again
+    return e.type === 'offer.bid' && e.offer === a.offer && e.memberId === c.me && e.amount === a.amount && o
+      ? ok({ bid: { ...actOf(e), amount: e.amount }, offer: offerInfo(o) })
+      : fail(409, REQUEST_USED)
+  }
+  if (!o) return fail(404, NO_OFFER)
+  const refused = checkBid(o, c.me, a.amount, c.roles, now)
+  if (refused) return offerRefusal(refused)
+  const entry = { id: ulid(now), at: now, memberId: c.me, type: 'offer.bid', offer: o.id, amount: a.amount, requestId: a.requestId } as const
+  await append(storage, [entry])
+  const after = logOffers([...c.log, entry]).find((x) => x.id === o.id)
+  return after ? ok({ bid: { ...actOf(entry), amount: entry.amount }, offer: offerInfo(after) }) : fail(409, NO_OFFER)
+}
+
+// «Принять сейчас»: автор берёт лучшее встречное в любой миг торга — торг закончен, пари принято
+// (bid — каким встречным)
+async function takeBid(
+  storage: RoomStorage,
+  a: { keyHash: string; offer: string; requestId: string },
+  now: number,
+): Promise<ActionResult<'takeBid'>> {
+  const c = await offerCaller(storage, a.keyHash, a.requestId, now)
+  if (!c.ok) return c
+  const o = c.offers.find((x) => x.id === a.offer)
+  if (c.again) {
+    const e = c.again
+    const best = o?.auction && o.auction.taken === 'now' ? bestBid(o.auction) : null
+    return e.type === 'offer.bid-accepted' && e.offer === a.offer && e.memberId === c.me && o && best
+      ? ok({ taken: { ...actOf(e), bid: best.id }, offer: offerInfo(o) })
+      : fail(409, REQUEST_USED)
+  }
+  if (!o) return fail(404, NO_OFFER)
+  const refused = checkTakeBid(o, c.me, now)
+  if (refused) return offerRefusal(refused)
+  // checkTakeBid пропустил — торг и лучшее встречное есть
+  const best = o.auction && bestBid(o.auction)
+  if (!best) return fail(409, NO_OFFER)
+  const entry = { id: ulid(now), at: now, memberId: c.me, type: 'offer.bid-accepted', offer: o.id, requestId: a.requestId } as const
+  await append(storage, [entry])
+  return ok({ taken: { ...actOf(entry), bid: best.id }, offer: offerInfo(o) })
 }
 
 // --- Исход пари (Р-23, Р-06). Правила — checkMark / checkDecide / checkDecline / checkNominate и
@@ -1362,7 +1457,7 @@ async function markOffer(
   a: OfferOutcomeAction & { winner: OfferSide },
   now: number,
 ): Promise<ActionResult<'markOffer'>> {
-  const c = await offerCaller(storage, a.keyHash, a.requestId)
+  const c = await offerCaller(storage, a.keyHash, a.requestId, now)
   if (!c.ok) return c
   if (c.again) {
     const e = c.again
@@ -1395,7 +1490,7 @@ async function decideOffer(
   a: OfferOutcomeAction & { winner: OfferSide },
   now: number,
 ): Promise<ActionResult<'decideOffer'>> {
-  const c = await offerCaller(storage, a.keyHash, a.requestId)
+  const c = await offerCaller(storage, a.keyHash, a.requestId, now)
   if (!c.ok) return c
   if (c.again) {
     const e = c.again
@@ -1414,7 +1509,7 @@ async function decideOffer(
 
 // Отказ гаранта: нынешний гарант принятого пари, пока исход не утверждён; дальше стороны называют другого
 async function declineOffer(storage: RoomStorage, a: OfferOutcomeAction, now: number): Promise<ActionResult<'declineOffer'>> {
-  const c = await offerCaller(storage, a.keyHash, a.requestId)
+  const c = await offerCaller(storage, a.keyHash, a.requestId, now)
   if (!c.ok) return c
   if (c.again) {
     const e = c.again
@@ -1436,7 +1531,7 @@ async function nominateGuarantor(
   a: OfferOutcomeAction & { guarantor: string },
   now: number,
 ): Promise<ActionResult<'nominateGuarantor'>> {
-  const c = await offerCaller(storage, a.keyHash, a.requestId)
+  const c = await offerCaller(storage, a.keyHash, a.requestId, now)
   if (!c.ok) return c
   if (c.again) {
     const e = c.again
@@ -1476,7 +1571,8 @@ type ReplacedEntry = Extract<LogEntry, { type: 'court.replaced' }>
 // again — запись журнала с этим номером запроса (повтор узнаётся до проверки спора)
 type CourtCaller = Caller & { again: undefined; dispute: appeal.AppealTarget; court: CourtCase | null; room: appeal.CourtRoom }
 
-async function courtCaller(storage: RoomStorage, a: CourtAction): Promise<(Caller & { again: LogEntry }) | CourtCaller | Failure> {
+// Пари — на now (offerAt, Р-37): торг, кончившийся со встречным, принят — у него две стороны
+async function courtCaller(storage: RoomStorage, a: CourtAction, now: number): Promise<(Caller & { again: LogEntry }) | CourtCaller | Failure> {
   const c = await caller(storage, a.keyHash)
   if (!c.ok) return c
   const again = c.log.find((e) => 'requestId' in e && e.requestId === a.requestId)
@@ -1489,7 +1585,7 @@ async function courtCaller(storage: RoomStorage, a: CourtAction): Promise<(Calle
   } else {
     const offer = logOffers(c.log).find((o) => o.id === a.target)
     if (!offer) return fail(404, NO_OFFER)
-    dispute = { kind: 'offer', offer }
+    dispute = { kind: 'offer', offer: offerAt(offer, now) }
   }
   // Дело суда — только по этому спору: свёртке нужен лишь он
   const one = dispute.kind === 'event' ? { events: [dispute.event], offers: [] } : { events: [], offers: [dispute.offer] }
@@ -1546,7 +1642,7 @@ async function appealOutcome(
   now: number,
   seed: () => string,
 ): Promise<ActionResult<'appealOutcome'>> {
-  const c = await courtCaller(storage, a)
+  const c = await courtCaller(storage, a, now)
   if (!c.ok) return c
   if (c.again) {
     const e = c.again
@@ -1579,7 +1675,7 @@ function filedOut(e: FiledEntry): AppealResponse['appeal'] {
 
 // Присоединиться к апелляции: тот, кто мог бы подать, кроме подавшего; один раз; до решения суда
 async function joinAppeal(storage: RoomStorage, a: CourtAction, now: number): Promise<ActionResult<'joinAppeal'>> {
-  const c = await courtCaller(storage, a)
+  const c = await courtCaller(storage, a, now)
   if (!c.ok) return c
   if (c.again) {
     const e = c.again
@@ -1595,7 +1691,7 @@ async function joinAppeal(storage: RoomStorage, a: CourtAction, now: number): Pr
 
 // Голос суда: член суда на своём месте в свои 72 часа, один раз, не меняется
 async function judgeCourt(storage: RoomStorage, a: CourtAction & { vote: CourtVerdict }, now: number): Promise<ActionResult<'judgeCourt'>> {
-  const c = await courtCaller(storage, a)
+  const c = await courtCaller(storage, a, now)
   if (!c.ok) return c
   if (c.again) {
     const e = c.again
@@ -1631,7 +1727,7 @@ async function replaceJuror(
   a: CourtAction & { member: string; reason: string },
   now: number,
 ): Promise<ActionResult<'replaceJuror'>> {
-  const c = await courtCaller(storage, a)
+  const c = await courtCaller(storage, a, now)
   if (!c.ok) return c
   if (c.again) {
     const e = c.again

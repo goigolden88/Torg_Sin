@@ -6,7 +6,9 @@
 // 6 — правило гаранта (Р-31): guarantorRule у пари, фаза исхода пари «ждёт суда» (court)
 // 7 — пари без гаранта (Р-36): guarantorId у пари и его исхода может быть null, noGuarantor в
 // «Предложить пари» и во встречном, guarantor во встречном
-export const PROTOCOL_VERSION = 7
+// 8 — «Торг до …» (Р-37): статус пари «не состоялось» (failed), auction у пари и в «Предложить пари»,
+// bidding у пари, адреса …/bid и …/bid/accept
+export const PROTOCOL_VERSION = 8
 
 // Ответ GET /health: сервер жив, его протокол и время (UTC, мс) — по нему закрываются сроки
 export type Health = { v: number; ok: true; time: number }
@@ -257,13 +259,16 @@ export type OfferView = OfferInfo & {
 
 // POST /rooms/<номер>/offers — предложить пари. side не задана — «сбудется»; to не задан — открытое;
 // guarantor не задан — ведущий; noGuarantor: true — без гаранта (Р-36; guarantor тогда не задают).
-// requestId — номер запроса (ULID): повтор — то же пари и тот же ответ
+// «Торг до …» (Р-37): auction { start, step? } вместо odds — старт (наименьшая сумма соперника) и шаг (не
+// задан — 10 % старта); только открытое; closesAt — конец торга (от 10 минут до 3 дней), expectedAt — не
+// раньше конца + 30 минут. requestId — номер запроса (ULID): повтор — то же пари и тот же ответ
 export type CreateOfferRequest = {
   v?: number
   condition: string
   check: string
   side?: 'yes' | 'no'
-  odds: { a: number; b: number }
+  odds?: { a: number; b: number } // у торга не нужен
+  auction?: { start: number; step?: number }
   amount: number
   to?: string
   closesAt: number
@@ -291,6 +296,14 @@ export type CounterOfferRequest = {
 export type OfferActRequest = { v?: number; requestId?: string }
 export type AcceptOfferResponse = { v: number; accepted: OfferAct; offer: OfferInfo }
 export type RevokeOfferResponse = { v: number; revoked: OfferAct }
+// Торг (Р-37). POST …/offers/<пари>/bid { amount } — встречное: сколько ставишь против суммы автора;
+// ответ — встречное и условия пари после него (takerAmount — лучшее). …/bid/accept {} — «принять
+// сейчас», автор: bid — какое встречное принято. Ход торга — bidding в ответе комнаты
+export type BidOfferRequest = { v?: number; amount: number; requestId?: string }
+export type OfferBidAct = OfferAct & { amount: number }
+export type BidOfferResponse = { v: number; bid: OfferBidAct; offer: OfferInfo }
+export type OfferTakeAct = OfferAct & { bid: string }
+export type TakeBidResponse = { v: number; taken: OfferTakeAct; offer: OfferInfo }
 // Исход пари (Р-23). POST …/offers/<пари>/mark { winner } — сторона принятого пари: кто прав;
 // повтор той же отметки — прежняя запись. …/decide { winner } — гарант, когда решение перешло к нему.
 // …/decline {} — гарант отказывается. …/nominate { guarantor } — сторона называет нового гаранта
@@ -880,6 +893,14 @@ export function isAcceptOfferResponse(x: unknown): x is AcceptOfferResponse {
 
 export function isRevokeOfferResponse(x: unknown): x is RevokeOfferResponse {
   return recordIn(x, 'revoked', isOfferAct)
+}
+
+export function isBidOfferResponse(x: unknown): x is BidOfferResponse {
+  return recordIn(x, 'bid', (r) => isOfferAct(r) && numbers(r, 'amount')) && recordIn(x, 'offer', isOfferInfo)
+}
+
+export function isTakeBidResponse(x: unknown): x is TakeBidResponse {
+  return recordIn(x, 'taken', (r) => isOfferAct(r) && strings(r, 'bid')) && recordIn(x, 'offer', isOfferInfo)
 }
 
 export function isMarkOfferResponse(x: unknown): x is MarkOfferResponse {
