@@ -3259,6 +3259,91 @@ export function roomsSuite(
         })
       })
 
+      // Торг кончился сам по сроку со встречным (Р-37): пари принято в миг конца без записи — суд и
+      // апелляция по нему видны в ответе комнаты и идут в «Расчёт»
+      describe('торг, кончившийся по сроку (Р-37)', () => {
+        const auctionForm = (s: TestServer, more: Record<string, unknown> = {}) => ({
+          v: PROTOCOL_VERSION,
+          condition: 'Вася бросит курить',
+          check: 'Скажет сам',
+          amount: 300,
+          auction: { start: 100, step: 20 },
+          closesAt: s.clock.now + HOUR,
+          expectedAt: s.clock.now + DAY,
+          ...more,
+        })
+        const totals = async (s: TestServer, roomId: string, key: string, ids: string[]) => {
+          const state = await stateOf(s, roomId, key)
+          return ids.map((id) => state.settlement?.members.find((m) => m.memberId === id)?.total.amount)
+        }
+
+        it('без гаранта: стороны молчат — суд собран сам; места судей в ответе, решение суда — в «Расчёте»', async () => {
+          const s = await server()
+          const { room, borya, vera, gosha, dasha, zhenya } = await room6(s)
+          const keyOf = keys(room, borya, vera, gosha, dasha, zhenya)
+          const id = room.roomId
+          const { offer } = await ok<CreateOfferResponse>(send(s, id, 'offers', auctionForm(s, { noGuarantor: true }), borya.key))
+          s.clock.now += 1000
+          await ok(offerAct(s, id, vera.key, offer.id, 'bid', { amount: 100 }))
+          // После конца торга — ни одной записи пари; стороны молчат — суд с «исход к» + срок молчания
+          const due = offer.expectedAt + SIDE_SILENCE
+          s.clock.now = due
+          s.seeds.push(SEED)
+          const candidates = [room.memberId, gosha.memberId, dasha.memberId, zhenya.memberId]
+          const order = A.drawCourt(SEED, candidates, room.memberId)
+          const view = await offerOutcome(s, id, gosha.key, offer.id)
+          expect(view).toMatchObject({ phase: 'court', approved: null, appeal: null, court: { seed: SEED, drawnAt: due, candidates: order, decision: null } })
+          expect(view?.court?.seats.map((x) => x.member)).toEqual(order.slice(0, 3))
+          expect(await courtEntries(s, id)).toEqual(['court.drawn'])
+          // Судьи голосуют: «прав соперник» большинством — окончательно, Вера забирает сумму Бори
+          const judge = (memberId: string, body: Record<string, unknown>) => offerAct(s, id, keyOf(memberId), offer.id, 'judge', body)
+          await ok(judge(order[0], { verdict: 'change', winner: 'taker' }))
+          await ok(judge(order[1], { verdict: 'change', winner: 'taker' }))
+          await ok(judge(order[2], { verdict: 'cancel' }))
+          const at = s.clock.now
+          expect(await offerOutcome(s, id, borya.key, offer.id)).toMatchObject({
+            phase: 'final',
+            approved: { winner: 'taker', at, how: 'court', by: null },
+            court: { decision: { at, majority: true, verdict: 'change', winner: 'taker' } },
+          })
+          expect(await totals(s, id, gosha.key, [borya.memberId, vera.memberId, gosha.memberId])).toEqual([-300, 300, 0])
+        })
+
+        it('с гарантом: решил гарант — апелляция стороны и суд в ответе, решение суда — в «Расчёте»', async () => {
+          const s = await server()
+          const { room, borya, vera, gosha, dasha, zhenya } = await room6(s)
+          const keyOf = keys(room, borya, vera, gosha, dasha, zhenya)
+          const id = room.roomId
+          const { offer } = await ok<CreateOfferResponse>(send(s, id, 'offers', auctionForm(s), borya.key))
+          s.clock.now += 1000
+          await ok(offerAct(s, id, vera.key, offer.id, 'bid', { amount: 100 }))
+          // Конец торга без записи; стороны разошлись, гарант (ведущая) решил в пользу Бори
+          s.clock.now = offer.closesAt
+          await ok(offerAct(s, id, borya.key, offer.id, 'mark', { winner: 'author' }))
+          await ok(offerAct(s, id, vera.key, offer.id, 'mark', { winner: 'taker' }))
+          s.clock.now = offer.expectedAt
+          await ok(offerAct(s, id, room.key, offer.id, 'decide', { winner: 'author' }))
+          s.clock.now += HOUR
+          s.seeds.push(SEED)
+          const filed = await ok<AppealResponse>(offerAct(s, id, vera.key, offer.id, 'appeal', { reason: 'Гарант не видел видео' }))
+          const candidates = [gosha.memberId, dasha.memberId, zhenya.memberId]
+          expect(filed.appeal).toMatchObject({ by: vera.memberId, target: offer.id, candidates })
+          const order = A.drawCourt(SEED, candidates, room.memberId)
+          const view = await offerOutcome(s, id, gosha.key, offer.id)
+          expect(view).toMatchObject({ phase: 'approved', finalAt: null, appeal: { by: vera.memberId }, court: { seed: SEED, candidates: order, decision: null } })
+          expect(view?.court?.seats.map((x) => x.member)).toEqual(order.slice(0, 3))
+          // Пока суд не решил — в «Расчёт» не идёт
+          expect(await totals(s, id, gosha.key, [borya.memberId, vera.memberId])).toEqual([0, 0])
+          const judge = (memberId: string, body: Record<string, unknown>) => offerAct(s, id, keyOf(memberId), offer.id, 'judge', body)
+          await ok(judge(order[0], { verdict: 'change', winner: 'taker' }))
+          await ok(judge(order[1], { verdict: 'change', winner: 'taker' }))
+          await ok(judge(order[2], { verdict: 'keep' }))
+          expect(await offerOutcome(s, id, borya.key, offer.id)).toMatchObject({ phase: 'final', approved: { winner: 'taker', how: 'court' } })
+          expect(await totals(s, id, gosha.key, [borya.memberId, vera.memberId, gosha.memberId])).toEqual([-300, 300, 0])
+          expect(await courtEntries(s, id)).toEqual(['appeal.filed', 'court.voted', 'court.voted', 'court.voted'])
+        })
+      })
+
       it('отказы подачи: согласием — окончательный, 7 дней прошли, отменено, некому судить; нет спора — 404, без ключа — 403, кривое тело — 400', async () => {
         const s = await server()
         const room = await create(s)

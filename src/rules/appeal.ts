@@ -5,7 +5,7 @@
 // court.* журнала комнаты (Р-25) переводит в записи правил logAppeals (внизу). Ни DOM, ни Cloudflare
 import { courtState, courtVerdict, type CourtCase } from './court'
 import { eventBettors, eventOutcome, MAX_EVENT_TEXT, roomEvents, type EventState } from './event'
-import { courtDue, logOffers, offerOutcome, type OfferSide, type OfferState } from './offer'
+import { courtDue, logOffers, offerAt, offerOutcome, type OfferSide, type OfferState } from './offer'
 import type { CourtVerdict } from './protocol'
 import { foldLog, type LogEntry, type RoomState } from './room'
 
@@ -281,21 +281,24 @@ function verdictOf(v: CourtVerdict): CourtVerdict {
 // Дела суда комнаты из записей по порядку. Запись действует, если её разрешает та же проверка на её
 // время at (как roomOffers): подача — checkAppeal и жребий (checkDraw) на миг подачи; суд по «ждёт
 // суда» — checkCourtDraw; присоединение — checkJoin; голос — checkCourtVote; замена — checkReplace.
-// Записи о неизвестном событии или пари не действуют. Исход цели — по уже собранному событию или пари
+// Записи о неизвестном событии или пари не действуют. Исход цели — по уже собранному событию или пари,
+// пари — на миг записи (offerAt)
 export function roomAppeals(
   records: readonly AppealRecord[],
   targets: { events: readonly EventState[]; offers: readonly OfferState[] },
   room: CourtRoom,
 ): CourtCase[] {
   const cases = new Map<string, CourtCase>()
-  const find = (id: string): AppealTarget | null => {
+  // Пари — на миг записи (offerAt), как в свёртке пари: торг, кончившийся по времени со встречным,
+  // принят в миг конца без записи (Р-37) — у него уже есть соперник
+  const find = (id: string, at: number): AppealTarget | null => {
     const event = targets.events.find((e) => e.id === id)
     if (event) return { kind: 'event', event }
     const offer = targets.offers.find((o) => o.id === id)
-    return offer ? { kind: 'offer', offer } : null
+    return offer ? { kind: 'offer', offer: offerAt(offer, at) } : null
   }
   for (const r of records) {
-    const t = find(r.target)
+    const t = find(r.target, r.at)
     if (!t) continue
     const c = cases.get(targetId(t)) ?? null
     switch (r.type) {
