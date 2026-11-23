@@ -111,7 +111,8 @@ export function OfferScreen({ room, offerId, onUpdate }: { room: SavedRoom; offe
   const online = sync.state === 'ok'
   const acceptRefusal = checkAccept(state, me, roles, now)
   const mayAccept = acceptRefusal === null
-  const mayRevoke = checkWithdraw(state, me) === null
+  // Торг, который не состоялся (Р-37), уже закончен: отзывать нечего — вместо этого «Повторить»
+  const mayRevoke = checkWithdraw(state, me) === null && status !== 'failed'
   const mayCounter = checkCounter(state, me, roles, now) === null
   const stakes = stakesOf(offer)
   const sum = (n: number) => money(n, room.currency)
@@ -222,7 +223,9 @@ export function OfferScreen({ room, offerId, onUpdate }: { room: SavedRoom; offe
               <span>
                 {status === 'accepted' && o.bidding?.best
                   ? `${who(room, o.bidding.best.by)} — за „${takerSide}“, торг закончен ${formatDateTime(o.accepted?.at ?? o.bidding.endsAt)}`
-                  : `торг — кто даст больше к концу, за „${takerSide}“`}
+                  : status === 'open'
+                    ? `торг — кто даст больше к концу, за „${takerSide}“`
+                    : `торг — открытое, за „${takerSide}“`}
               </span>
             </li>
           ) : (
