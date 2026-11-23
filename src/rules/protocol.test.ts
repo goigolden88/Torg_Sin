@@ -395,6 +395,9 @@ describe('расчёт (Р-32)', () => {
   it('свод в состоянии комнаты: нет поля (сервер до этапа 5) — тоже ответ; кривой — нет', () => {
     expect(isSettlementView(settlement)).toBe(true)
     expect(isSettlementView({ ...settlement, mode: 'fewest', transfers: [], suggestions: [] })).toBe(true)
+    // Счётчик лотов (Р-38): нет поля (сервер до лотов) или число
+    expect(isSettlementView({ ...settlement, members: [{ ...member, total: { ...sum, lots: 2 } }] })).toBe(true)
+    expect(isSettlementView({ ...settlement, members: [{ ...member, total: { ...sum, lots: '2' } }] })).toBe(false)
     expect(isRoomStateResponse({ ...state, settlement })).toBe(true)
     expect(isRoomStateResponse(state)).toBe(true)
     const bad: unknown[] = [

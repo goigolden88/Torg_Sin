@@ -228,10 +228,12 @@ export function checkDisputed(l: LotState, memberId: string, now: number): strin
   return null
 }
 
-// Пора ли суду по лоту: «Не получил» действует, суд не собран, стороны не уступили. Собран ли уже суд и
-// есть ли кандидаты — appeal.ts (checkCourtDraw, courtCandidates). Судить некому — лот «в споре»
+// Пора ли суду по лоту на now: «Не получил» действует, стороны к этому мигу не уступили («Получил», «Не
+// смогу передать»). Собран ли уже суд и есть ли кандидаты — appeal.ts (checkCourtDraw, courtCandidates;
+// там лот — из полной свёртки, поэтому по времени, а не по courtAt). Судить некому — лот «в споре»
 export function lotCourtDue(l: LotState, now: number): boolean {
-  return l.disputedAt !== null && now >= l.disputedAt && l.courtAt === null && l.declinedAt === null && l.receivedAt === null
+  const before = (x: number | null) => x !== null && x <= now
+  return before(l.disputedAt) && !before(l.declinedAt) && !before(l.receivedAt)
 }
 
 // Запись lot.created: форма и сроки — те же проверки на её время; продавец — участник
@@ -303,7 +305,7 @@ export function roomLots(records: readonly LotRecord[], room: LotRoom): LotState
       case 'court.drawn':
         // Первый сбор в срок; жребий и кандидатов проверяет roomAppeals (appeal.ts) — сервер пишет запись,
         // только когда кандидаты есть
-        if (lotCourtDue(l, r.at)) l.courtAt = r.at
+        if (l.courtAt === null && lotCourtDue(l, r.at)) l.courtAt = r.at
         break
     }
   }
