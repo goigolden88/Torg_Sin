@@ -243,6 +243,30 @@ describe('строка пари', () => {
     }
   })
 
+  it('торг (Р-37): не состоялся — с конца торга, автору ноль; состоялся — суммы из сумм, не из кэфа', () => {
+    const auction = { start: 100000, step: 10000, latestEnd: 50 + 30 * 60 * 1000 }
+    const failed = offer({ to: null, odds: { a: 30000, b: 100000 }, takerAmount: 100000, auction, bidding: { bids: [], best: null, endsAt: 50, result: { how: 'failed', at: 50 } } })
+    expect(offerPastAt(failed, 'failed', null)).toBe(50)
+    expect(offerItem(failed, 'A', 'failed', null)).toMatchObject({ outcome: 'не состоялось — никто не дал старт', at: 50, mine: { kind: 'net', amount: 0, refund: 0 } })
+    expect(offerItem(failed, 'B', 'failed', null)?.mine).toEqual({ kind: 'none' })
+    // Между опросами: итога в ответе ещё нет — конец с продлениями
+    expect(offerPastAt({ ...failed, bidding: { bids: [], best: null, endsAt: 170, result: null } }, 'failed', null)).toBe(170)
+    // Состоялся: Боря дал 10 000 ₽ против 300 ₽ — кэф 1 к 33 вне 1…100, суммы — из торга
+    const best = { id: 'b1', at: 40, by: 'B', amount: 1000000 }
+    const won = offer({
+      to: null,
+      status: 'accepted',
+      accepted: { by: 'B', at: 50 },
+      odds: { a: 30000, b: 1000000 },
+      takerAmount: 1000000,
+      auction,
+      bidding: { bids: [best], best, endsAt: 50, result: { how: 'end', at: 50, bid: 'b1' } },
+    })
+    const final = phase('final', { finalAt: 700, approved: { winner: 'author', at: 700, how: 'agreement', by: null } })
+    expect(offerItem(won, 'A', 'accepted', final)).toMatchObject({ outcome: 'Сбылось', mine: { kind: 'net', amount: 1000000 } })
+    expect(offerItem(won, 'B', 'accepted', final)).toMatchObject({ mine: { kind: 'net', amount: -1000000 } })
+  })
+
   it('не прошедшее — строки нет', () => {
     expect(offerItem(accepted, 'A', 'accepted', phase('guarantor'))).toBeNull()
     expect(offerItem(offer(), 'A', 'open', null)).toBeNull()

@@ -6,22 +6,30 @@
 // номером запроса (Р-13). У принятого — блок «Исход» (OfferOutcome): отметки сторон, решение гаранта,
 // новый гарант, итог. Состояние — с сервера раз в 5 с (useRoom); нет связи — последнее известное,
 // действия закрыты. Рядом (от 1280 px) или ниже — список пари комнаты (OfferList). О ком спор (Р-26):
-// строкой в условиях; предмет — сторона — пометка; предмету «Принять» нет, пока автор за «сбудется»
+// строкой в условиях; предмет — сторона — пометка; предмету «Принять» нет, пока автор за «сбудется».
+// Торг (Р-37): вместо «Принять» и «Встречного» — ход торга (Bidding: лучшее, все встречные, «вас
+// перебили») и «Ваше встречное» (BidPanel, checkBid); автору — «Принять сейчас» (checkTakeBid) и
+// «Отозвать», пока встречных нет; конец — «Торг закончен — соперник …», дальше — обычное пари; «не
+// состоялось» — автору «Повторить» (новое пари с теми же условиями)
 import { useCallback, useRef, useState, type FormEvent, type MutableRefObject } from 'react'
-import { acceptOffer, counterOffer, revokeOffer } from '../api'
-import { currency as currencyOf, isCurrencyCode, parseAmount, type CurrencyCode } from '../rules/currency'
+import { acceptOffer, bidOffer, counterOffer, revokeOffer, takeBid } from '../api'
+import { currency as currencyOf, isCurrencyCode, parseAmount } from '../rules/currency'
 import { formatDateTime, fromLocalInput, toLocalInput } from '../rules/date'
 import {
+  auctionLatestEnd,
   BAD_ODDS,
   checkAccept,
+  checkBid,
   checkCounter,
   checkOfferInput,
   checkOfferTimes,
+  checkTakeBid,
   checkWithdraw,
   counterInput,
   NEED_TIMES,
   offerStakes,
   offerStatus,
+  SUBJECT_BIDS,
   SUBJECT_TAKES,
   subjectIsSide,
   type OfferInput,
@@ -36,6 +44,10 @@ import { historyHref, offerPastNow } from './historyParts'
 import { OfferList } from './OfferList'
 import { OfferOutcome } from './OfferOutcome'
 import {
+  amountsOddsLabel,
+  auctionResultText,
+  bidAskText,
+  nextBid,
   OddsField,
   oddsLabel,
   oddsNumber,
@@ -43,12 +55,15 @@ import {
   offerState,
   OfferStatusLine,
   OfferSubjectFlag,
+  outbid,
+  repeatHref,
   roomRolesOf,
   sideLabel,
   stakesLine,
   stakesOf,
   guarantorLabel,
   toLabel,
+  unitsText,
   validOdds,
   who,
   type OfferAsk as Ask,
@@ -64,6 +79,7 @@ export function OfferScreen({ room, offerId, onUpdate }: { room: SavedRoom; offe
   const now = useServerNow(clock, !!offer)
   const [ask, setAsk] = useState<Ask | null>(null)
   const [counter, setCounter] = useState(false)
+  const [round, setRound] = useState(0) // действие удалось — поле встречного в торге снова с подставленной суммой
   const busy = useRef(false) // идёт запрос — окно не закрывается
   // Прошедшее пари живёт в «Истории» — «Назад» туда; идущее — в комнату
   const back = offer && offerPastNow(room, offer, now) !== null ? historyHref(room.id) : '#/room/' + room.id
@@ -103,6 +119,35 @@ export function OfferScreen({ room, offerId, onUpdate }: { room: SavedRoom; offe
   const counters = offers.filter((o) => o.counterTo === offer.id)
   const closedBy = offer.closedBy ? offers.find((o) => o.id === offer.closedBy?.offer) : undefined
   const takerSide = sideLabel(offer.side === 'yes' ? 'no' : 'yes')
+  // Торг (Р-37): встречное — правилом checkBid на подставленной сумме (отказ по сумме — в окне),
+  // «Принять сейчас» — checkTakeBid; «не состоялось» — автору «Повторить»
+  const auction = state.auction ?? null
+  const bidAt = nextBid(o)
+  const bidRefusal = auction && bidAt !== null ? checkBid(state, me, bidAt, roles, now) : null
+  const mayBid = !!auction && bidRefusal === null
+  const mayTake = !!auction && checkTakeBid(state, me, now) === null
+  const result = auctionResultText(room, o, now)
+  const mayRepeat = !!auction && status === 'failed' && me === o.authorId
+
+  function askTake() {
+    const best = o.bidding?.best
+    if (!best) return
+    setCounter(false)
+    setAsk({
+      question: 'Принять лучшее встречное сейчас?',
+      body: [
+        `${nameOf(room, best.by)} ставит ${sum(best.amount)} против ваших ${sum(o.amount)} — кэф ${amountsOddsLabel(o.amount, best.amount)}, банк ${sum(o.amount + best.amount)}.`,
+        `Торг закончится сейчас, ${nameOf(room, best.by)} — соперник. Дальше — обычное пари: исход к ${formatDateTime(o.expectedAt)}, ${
+          o.guarantorId === null ? 'гаранта нет — разойдётесь, решит суд' : `гарант — ${nameOf(room, o.guarantorId)}`
+        }.`,
+        'Придёт встречное больше, пока вы подтверждаете, — примется оно. Принятое не отменить.',
+      ],
+      button: 'Принять сейчас',
+      busyLabel: 'Принимаю…',
+      form: formKey(room.id, o.id, 'bid/accept'),
+      run: (requestId) => takeBid(room.server, room.id, room.key, o.id, { requestId }),
+    })
+  }
 
   function askAccept() {
     setCounter(false)
@@ -130,7 +175,11 @@ export function OfferScreen({ room, offerId, onUpdate }: { room: SavedRoom; offe
     setCounter(false)
     setAsk({
       question: 'Отозвать пари?',
-      body: ['Его больше нельзя будет принять. Отзыв не вернуть — захотите снова, предложите новое пари.'],
+      body: [
+        auction
+          ? 'Торг закончится: встречных больше не будет. Отзыв не вернуть — захотите снова, предложите новое пари.'
+          : 'Его больше нельзя будет принять. Отзыв не вернуть — захотите снова, предложите новое пари.',
+      ],
       button: 'Отозвать',
       busyLabel: 'Отзываю…',
       form: formKey(room.id, o.id, 'revoke'),
@@ -167,22 +216,41 @@ export function OfferScreen({ room, offerId, onUpdate }: { room: SavedRoom; offe
               {who(room, offer.authorId)} — за „{sideLabel(offer.side)}“
             </span>
           </li>
-          <li>
-            <span className="hint">{offer.accepted ? 'Соперник' : 'Кому'}</span>
-            <span>
-              {offer.accepted
-                ? `${who(room, offer.accepted.by)} — за „${takerSide}“, принято ${formatDateTime(offer.accepted.at)}`
-                : `${toLabel(room, offer)} — за „${takerSide}“`}
-            </span>
-          </li>
+          {auction ? (
+            <li>
+              <span className="hint">{status === 'accepted' ? 'Соперник' : 'Кому'}</span>
+              <span>
+                {status === 'accepted' && o.bidding?.best
+                  ? `${who(room, o.bidding.best.by)} — за „${takerSide}“, торг закончен ${formatDateTime(o.accepted?.at ?? o.bidding.endsAt)}`
+                  : `торг — кто даст больше к концу, за „${takerSide}“`}
+              </span>
+            </li>
+          ) : (
+            <li>
+              <span className="hint">{offer.accepted ? 'Соперник' : 'Кому'}</span>
+              <span>
+                {offer.accepted
+                  ? `${who(room, offer.accepted.by)} — за „${takerSide}“, принято ${formatDateTime(offer.accepted.at)}`
+                  : `${toLabel(room, offer)} — за „${takerSide}“`}
+              </span>
+            </li>
+          )}
           <li>
             <span className="hint">Кэф</span>
-            <span>{oddsLabel(offer.odds)}</span>
+            <span>{auction ? (stakes ? amountsOddsLabel(stakes.author, stakes.taker) : '—') : oddsLabel(offer.odds)}</span>
           </li>
           <li>
             <span className="hint">Суммы</span>
-            <span>{stakesLine(room, offer)}</span>
+            <span>{stakesLine(room, offer, now)}</span>
           </li>
+          {auction && (
+            <li>
+              <span className="hint">Торг</span>
+              <span>
+                старт — {sum(auction.start)}, шаг — {sum(auction.step)}: встречное больше лучшего хотя бы на шаг
+              </span>
+            </li>
+          )}
           <li>
             <span className="hint">Гарант</span>
             <span>{guarantorLabel(room, offer)}</span>
@@ -193,10 +261,21 @@ export function OfferScreen({ room, offerId, onUpdate }: { room: SavedRoom; offe
               <span>{who(room, offer.subjectId)} — только на стороне „{sideLabel('yes')}“</span>
             </li>
           )}
-          <li>
-            <span className="hint">Приём до</span>
-            <span>{formatDateTime(offer.closesAt)}</span>
-          </li>
+          {auction ? (
+            <li>
+              <span className="hint">Конец торга</span>
+              <span>
+                {formatDateTime(auction.endsAt)}
+                {auction.endsAt > offer.closesAt ? ` (продлён с ${formatDateTime(offer.closesAt)})` : ''}, не позже{' '}
+                {formatDateTime(auctionLatestEnd(offer))}
+              </span>
+            </li>
+          ) : (
+            <li>
+              <span className="hint">Приём до</span>
+              <span>{formatDateTime(offer.closesAt)}</span>
+            </li>
+          )}
           <li>
             <span className="hint">Исход к</span>
             <span>{formatDateTime(offer.expectedAt)}</span>
@@ -210,7 +289,10 @@ export function OfferScreen({ room, offerId, onUpdate }: { room: SavedRoom; offe
             <OfferSubjectFlag room={room} offer={offer} />
           </p>
         )}
+        {result && <p className={status === 'failed' ? 'auction-result failed' : 'auction-result'}>{result}</p>}
+        {status === 'failed' && <p className="hint">Никто никому не должен. Хотите снова — новое пари с теми же условиями.</p>}
         {acceptRefusal === SUBJECT_TAKES && <p className="hint">{SUBJECT_TAKES}.</p>}
+        {bidRefusal === SUBJECT_BIDS && <p className="hint">{SUBJECT_BIDS}.</p>}
         {offer.withdrawnAt !== null && <p className="hint">Автор отозвал пари {formatDateTime(offer.withdrawnAt)}.</p>}
         {offer.closedBy && (
           <p className="hint">
@@ -223,13 +305,26 @@ export function OfferScreen({ room, offerId, onUpdate }: { room: SavedRoom; offe
         )}
         {sync.state === 'fail' && <p className="error">{sync.text}</p>}
 
-        {mayAccept || mayRevoke || mayCounter ? (
+        {auction && <Bidding room={room} offer={offer} now={now} />}
+        {mayBid && <BidPanel key={round} room={room} offer={offer} clock={clock} busy={busy} online={online} onAsk={setAsk} />}
+
+        {mayAccept || mayRevoke || mayCounter || mayTake || mayRepeat ? (
           <>
             <div className="row">
               {mayAccept && (
                 <button className="button" type="button" onClick={askAccept} disabled={!online}>
                   Принять
                 </button>
+              )}
+              {mayTake && (
+                <button className="button" type="button" onClick={askTake} disabled={!online}>
+                  Принять сейчас
+                </button>
+              )}
+              {mayRepeat && (
+                <a className="button" href={repeatHref(room.id, offer.id)}>
+                  Повторить
+                </a>
               )}
               {mayCounter && (
                 <button className="button secondary" type="button" onClick={() => setCounter(!counter)} aria-expanded={counter} disabled={!online}>
@@ -263,6 +358,7 @@ export function OfferScreen({ room, offerId, onUpdate }: { room: SavedRoom; offe
           onDone={async (next) => {
             setAsk(null)
             setCounter(false)
+            setRound((r) => r + 1)
             await refresh()
             if (next) location.hash = offerHref(room.id, next)
           }}
@@ -298,15 +394,6 @@ function Counters({ room, offer, counters, now }: { room: SavedRoom; offer: Offe
       </ul>
     </section>
   )
-}
-
-// Сумма в поле: минимальные единицы → «100» или «100,5» (для подсказки во встречном)
-function unitsText(units: number, code: CurrencyCode): string {
-  const digits = currencyOf(code).digits
-  if (digits === 0) return String(units)
-  const s = String(units).padStart(digits + 1, '0')
-  const frac = s.slice(-digits).replace(/0+$/, '')
-  return s.slice(0, -digits) + (frac ? ',' + frac : '')
 }
 
 // Встречное: свои кэф, сумма и «приём до»; условие, «как проверяем», «исход к» и гарант — исходного,
@@ -417,8 +504,134 @@ function CounterPanel({
   )
 }
 
+// Ход торга (Р-37): лучшее встречное и кто (сколько осталось — в строке статуса), все встречные — кто,
+// сколько, когда, новые сверху (видны всем, Р-11); моё перебили — «Вас перебили»
+function Bidding({ room, offer, now }: { room: SavedRoom; offer: OfferView; now: number }) {
+  const bids = offer.bidding?.bids ?? []
+  const best = offer.bidding?.best ?? null
+  const open = offerStatus(offerState(offer), now) === 'open'
+  const sum = (n: number) => money(n, room.currency)
+  const start = offer.auction?.start ?? 0
+  return (
+    <section className="bidding" aria-label="Торг">
+      <h3>Встречные в торге</h3>
+      {open && (
+        <p>
+          {best
+            ? `Лучшее встречное — ${who(room, best.by)}: ${sum(best.amount)} против ${sum(offer.amount)} автора, кэф ${amountsOddsLabel(offer.amount, best.amount)}.`
+            : `Встречных пока нет. Первое — не меньше старта: ${sum(start)}.`}
+        </p>
+      )}
+      {outbid(offer, room.memberId, now) && best && (
+        <p className="outbid" role="status">
+          Вас перебили: лучшее встречное — {who(room, best.by)}, {sum(best.amount)}. Ваше встречное больше не держит вас — можете перебить снова.
+        </p>
+      )}
+      {bids.length === 0 ? (
+        !open && <p className="hint">Встречных не было.</p>
+      ) : (
+        <ul className="bid-list" aria-label="Встречные">
+          {[...bids].reverse().map((b) => (
+            <li key={b.id} className={b.id === best?.id ? 'bid best' : 'bid'}>
+              <span className="bid-who">{who(room, b.by)}</span>
+              <span className="bid-sum">{sum(b.amount)}</span>
+              <span className="hint">{formatDateTime(b.at)}</span>
+              {b.id === best?.id && <span className="badge">{open ? 'лучшее' : 'принято'}</span>}
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  )
+}
+
+// «Ваше встречное» в торге (Р-37): подставлено лучшее + шаг (без встречных — старт), по ходу ввода —
+// «вы ставите … против … автора — кэф …»; проверка — checkBid на часах сервера; окно подтверждения, вдвое
+// больше лучшего — второе подтверждение
+function BidPanel({
+  room,
+  offer,
+  clock,
+  busy,
+  online,
+  onAsk,
+}: {
+  room: SavedRoom
+  offer: OfferView
+  clock: Clock | null
+  busy: MutableRefObject<boolean>
+  online: boolean
+  onAsk: (ask: Ask) => void
+}) {
+  const code = isCurrencyCode(room.currency) ? room.currency : null
+  const sign = code ? currencyOf(code).sign || code : room.currency
+  const suggested = nextBid(offer)
+  const [text, setText] = useState<string | null>(null) // null — подставленное
+  const [error, setError] = useState('')
+  const shown = text ?? (code && suggested !== null ? unitsText(suggested, code) : '')
+  const parsed = code && shown.trim() ? parseAmount(shown, code) : null
+  const best = offer.bidding?.best ?? null
+  const sum = (n: number) => money(n, room.currency)
+  const step = offer.auction?.step ?? 0
+  const takerSide = sideLabel(offer.side === 'yes' ? 'no' : 'yes')
+
+  function submit(e: FormEvent) {
+    e.preventDefault()
+    if (busy.current) return
+    if (!code) return setError('Валюта комнаты незнакома этой версии сайта — обновите страницу')
+    const units = parseAmount(shown, code)
+    if (!units.ok) return setError(units.error)
+    const refusal = checkBid(offerState(offer), room.memberId, units.units, roomRolesOf(room), serverTime(clock))
+    if (refusal) return setError(refusal)
+    setError('')
+    const t = bidAskText(room, offer, units.units)
+    onAsk({
+      question: 'Отправить встречное?',
+      body: [
+        t.body,
+        `Вы — за „${takerSide}“. Останется лучшим к концу торга или автор примет его раньше — вы соперник; перебьют — вы свободны.`,
+        'Встречное не отзывается.',
+      ],
+      button: 'Отправить встречное',
+      busyLabel: 'Отправляю…',
+      form: formKey(room.id, offer.id, 'bid', String(units.units)),
+      run: (requestId) => bidOffer(room.server, room.id, room.key, offer.id, { amount: units.units, requestId }),
+      ...(t.twice && { twice: t.twice }),
+    })
+  }
+
+  return (
+    <form className="panel form" onSubmit={submit} aria-label="Ваше встречное">
+      <label className="field">
+        <span>Ваше встречное, {sign}</span>
+        <input className="input" inputMode="decimal" value={shown} onChange={(e) => setText(e.target.value)} autoComplete="off" />
+      </label>
+      <span className="hint">
+        {best
+          ? `Не меньше ${sum(best.amount + step)}: лучшее ${sum(best.amount)} + шаг ${sum(step)}. Больше сумма — лучше кэф для автора.`
+          : `Не меньше старта — ${sum(offer.auction?.start ?? 0)}. Больше сумма — лучше кэф для автора.`}
+      </span>
+      <div className="offer-summary" aria-live="polite">
+        <p>{parsed?.ok ? bidAskText(room, offer, parsed.units).body : parsed ? parsed.error : 'Введите сумму — здесь появится кэф и банк.'}</p>
+      </div>
+      {error && (
+        <p className="error" role="alert">
+          {error}
+        </p>
+      )}
+      <div className="row">
+        <button className="button" type="submit" disabled={!online}>
+          Отправить встречное
+        </button>
+      </div>
+    </form>
+  )
+}
+
 // Окно подтверждения действия. Повтор того же действия (двойное нажатие, ещё раз после «нет связи») —
-// тот же номер запроса: сервер запишет одно (Р-13). Удалось — номер забыт. Встречное — открыть новое пари
+// тот же номер запроса: сервер запишет одно (Р-13). Удалось — номер забыт. Встречное — открыть новое пари.
+// twice — второе подтверждение: первое нажатие только переводит окно ко второму вопросу (двойное нажатие
+// его не проскочит — оба нажатия видят первый шаг)
 function ConfirmAct({
   ask,
   offerId,
@@ -434,9 +647,11 @@ function ConfirmAct({
 }) {
   const [sending, setSending] = useState(false)
   const [error, setError] = useState('')
+  const [second, setSecond] = useState(false) // второе подтверждение открыто
 
   async function confirm() {
     if (busy.current) return // синхронный замок: второе нажатие раньше перерисовки
+    if (ask.twice && !second) return setSecond(true)
     const request = requestFor(pending.get(offerId) ?? null, ask.form, ulid)
     pending.set(offerId, request)
     busy.current = true
@@ -458,10 +673,15 @@ function ConfirmAct({
   return (
     <div className="modal-backdrop" onClick={() => !busy.current && onClose()}>
       <div className="modal" role="dialog" aria-modal="true" aria-label={ask.question} onClick={(e) => e.stopPropagation()}>
-        <p className="modal-question">{ask.question}</p>
+        <p className="modal-question">{second ? 'Точно столько?' : ask.question}</p>
         {ask.body.map((line, i) => (
           <p key={i}>{line}</p>
         ))}
+        {second && ask.twice && (
+          <p className="warn" role="alert">
+            {ask.twice}
+          </p>
+        )}
         {error && (
           <p className="error" role="alert">
             {error}
@@ -469,7 +689,7 @@ function ConfirmAct({
         )}
         <div className="row">
           <button className="button" type="button" onClick={confirm} disabled={sending} autoFocus>
-            {sending ? ask.busyLabel : ask.button}
+            {sending ? ask.busyLabel : second ? 'Да, ' + ask.button.toLowerCase() : ask.button}
           </button>
           <button className="button secondary" type="button" onClick={onClose} disabled={sending}>
             Отмена
