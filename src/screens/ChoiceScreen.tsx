@@ -310,7 +310,9 @@ function StakePanel({
 }) {
   const code = isCurrencyCode(room.currency) ? room.currency : null
   const sign = code ? currencyOf(code).sign || code : room.currency
-  const [option, setOption] = useState<string | null>(mine ?? (options.length === 1 ? options[0] : null))
+  const [picked, setOption] = useState<string | null>(options.length === 1 ? options[0] : null)
+  // Уже вкладывал — только свой вариант (и когда вклад пришёл с сервера после открытия формы)
+  const option = mine ?? picked
   const [text, setText] = useState('')
   const [error, setError] = useState('')
   const parsed = code && text.trim() ? parseAmount(text, code) : null
