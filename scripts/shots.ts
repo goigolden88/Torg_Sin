@@ -24,6 +24,7 @@ import { eventWidth } from './shots/event-width.ts'
 import { history } from './shots/history.ts'
 import { known } from './shots/known.ts'
 import { layout } from './shots/layout.ts'
+import { lots } from './shots/lots.ts'
 import { noGuarantor } from './shots/no-guarantor.ts'
 import { offerOutcomes } from './shots/offer-outcomes.ts'
 import { offers } from './shots/offers.ts'
@@ -129,6 +130,11 @@ const SCENARIOS: Scenario[] = [
     name: 'auction',
     about: 'пари «Торг до …»: форма, встречные у участника и автора, «вас перебили», вдвое больше, «Принять сейчас», не состоялось, «Повторить», «История» (142–152)',
     perSize: (c, size) => auction(c.cdp, size, c.startServer),
+  },
+  {
+    name: 'lots',
+    about: '«Лот»: пусто, «Новый лот», торг и «вас перебили», комната с лотами, после торга у продавца и победителя, суд, «Расчёт», «История» (160–167)',
+    perSize: (c, size) => lots(c.cdp, size, c.startServer),
   },
   {
     name: 'layout',
