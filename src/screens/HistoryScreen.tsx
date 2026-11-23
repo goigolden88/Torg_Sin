@@ -1,12 +1,13 @@
 // Экран «История» комнаты (Р-11, этап 5): сверху «Итоги» — участники по убыванию итога по окончательным
-// событиям и пари (свод расчёта из ответа комнаты; свода нет — блока нет); ниже — прошедшие события и пари,
-// новое сверху: условие, исход, мой результат, дата. Переключатель «Все / С моим участием». Нажатие — тот
-// же экран события или пари; «Назад» с него ведёт сюда. Что прошедшее — historyParts (с тестами).
+// событиям и пари (свод расчёта из ответа комнаты; свода нет — блока нет); ниже — прошедшие события, пари,
+// лоты и выборы, новое сверху: условие, исход, мой результат, дата. Переключатель «Все / С моим участием».
+// Нажатие — тот же экран события, пари, лота или выбора; «Назад» с него ведёт сюда. Что прошедшее — historyParts (с тестами).
 // Состояние — с сервера раз в 5 с (useRoom); нет связи — последнее известное
 import { useCallback, useState } from 'react'
 import { formatDate } from '../rules/date'
-import { savedEvents, savedLots, savedOffers, savedSettlement, type SavedRoom } from '../store/db'
+import { savedChoices, savedEvents, savedLots, savedOffers, savedSettlement, type SavedRoom } from '../store/db'
 import { BackLink, useEscape } from './BackLink'
+import { choiceHref } from './choiceParts'
 import { eventHref, nameOf } from './eventParts'
 import { historyItems, myResultText, onlyMine, type HistoryItem } from './historyParts'
 import { lotHref } from './lotParts'
@@ -26,7 +27,7 @@ export function HistoryScreen({ room, onUpdate }: { room: SavedRoom; onUpdate: (
     }, [back]),
   )
 
-  const all = historyItems(room, savedEvents(room), savedOffers(room), now, savedLots(room))
+  const all = historyItems(room, savedEvents(room), savedOffers(room), now, savedLots(room), savedChoices(room))
   const shown = onlyMine(all, mine)
 
   return (
@@ -36,9 +37,9 @@ export function HistoryScreen({ room, onUpdate }: { room: SavedRoom; onUpdate: (
       {sync.state === 'fail' && <p className="error">{sync.text}</p>}
       <Totals room={room} />
       <section className="history-list" aria-label="Прошедшее">
-        <h3>Прошедшие события, пари и лоты</h3>
+        <h3>Прошедшие события, пари, лоты и выборы</h3>
         {all.length === 0 ? (
-          <p className="empty">{sync.state === 'busy' ? 'Загружаю…' : 'Прошедших событий, пари и лотов пока нет'}</p>
+          <p className="empty">{sync.state === 'busy' ? 'Загружаю…' : 'Прошедших событий, пари, лотов и выборов пока нет'}</p>
         ) : (
           <>
             <div className="chips history-filter" role="radiogroup" aria-label="Показать">
@@ -67,9 +68,18 @@ export function HistoryScreen({ room, onUpdate }: { room: SavedRoom; onUpdate: (
   )
 }
 
+const KIND_LABEL: Record<HistoryItem['kind'], string> = { event: 'Событие', offer: 'Пари', lot: 'Лот', choice: 'Выбор' }
+
 // Строка прошедшего: условие, «Событие · Да» / «Пари · не состоялось — отозвано», мой результат, дата
 function Row({ room, item }: { room: SavedRoom; item: HistoryItem }) {
-  const href = item.kind === 'event' ? eventHref(room.id, item.id) : item.kind === 'lot' ? lotHref(room.id, item.id) : offerHref(room.id, item.id)
+  const href =
+    item.kind === 'event'
+      ? eventHref(room.id, item.id)
+      : item.kind === 'lot'
+        ? lotHref(room.id, item.id)
+        : item.kind === 'choice'
+          ? choiceHref(room.id, item.id)
+          : offerHref(room.id, item.id)
   const result = myResultText(item.mine, room.currency)
   const tone = item.mine.kind === 'net' && item.mine.amount > 0 ? 'win' : item.mine.kind === 'net' && item.mine.amount < 0 ? 'loss' : 'hint'
   return (
@@ -77,7 +87,7 @@ function Row({ room, item }: { room: SavedRoom; item: HistoryItem }) {
       <a className="event-item" href={href}>
         <span className="event-name">{item.condition}</span>
         <span className="history-outcome">
-          {item.kind === 'event' ? 'Событие' : item.kind === 'lot' ? 'Лот' : 'Пари'} · исход: {item.outcome}
+          {KIND_LABEL[item.kind]} · исход: {item.outcome}
         </span>
         <span className="history-result">
           <span className="hint">Ваш результат: </span>

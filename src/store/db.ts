@@ -2,10 +2,12 @@
 // База «torgsin», версия схемы — DB_VERSION; каждая новая версия — шаг в upgrade, старые шаги
 // не меняются. Настройки устройства (адрес сервера, пароль компании) — не здесь, а в settings.ts
 import {
+  isChoiceView,
   isEventView,
   isLotView,
   isOfferView,
   isSettlementView,
+  type ChoiceView,
   type EventView,
   type LotView,
   type OfferView,
@@ -45,6 +47,9 @@ export type SavedRoom = {
   // Лоты — последнее известное с сервера (этап 7, Р-38), так же: поле только добавлено, версия базы та
   // же; у записей до него и у сервера до лотов поля нет — «лотов нет» до первого ответа сервера
   lots?: LotView[]
+  // Выборы — последнее известное с сервера (этап 7, Р-39), так же: поле только добавлено, версия базы та
+  // же; у записей до него и у сервера до выбора поля нет — «выборов нет» до первого ответа сервера
+  choices?: ChoiceView[]
 }
 
 // Копия с сервера на устройстве — только то, что проходит проверку протокола: запись, сохранённая
@@ -69,6 +74,11 @@ export function savedLots(room: SavedRoom): LotView[] {
   return fresh(room.lots, isLotView)
 }
 
+// Выборы комнаты на устройстве — тем же путём: старая запись без поля — пусто; устаревший выбор — пропущен
+export function savedChoices(room: SavedRoom): ChoiceView[] {
+  return fresh(room.choices, isChoiceView)
+}
+
 // Свод расчёта на устройстве: нет поля или не проходит проверку протокола — null (расчёта не показываем)
 export function savedSettlement(room: SavedRoom): SettlementView | null {
   return isSettlementView(room.settlement) ? room.settlement : null
@@ -76,12 +86,13 @@ export function savedSettlement(room: SavedRoom): SettlementView | null {
 
 // Ответ сервера о комнате поверх записанного на устройстве (с событиями, пари и сводом); syncedAt —
 // сейчас. Сервер без пари (до этапа 3) — пари нет; без свода (до этапа 5) — свода нет, прежний не остаётся;
-// без лотов (до этапа 7) — лотов нет
+// без лотов (до этапа 7) — лотов нет; без выборов — выборов нет
 export function withState(room: SavedRoom, state: RoomStateResponse, now: number): SavedRoom {
   const { room: s, members, events, settlement } = state
   const offers = state.offers ?? []
   const lots = state.lots ?? []
-  return { ...room, name: s.name, currency: s.currency, hostId: s.hostId, createdAt: s.createdAt, members, events, offers, lots, settlement, syncedAt: now }
+  const choices = state.choices ?? []
+  return { ...room, name: s.name, currency: s.currency, hostId: s.hostId, createdAt: s.createdAt, members, events, offers, lots, choices, settlement, syncedAt: now }
 }
 
 // Заявка на вход по ссылке, которую ещё не впустили: ключ заявки откроет комнату, когда ведущий

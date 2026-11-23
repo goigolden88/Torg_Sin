@@ -29,10 +29,13 @@ export function signedSum(units: number, currency: string): string {
 }
 
 // Из чего сложено число: «по 1 событию», «по 3 событиям», «по 2 пари», «по 5 событиям и пари»; лоты (Р-38) —
-// «по 1 лоту», «по 3 событиям и 2 лотам», «по 5 событиям и пари, 1 лоту»; ни из чего — ''
+// «по 1 лоту», «по 3 событиям и 2 лотам», «по 5 событиям и пари, 1 лоту»; выборы (Р-39) — «по 1 выбору»,
+// «по 2 лотам и 1 выбору», «по 3 событиям, 2 лотам и 1 выбору», «по 5 событиям и пари, 2 выборам»; ни из
+// чего — ''
 export function basisText(sum: SettleSumView): string {
   const { events, offers } = sum
   const lots = sum.lots ?? 0
+  const choices = sum.choices ?? 0
   const base =
     events > 0 && offers > 0
       ? `${events + offers} событиям и пари`
@@ -42,10 +45,13 @@ export function basisText(sum: SettleSumView): string {
           ? `${offers} пари`
           : ''
   const lot = lots > 0 ? `${lots} ${plural(BigInt(lots), ['лоту', 'лотам', 'лотам'])}` : ''
-  if (!base && !lot) return ''
-  if (!lot) return `по ${base}`
-  if (!base) return `по ${lot}`
-  return `по ${base}${base.includes(' и ') ? ', ' : ' и '}${lot}`
+  const choice = choices > 0 ? `${choices} ${plural(BigInt(choices), ['выбору', 'выборам', 'выборам'])}` : ''
+  const parts = [base, lot, choice].filter(Boolean)
+  if (parts.length === 0) return ''
+  if (parts.length === 1) return `по ${parts[0]}`
+  // «и» уже внутри («событиям и пари») — дальше через запятую; иначе последнее — через «и»
+  if (base.includes(' и ')) return `по ${parts.join(', ')}`
+  return `по ${parts.slice(0, -1).join(', ')} и ${parts[parts.length - 1]}`
 }
 
 function withBasis(amount: string, sum: SettleSumView): string {
@@ -71,9 +77,13 @@ export function myTotalLine(settlement: SettlementView, me: string, currency: st
   return 'Ваш итог: ' + (m ? memberNumbers(m, currency).total : sumText(0, currency))
 }
 
-// Считать нечего: ни у кого нет окончательного события, пари или полученного лота и переводов нет
+// Считать нечего: ни у кого нет окончательного события, пари, полученного лота или решённого выбора и
+// переводов нет
 export function nothingFinal(settlement: SettlementView): boolean {
-  return settlement.transfers.length === 0 && settlement.members.every((m) => m.total.events === 0 && m.total.offers === 0 && !m.total.lots)
+  return (
+    settlement.transfers.length === 0 &&
+    settlement.members.every((m) => m.total.events === 0 && m.total.offers === 0 && !m.total.lots && !m.total.choices)
+  )
 }
 
 // Сколько споров ждут окончательности: утверждённые, ещё не окончательные (как «ждёт окончательности»

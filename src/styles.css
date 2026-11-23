@@ -746,6 +746,62 @@ h3 {
   }
 }
 
+/* «Выбор» (Р-39): вариант — карточкой как строка списка; сумма — крупно; свой и победивший — рамкой */
+.choice-options {
+  margin: 1rem 0;
+}
+
+.choice-option {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-height: var(--tap);
+  padding: 0.75rem var(--pad);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  overflow-wrap: anywhere;
+}
+
+.choice-option .badge {
+  margin-left: 0.5rem;
+}
+
+.choice-option.mine {
+  border-color: var(--gold);
+}
+
+.choice-option.won {
+  border-left: 3px solid var(--ok);
+}
+
+.choice-total {
+  font-weight: 600;
+  font-size: 1.1rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.choice-result {
+  font-weight: normal;
+}
+
+.choice-result .outcome-head {
+  margin-top: 0;
+}
+
+.choice-debts {
+  margin: 0.25rem 0;
+  padding-left: 1.25rem;
+}
+
+.choice-debts .mine {
+  font-weight: 600;
+}
+
+.choice-options-field .field {
+  margin-top: 0.5rem;
+}
+
 /* ─── Событие ─────────────────────────────────────────────────────────────── */
 
 .event-title {
@@ -1349,6 +1405,7 @@ h3 {
 }
 
 /* «Долги по лотам» (Р-38): основание чисел расчёта — строкой на лот; свой — рамкой, как в таблице */
+/* «Долги по выборам» (Р-39) — тем же видом (класс settle-lots у блока) */
 .settle-lots {
   margin: 1rem 0;
 }

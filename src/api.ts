@@ -102,6 +102,15 @@ import {
   type LotActRequest,
   type LotMarkResponse,
   type LotResponse,
+  isChoiceOptionResponse,
+  isChoiceResponse,
+  isChoiceStakeResponse,
+  type ChoiceOptionRequest,
+  type ChoiceOptionResponse,
+  type ChoiceResponse,
+  type ChoiceStakeRequest,
+  type ChoiceStakeResponse,
+  type CreateChoiceRequest,
 } from './rules/protocol'
 import { checkBackup, type Backup } from './rules/backup'
 
@@ -383,6 +392,39 @@ export function markLot(
   request: Omit<LotActRequest, 'v'>,
 ): Promise<Result<LotMarkResponse>> {
   return call(lotUrl(server, roomId, lotId, action), post(request, key), isLotMarkResponse)
+}
+
+// «Выбор» (Р-39): повтор с тем же requestId — тот же ответ без второй записи (Р-13).
+// …/choices/<выбор>/<действие>
+function choiceUrl(server: string, roomId: string, choiceId: string, action: string): string {
+  return roomUrl(server, roomId, 'choices/' + encodeURIComponent(choiceId) + '/' + action)
+}
+
+// POST /rooms/<номер>/choices — завести выбор
+export function createChoice(server: string, roomId: string, key: string, request: Omit<CreateChoiceRequest, 'v'>): Promise<Result<ChoiceResponse>> {
+  return call(roomUrl(server, roomId, 'choices'), post(request, key), isChoiceResponse)
+}
+
+// POST …/choices/<выбор>/option — вариант в фазе вариантов
+export function addChoiceOption(
+  server: string,
+  roomId: string,
+  key: string,
+  choiceId: string,
+  request: Omit<ChoiceOptionRequest, 'v'>,
+): Promise<Result<ChoiceOptionResponse>> {
+  return call(choiceUrl(server, roomId, choiceId, 'option'), post(request, key), isChoiceOptionResponse)
+}
+
+// POST …/choices/<выбор>/stake — вклад в фазе вкладов
+export function stakeChoice(
+  server: string,
+  roomId: string,
+  key: string,
+  choiceId: string,
+  request: Omit<ChoiceStakeRequest, 'v'>,
+): Promise<Result<ChoiceStakeResponse>> {
+  return call(choiceUrl(server, roomId, choiceId, 'stake'), post(request, key), isChoiceStakeResponse)
 }
 
 // Апелляция и суд (Р-25) — у события и у пари одними адресами: …/events/<событие>/ или

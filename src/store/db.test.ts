@@ -1,11 +1,12 @@
 import { IDBFactory } from 'fake-indexeddb'
 import { describe, expect, it } from 'vitest'
-import type { EventView, LotView, OfferView, RoomStateResponse, SettlementView } from '../rules/protocol'
+import type { ChoiceView, EventView, LotView, OfferView, RoomStateResponse, SettlementView } from '../rules/protocol'
 import {
   createStore,
   DB_NAME,
   DB_VERSION,
   openDb,
+  savedChoices,
   savedEvents,
   savedLots,
   savedOffers,
@@ -307,6 +308,53 @@ describe('хранилище на устройстве', () => {
     const noLots: RoomStateResponse = { ...state }
     delete noLots.lots
     expect(savedLots(withState(saved, noLots, 70))).toEqual([])
+  })
+
+  it('выборы (Р-39): старая запись без поля — пусто; ответ сервера — записан; сервер без выборов — пусто', async () => {
+    const choice: ChoiceView = {
+      id: 'C1',
+      at: 10,
+      authorId: 'MA',
+      question: 'Куда едем?',
+      recipientId: 'MA',
+      cashbox: false,
+      optionsUntil: 100,
+      closesAt: 200,
+      latestEnd: 200 + 30 * 60 * 1000,
+      endsAt: 200,
+      status: 'options',
+      failed: null,
+      options: [{ id: '1', at: 10, by: 'MA', title: 'Ладога', total: 0 }],
+      stakes: [],
+      winner: null,
+      how: null,
+      draw: null,
+      debts: [],
+      closedAt: null,
+    }
+    const factory = new IDBFactory()
+    const first = createStore(factory)
+    await first.saveRoom(room('A', 1)) // как до выбора: поля choices нет
+    const old = (await first.getRoom('A')) as SavedRoom
+    expect(savedChoices(old)).toEqual([])
+    const state: RoomStateResponse = {
+      v: 10,
+      room: { id: 'A', name: 'Дача', currency: 'RUB', hostId: 'MA', createdAt: 1 },
+      members: [{ id: 'MA', name: 'Аня' }],
+      me: 'MA',
+      events: [],
+      choices: [choice],
+      now: 50,
+    }
+    await first.saveRoom(withState(old, state, 60))
+    await first.close()
+    const saved = (await createStore(factory).getRoom('A')) as SavedRoom
+    expect(savedChoices(saved)).toEqual([choice])
+    // Испорченный выбор пропущен; сервер без выборов — пусто
+    expect(savedChoices(room('A', 1, { choices: [{ id: 'C2' } as unknown as ChoiceView, choice] }))).toEqual([choice])
+    const noChoices: RoomStateResponse = { ...state }
+    delete noChoices.choices
+    expect(savedChoices(withState(saved, noChoices, 70))).toEqual([])
   })
 
   it('пари: копия до нового поля протокола не отдаётся, свежая — отдаётся; запись не переписана', async () => {

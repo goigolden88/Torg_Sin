@@ -10,6 +10,7 @@ import { currencyLabel } from '../rules/currency'
 import type { DeviceLink, InviteLink } from '../rules/link'
 import { savedEvents, savedLots, savedOffers, savedSettlement, store, withState, type SavedRoom } from '../store/db'
 import { BackLink } from './BackLink'
+import { ChoiceScreen } from './ChoiceScreen'
 import { ClaimDevice } from './ClaimDevice'
 import { roomAwaitsMyVote } from './courtParts'
 import { CreateRoom } from './CreateRoom'
@@ -17,6 +18,7 @@ import { EventScreen } from './EventScreen'
 import { HistoryScreen } from './HistoryScreen'
 import { JoinRoom } from './JoinRoom'
 import { LotScreen } from './LotScreen'
+import { NewChoice } from './NewChoice'
 import { NewEvent } from './NewEvent'
 import { NewLot } from './NewLot'
 import { NewOffer } from './NewOffer'
@@ -36,6 +38,8 @@ export type RoomsView =
   | { kind: 'offer'; id: string; offer: string } // пари комнаты id
   | { kind: 'new-lot'; id: string } // выставить лот в комнате id (Р-38)
   | { kind: 'lot'; id: string; lot: string } // лот комнаты id
+  | { kind: 'new-choice'; id: string } // начать выбор в комнате id (Р-39)
+  | { kind: 'choice'; id: string; choice: string } // выбор комнаты id
   | { kind: 'settle'; id: string } // «Расчёт» комнаты id
   | { kind: 'history'; id: string } // «История» комнаты id
   | { kind: 'join'; link: InviteLink } // по ссылке-приглашению
@@ -78,12 +82,14 @@ export function Rooms({ view }: { view: RoomsView }) {
     view.kind === 'new-offer' ||
     view.kind === 'lot' ||
     view.kind === 'new-lot' ||
+    view.kind === 'choice' ||
+    view.kind === 'new-choice' ||
     view.kind === 'settle' ||
     view.kind === 'history'
   const inRoom = view.kind === 'room' || wide
   const openId = inRoom ? view.id : null
   const open = rooms?.find((r) => r.id === openId)
-  // Событие, пари, лот, их формы, «Расчёт» и «История» — во всю ширину содержимого и на компьютере: список
+  // Событие, пари, лот, выбор, их формы, «Расчёт» и «История» — во всю ширину содержимого и на компьютере: список
   // комнат прячется, «Назад» ведёт в комнату (экрану события нужно ≥ 640 px, рядом со списком на 1024–1279
   // его нет; пари — как событие, Р-20: открытое пари и список пари комнаты рядом; «Расчёт» — таблица
   // участников; «История» — чтобы «Назад» в комнату был виден и на компьютере)
@@ -158,6 +164,10 @@ export function Rooms({ view }: { view: RoomsView }) {
               <LotScreen key={open.id + '/' + view.lot} room={open} lotId={view.lot} onUpdate={upsert} />
             ) : view.kind === 'new-lot' ? (
               <NewLot key={open.id} room={open} onUpdate={upsert} />
+            ) : view.kind === 'choice' ? (
+              <ChoiceScreen key={open.id + '/' + view.choice} room={open} choiceId={view.choice} onUpdate={upsert} />
+            ) : view.kind === 'new-choice' ? (
+              <NewChoice key={open.id} room={open} onUpdate={upsert} />
             ) : view.kind === 'settle' ? (
               <SettleScreen key={open.id} room={open} onUpdate={upsert} />
             ) : view.kind === 'history' ? (
