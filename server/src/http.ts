@@ -23,6 +23,7 @@ import {
 } from '../../src/rules/offer'
 import { appealReason, caseOf, courtVote, NOT_SEAT, replaceReason } from '../../src/rules/appeal'
 import { BAD_LOT_BID, checkLotInput, lotView } from '../../src/rules/lot'
+import { BAD_STAKE, choiceView, NO_OPTION } from '../../src/rules/choice'
 import type { LotMark } from '../../src/rules/protocol'
 import { checkBackup, type Backup } from '../../src/rules/backup'
 import { checkPace, timesOf, type PaceInput } from '../../src/rules/pace'
@@ -41,6 +42,7 @@ import { deriveCreation, hashKey, randomToken, sameText, ULID_PATTERN } from './
 import {
   BAD_DEVICE_LINK,
   BAD_LINK,
+  NO_CHOICE,
   NO_EVENT,
   NO_LOT,
   NO_OUTCOME,
@@ -170,6 +172,12 @@ export async function handle(request: Request, deps: RoomsDeps): Promise<Respons
   const lt = /^\/rooms\/([^/]+)\/lots(?:\/([^/]+)\/(bid|withdraw|handed|cannot|received|not-received|judge|replace))?$/.exec(path)
   if (lt && request.method === 'POST') {
     const r = await lotAction(lt[1], lt[2], lt[3], request, deps)
+    return json(r.status, r.body)
+  }
+  // Выбор (Р-39): /rooms/<номер>/choices и /rooms/<номер>/choices/<выбор>/<действие>
+  const ch = /^\/rooms\/([^/]+)\/choices(?:\/([^/]+)\/(option|stake))?$/.exec(path)
+  if (ch && request.method === 'POST') {
+    const r = await choiceAction(ch[1], ch[2], ch[3], request, deps)
     return json(r.status, r.body)
   }
   // Расчёт (Р-32): /rooms/<номер>/transfers, /rooms/<номер>/transfers/<перевод>/<действие>, /rooms/<номер>/settle-mode
@@ -412,6 +420,41 @@ async function lotAction(
     }
     if (!requestId) return failure(400, BAD_REQUEST_ID)
     return reply(await deps.act(roomId, { type: 'markLot', keyHash, lot: lotId, mark: mark as LotMark, requestId }))
+  })
+}
+
+// POST /rooms/<номер>/choices { question, options?, recipient?, cashbox?, optionsUntil, closesAt, requestId? }
+// — завести выбор (форму и получателя проверяет комната: нужны участники); …/choices/<выбор>/option
+// { title, requestId? } — вариант; …/stake { option, amount, requestId? } — вклад
+async function choiceAction(
+  roomId: string,
+  choiceId: string | undefined,
+  action: string | undefined,
+  request: Request,
+  deps: RoomsDeps,
+): Promise<Reply<unknown>> {
+  const authorization = request.headers.get('Authorization')
+  const raw: unknown = await request.json().catch(() => null)
+  return withKey(roomId, authorization, async (keyHash) => {
+    if (choiceId !== undefined && !ULID_PATTERN.test(choiceId)) return failure(404, NO_CHOICE)
+    const read = readBody(raw)
+    if (!read.ok) return read.reply
+    const b = read.body
+    const requestId = requestIdOf(b, deps)
+    if (choiceId === undefined) {
+      if (!requestId) return failure(400, BAD_REQUEST_ID)
+      const form = { question: b.question, options: b.options, recipient: b.recipient, cashbox: b.cashbox, optionsUntil: b.optionsUntil, closesAt: b.closesAt }
+      return reply(await deps.act(roomId, { type: 'createChoice', keyHash, form, requestId }))
+    }
+    if (action === 'stake') {
+      // Вариант — строка, сумма — целое > 0 (как в checkChoiceStake); фаза и выбор варианта — в комнате
+      if (typeof b.option !== 'string' || !b.option) return failure(400, NO_OPTION)
+      if (!Number.isSafeInteger(b.amount) || (b.amount as number) < 1) return failure(400, BAD_STAKE)
+      if (!requestId) return failure(400, BAD_REQUEST_ID)
+      return reply(await deps.act(roomId, { type: 'stakeChoice', keyHash, choice: choiceId, option: b.option, amount: b.amount as number, requestId }))
+    }
+    if (!requestId) return failure(400, BAD_REQUEST_ID)
+    return reply(await deps.act(roomId, { type: 'addChoiceOption', keyHash, choice: choiceId, title: b.title, requestId }))
   })
 }
 
@@ -839,8 +882,10 @@ export async function getRoom(roomId: string, authorization: string | null, deps
       offers: r.offers.map((o) => ({ ...offerView(o, now, caseOf(r.cases, o.id)), times: { ...timesOf(o) } })),
       // Лоты (Р-38): ставки, конец с продлениями, ход после торга и суд по «Не получил»; times — в самом виде
       lots: r.lots.map((l) => lotView(l, now, caseOf(r.cases, l.id))),
-      // Свод расчёта (Р-32) — на то же время, в режиме комнаты; виден всем участникам; с лотами — у чисел
-      // счётчик lots (Р-38)
+      // Выборы (Р-39): фаза, варианты с суммами, вклады, конец с продлениями, итог с жребием и долги
+      choices: r.choices.map((c) => choiceView(c, now)),
+      // Свод расчёта (Р-32) — на то же время, в режиме комнаты; виден всем участникам; с лотами и
+      // выборами — у чисел счётчики lots (Р-38) и choices (Р-39)
       settlement: roomSettlement(
         {
           currency: state.currency,
@@ -848,6 +893,7 @@ export async function getRoom(roomId: string, authorization: string | null, deps
           events: r.events,
           offers: r.offers,
           lots: r.lots,
+          choices: r.choices,
           cases: r.cases,
           transfers: r.transfers,
         },
