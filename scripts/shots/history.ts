@@ -2,7 +2,7 @@ import { api, Device, PASSWORD, SITE, type Cdp, type ServerModule, type Size } f
 
 // «История» (#72). Свой запасной сервер с подставными часами: «исход к» — сдвигом часов. Комната «Поход
 // на Ладогу»: Аня — ведущая, Боря, Вера, Гена (выдуманные). Сначала пусто: строки «История» в комнате
-// нет, экран — «Прошедших событий и пари пока нет». Потом: пари 1 Аня — Боря, прав Боря (Аня −300 ₽);
+// нет, экран — «Прошедших событий, пари и лотов пока нет». Потом: пари 1 Аня — Боря, прав Боря (Аня −300 ₽);
 // пари 2 Вера — Аня, права Аня (+900 ₽) — окончательно сразу; пари 3 Вера → Боря отозвано (Аня не
 // участвовала); событие Бори отменено им самим; событие Веры с её ставкой — идёт; пари 4 Аня — Гена —
 // решает гарант (не прошедшее). В комнате — «История · 4», прошедшего в «Событиях» и «Пари» нет;
@@ -61,7 +61,7 @@ export async function history(cdp: Cdp, size: Size, startServer: ServerModule['s
     await host.waitText('Пари пока нет')
     await absent(MAIN, 'История ·', 'Комната без прошедшего')
     await host.goto(historyHref)
-    await host.waitIn(MAIN, 'Прошедших событий и пари пока нет')
+    await host.waitIn(MAIN, 'Прошедших событий, пари и лотов пока нет')
     await noScroll('История: пусто')
     await host.shot('120-istoriya-pusto')
 
@@ -156,7 +156,7 @@ export async function history(cdp: Cdp, size: Size, startServer: ServerModule['s
     await host.click('Дойдём до маяка за день')
     await host.waitText('Утверждено согласием сторон, окончательно')
     await host.click('← Назад')
-    await host.waitIn(MAIN, 'Прошедшие события и пари')
+    await host.waitIn(MAIN, 'Прошедшие события, пари и лоты')
     const hash = await host.eval<string>('location.hash')
     if (!hash.endsWith('/history')) throw new Error('«Назад» с прошедшего пари привёл не в «Историю»: ' + hash)
 

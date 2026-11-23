@@ -1348,6 +1348,23 @@ h3 {
   margin: 0;
 }
 
+/* «Долги по лотам» (Р-38): основание чисел расчёта — строкой на лот; свой — рамкой, как в таблице */
+.settle-lots {
+  margin-top: 1rem;
+}
+
+.settle-lots h3 {
+  margin: 0 0 0.5rem;
+}
+
+.settle-lots .event-item.mine {
+  outline: 1px solid var(--gold);
+}
+
+.settle-lots .event-name {
+  overflow-wrap: anywhere;
+}
+
 /* Три числа с основанием: на телефоне — подпись над значением, от 600 px — подпись колонкой слева */
 .settle-numbers {
   list-style: none;

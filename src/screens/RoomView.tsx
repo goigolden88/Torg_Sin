@@ -5,7 +5,8 @@
 // Состояние — с сервера раз в 5 с, пока комната открыта (useRoom); нет связи — последнее известное.
 // Под названием — строка темпа (Р-35, PaceBlock); у ведущего — «Изменить темп» с подтверждением.
 // Под участниками — «Расчёт» (SettleBlock; на очках — «Таблица очков»), «События» (EventList), под ними —
-// «Пари» (OfferList); прошедшее из них — в «Истории», строка «История · N» под «Пари». На iPhone в браузере —
+// «Пари» (OfferList), под ними — «Лоты» (LotList, Р-38); прошедшее из них — в «Истории», строка «История · N»
+// под «Лотами». На iPhone в браузере —
 // заметка про экран «Домой» (HomeScreenNote). В самом низу — «Скачать копию комнаты» (BackupBlock)
 import { useCallback, useRef, useState, type FormEvent } from 'react'
 import { admitRequest, changePace, fetchBackup, fetchRequests, issueDeviceLink, rejectRequest, renewInvite } from '../api'
@@ -16,13 +17,14 @@ import { checkPaceChange, PACE_LABELS, paceSummary, type RoomPace } from '../rul
 import type { JoinRequestsResponse } from '../rules/protocol'
 import { formKey, requestFor, type PendingRequest } from '../rules/request'
 import { ulid } from '../rules/ulid'
-import { savedEvents, savedOffers, savedSettlement, type SavedRoom } from '../store/db'
+import { savedEvents, savedLots, savedOffers, savedSettlement, type SavedRoom } from '../store/db'
 import { BackLink, useEscape } from './BackLink'
 import { BACKUP_FAILED, BACKUP_NOTE, backupFileName, backupText, deliveryWay } from './backupParts'
 import { EventList } from './EventList'
 import { historyHref, historyItems, historyLine } from './historyParts'
 import { HomeScreenNote } from './HomeScreenNote'
 import { LinkBox, siteUrl } from './LinkBox'
+import { LotList } from './LotList'
 import { OfferList } from './OfferList'
 import { PacePicker } from './PacePicker'
 import { draftTimes, PACE_CHANGE_NOTE, paceDraft, paceInput, paceLine, type PaceDraft } from './paceParts'
@@ -84,6 +86,7 @@ export function RoomView({ room, onUpdate }: { room: SavedRoom; onUpdate: (room:
       <SettleBlock room={room} />
       <EventList room={room} clock={clock} />
       <OfferList room={room} clock={clock} />
+      <LotList room={room} clock={clock} />
       <HistoryLink room={room} clock={clock} />
       <BackupBlock room={room} />
     </div>
@@ -231,17 +234,18 @@ async function giveFile(file: File): Promise<boolean> {
   return true
 }
 
-// Под «Пари» — «История · 12»: сколько прошедшего ушло из списков (всё, без пропусков); ноль — строки нет
+// Под «Лотами» — «История · 12»: сколько прошедшего ушло из списков (всё, без пропусков); ноль — строки нет
 function HistoryLink({ room, clock }: { room: SavedRoom; clock: Clock | null }) {
   const events = savedEvents(room)
   const offers = savedOffers(room)
-  const now = useServerNow(clock, events.length + offers.length > 0)
-  const line = historyLine(historyItems(room, events, offers, now).length)
+  const lots = savedLots(room)
+  const now = useServerNow(clock, events.length + offers.length + lots.length > 0)
+  const line = historyLine(historyItems(room, events, offers, now, lots).length)
   if (!line) return null
   return (
     <a className="event-item history-link" href={historyHref(room.id)}>
       <span className="event-name">{line}</span>
-      <span className="hint">Прошедшие события и пари, итоги участников →</span>
+      <span className="hint">Прошедшие события, пари и лоты, итоги участников →</span>
     </a>
   )
 }
