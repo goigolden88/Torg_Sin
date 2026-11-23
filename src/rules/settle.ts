@@ -6,6 +6,7 @@
 import { caseOf } from './appeal'
 import type { CourtCase } from './court'
 import { checkAmount, eventOutcome, type EventState } from './event'
+import { bestLotBid, lotOutcome, type LotState } from './lot'
 import { offerAmounts, offerAt, offerNets, offerOutcome, type OfferState } from './offer'
 
 // Режим «кто кому» (Р-32): «по ставкам» — долги пар по каждому окончательному событию и пари (по
@@ -150,8 +151,9 @@ export function roomTransfers(records: readonly TransferRecord[], room: Transfer
   return [...transfers.values()]
 }
 
-// Число с основанием: сумма и из скольких событий и пари она сложена
-export type SettleSum = { amount: number; events: number; offers: number }
+// Число с основанием: сумма и из скольких событий и пари она сложена; lots — из скольких лотов (Р-38):
+// поле есть, только когда своду дали лоты (SettleInput.lots)
+export type SettleSum = { amount: number; events: number; offers: number; lots?: number }
 
 // Участник в своде: итог — по окончательным; ждёт окончательности — по утверждённым, ещё не
 // окончательным; в игре — свои ставки без утверждённого исхода; отдал / получил — по переводам «ждёт
@@ -177,20 +179,21 @@ export type RoomSettlement = {
 }
 
 // Вход свода: валюта, участники по порядку входа, события и пари комнаты (roomEvents, logOffers), дела
-// суда (logAppeals) и записи о переводах
+// суда (logAppeals) и записи о переводах; lots — лоты комнаты (Р-38, logLots; нет — лотов нет и счётчика
+// lots в числах тоже)
 export type SettleInput = {
   currency: string
   members: readonly string[]
   events: readonly EventState[]
   offers: readonly OfferState[]
+  lots?: readonly LotState[]
   cases: readonly CourtCase[]
   transfers: readonly TransferRecord[]
 }
 
-// Окончательный результат спора: net каждого (≠ 0) по порядку первой ставки; у пари — автор, соперник
+// Окончательный результат спора: net каждого (≠ 0) по порядку первой ставки; у пари — автор, соперник; у
+// лота — продавец, победитель
 type Result = { memberId: string; net: number }[]
-
-const zero = (): SettleSum => ({ amount: 0, events: 0, offers: 0 })
 
 // Долги пар по одному окончательному спору (режим «по ставкам»): каждый проигравший — выигравшим
 // пропорционально их выигрышу, целыми единицами (BigInt); неделимый остаток проигравшего — по одной
@@ -311,8 +314,13 @@ function stakeTransfers(results: readonly Result[], transfers: readonly Transfer
 // суд по апелляции) — в «ждёт окончательности»; без утверждённого исхода (не предложен, «предложен»,
 // «возражение», «голосование», «снято», «ждёт суда») — свои ставки «в игре». Пари — только принятые:
 // «отменено судом» — не в счёт; final — в итог; утверждено — ждёт; marking, guarantor, need-guarantor,
-// court — своя сумма «в игре». В комнате на очки переводов и подсказки нет
+// court — своя сумма «в игре». Лот (Р-38): торг идёт — лучшая ставка «в игре» у её автора; после конца —
+// победитель должен продавцу свою ставку: получено (отметкой, молчанием, судом) — в итог, сразу
+// окончательно (апелляции нет); до того («ждёт передачи», «передан», «в споре», «ждёт суда») — ждёт; снят,
+// не продан, не состоялся, не передан — не в счёт. В комнате на очки переводов и подсказки нет
 export function roomSettlement(input: SettleInput, now: number, mode: SettleMode = DEFAULT_SETTLE_MODE): RoomSettlement {
+  const withLots = input.lots !== undefined
+  const zero = (): SettleSum => ({ amount: 0, events: 0, offers: 0, ...(withLots && { lots: 0 }) })
   const rows = new Map<string, MemberSettlement>()
   const row = (memberId: string): MemberSettlement => {
     let r = rows.get(memberId)
@@ -323,9 +331,9 @@ export function roomSettlement(input: SettleInput, now: number, mode: SettleMode
     return r
   }
   for (const m of input.members) row(m)
-  const count = (sum: SettleSum, amount: number, kind: 'events' | 'offers') => {
+  const count = (sum: SettleSum, amount: number, kind: 'events' | 'offers' | 'lots') => {
     sum.amount += amount
-    sum[kind] += 1
+    sum[kind] = (sum[kind] ?? 0) + 1
   }
   const results: Result[] = []
 
@@ -368,6 +376,25 @@ export function roomSettlement(input: SettleInput, now: number, mode: SettleMode
     }
     count(row(o.authorId).inPlay, stakes.value.author, 'offers')
     count(row(taker).inPlay, stakes.value.taker, 'offers')
+  }
+
+  // Лоты (Р-38): идущая лучшая ставка — в игре; после конца — долг победителя продавцу
+  for (const l of input.lots ?? []) {
+    const out = lotOutcome(l, now, caseOf(input.cases, l.id))
+    if (out.status === 'open') {
+      const best = bestLotBid(l)
+      if (best) count(row(best.by).inPlay, best.amount, 'lots')
+      continue
+    }
+    const w = out.winner
+    if (!w || out.status === 'failed' || out.status === 'undelivered') continue
+    const result = [
+      { memberId: l.sellerId, net: w.amount },
+      { memberId: w.by, net: -w.amount },
+    ]
+    const final = out.status === 'received'
+    for (const p of result) count(final ? row(p.memberId).total : row(p.memberId).pending, p.net, 'lots')
+    if (final) results.push(result)
   }
 
   const room: TransferRoom = { currency: input.currency, members: [...rows.keys()] }

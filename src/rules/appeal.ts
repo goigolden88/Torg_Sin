@@ -5,6 +5,7 @@
 // court.* журнала комнаты (Р-25) переводит в записи правил logAppeals (внизу). Ни DOM, ни Cloudflare
 import { courtState, courtVerdict, type CourtCase } from './court'
 import { eventBettors, eventOutcome, MAX_EVENT_TEXT, roomEvents, type EventState } from './event'
+import { bestLotBid, logLots, lotCourtDue, type LotState } from './lot'
 import { courtDue, logOffers, offerAt, offerOutcome, type OfferSide, type OfferState } from './offer'
 import type { CourtVerdict } from './protocol'
 import { foldLog, type LogEntry, type RoomState } from './room'
@@ -30,7 +31,10 @@ export const ALREADY_JOINED = 'Вы уже присоединились к ап�
 export const COURT_DECIDED = 'Суд уже решил — решение окончательное'
 // Суд без апелляции
 export const NOT_COURT =
-  'Суд без апелляции собирается, только когда исход «ждёт суда», стороны пари в срок не сошлись на новом гаранте или у пари без гаранта стороны разошлись'
+  'Суд без апелляции собирается, только когда исход «ждёт суда», стороны пари в срок не сошлись на новом гаранте, у пари без гаранта стороны разошлись или победитель лота отметил «Не получил»'
+// Лот (Р-38): суд по «Не получил» окончательный, голоса — «передано» / «не передано»
+export const LOT_NO_APPEAL = 'Решение суда по лоту окончательное — апелляции нет'
+export const BAD_LOT_VERDICT = 'Голос — «передано» или «не передано»'
 export const COURT_EXISTS = 'Суд уже собран'
 export const BAD_SEED = 'Зерно жребия — шестнадцатеричные цифры'
 export const BAD_CANDIDATES = 'Кандидаты в суд — участники комнаты без заинтересованных'
@@ -55,6 +59,9 @@ type Checked<T> = { ok: true; value: T } | { ok: false; error: string }
 
 // Что обжалуют: событие-пул или пари
 export type AppealTarget = { kind: 'event'; event: EventState } | { kind: 'offer'; offer: OfferState }
+// Кого судят: то же и лот (Р-38) — только суд по «Не получил», без апелляции. Отдельным видом, чтобы
+// прежние места, перебирающие событие и пари, не менялись; проверки суда принимают любой
+export type CourtTarget = AppealTarget | { kind: 'lot'; lot: LotState }
 
 // Ведущий и участники комнаты с мигом, когда впущены: кандидаты в суд — участники на миг жребия
 export type CourtRoom = { hostId: string; members: readonly { id: string; addedAt: number }[] }
@@ -98,7 +105,18 @@ type Dispute = {
   cannotAppeal: (memberId: string) => string | null
 }
 
-function dispute(t: AppealTarget, now: number): Dispute {
+function dispute(t: CourtTarget, now: number): Dispute {
+  if (t.kind === 'lot') {
+    // Лот (Р-38): заинтересованы продавец и победитель (лучшая ставка); апелляции нет
+    const winner = bestLotBid(t.lot)?.by
+    return {
+      stage: 'open',
+      approved: null,
+      choices: [],
+      interested: winner === undefined ? [t.lot.sellerId] : [t.lot.sellerId, winner],
+      cannotAppeal: () => LOT_NO_APPEAL,
+    }
+  }
   if (t.kind === 'event') {
     const e = t.event
     const out = eventOutcome(e, now)
@@ -145,22 +163,26 @@ function dispute(t: AppealTarget, now: number): Dispute {
   }
 }
 
-function targetId(t: AppealTarget): string {
-  return t.kind === 'event' ? t.event.id : t.offer.id
+function targetOf(t: CourtTarget): EventState | OfferState | LotState {
+  return t.kind === 'event' ? t.event : t.kind === 'offer' ? t.offer : t.lot
+}
+
+function targetId(t: CourtTarget): string {
+  return targetOf(t).id
 }
 
 // Срок места в суде — срок суда цели, закреплённый при создании (Р-35); у записей до темпа поля нет —
 // и у дела нет: SEAT_TIME
-function seatTimeOf(t: AppealTarget): { seatTime?: number } {
-  const times = t.kind === 'event' ? t.event.times : t.offer.times
+function seatTimeOf(t: CourtTarget): { seatTime?: number } {
+  const times = targetOf(t).times
   return times ? { seatTime: times.court } : {}
 }
 
 // Кандидаты в суд на миг at: участники комнаты, впущенные к этому мигу, кроме заинтересованных — у
 // пула: ставившие, автор, предмет спора, ведущий, решивший возражение; у пари: стороны и нынешний
-// гарант; и кроме also — подавшего и присоединившихся (они и так ставившие или стороны). Голосовавшие
+// гарант; у лота (Р-38): продавец и победитель; и кроме also — подавшего и присоединившихся (они и так ставившие или стороны). Голосовавшие
 // по возражению (Р-17) — кандидаты. Порядок — участников комнаты
-export function courtCandidates(t: AppealTarget, room: CourtRoom, at: number, also: readonly string[] = []): string[] {
+export function courtCandidates(t: CourtTarget, room: CourtRoom, at: number, also: readonly string[] = []): string[] {
   const out = new Set([...dispute(t, at).interested, ...also])
   return [...new Set(room.members.filter((m) => m.addedAt <= at).map((m) => m.id))].filter((m) => !out.has(m))
 }
@@ -169,7 +191,7 @@ export function courtCandidates(t: AppealTarget, room: CourtRoom, at: number, al
 // цели с утверждения: 7 дней у обычного темпа, Р-35); у пула — ставивший, кроме согласившихся (Р-21), у пари — сторона; одна на событие или
 // пари; причина — не пустая, ≤ 300 знаков; есть кому судить. existing — дело суда по цели или null
 export function checkAppeal(
-  t: AppealTarget,
+  t: CourtTarget,
   existing: CourtCase | null,
   memberId: string,
   reason: unknown,
@@ -193,7 +215,7 @@ export function checkAppeal(
 }
 
 // Присоединиться: тот, кто мог бы подать, кроме подавшего; один раз; до решения суда
-export function checkJoin(t: AppealTarget, c: CourtCase | null, memberId: string, now: number): string | null {
+export function checkJoin(t: CourtTarget, c: CourtCase | null, memberId: string, now: number): string | null {
   if (!c?.appeal) return NO_APPEAL
   const who = dispute(t, now).cannotAppeal(memberId)
   if (who) return who
@@ -205,16 +227,20 @@ export function checkJoin(t: AppealTarget, c: CourtCase | null, memberId: string
 
 // Суд без апелляции: исход пула «ждёт суда» (ничья или некому голосовать, Р-17) или у пари срок
 // молчания без общего гаранта (правило гаранта, Р-31), у пари без гаранта — с мига хода гаранта (Р-36;
-// courtDue) — суд собирается сам
-export function checkCourtDraw(t: AppealTarget, existing: CourtCase | null, now: number): string | null {
+// courtDue), у лота — победитель отметил «Не получил» (Р-38; lotCourtDue) — суд собирается сам
+export function checkCourtDraw(t: CourtTarget, existing: CourtCase | null, now: number): string | null {
   if (existing) return COURT_EXISTS
-  const due = t.kind === 'event' ? dispute(t, now).stage === 'court' : courtDue(t.offer, now)
+  const due = t.kind === 'event' ? dispute(t, now).stage === 'court' : t.kind === 'offer' ? courtDue(t.offer, now) : lotCourtDue(t.lot, now)
   return due ? null : NOT_COURT
 }
 
-// Голос суда из запроса: «оставить», «отменить» или «изменить» — у пула с outcome, у пари с winner
-export function courtVote(x: unknown, kind: AppealTarget['kind']): Checked<CourtVerdict> {
+// Голос суда из запроса: «оставить», «отменить» или «изменить» — у пула с outcome, у пари с winner; у
+// лота (Р-38) — только «передано» / «не передано»
+export function courtVote(x: unknown, kind: CourtTarget['kind']): Checked<CourtVerdict> {
   const r = typeof x === 'object' && x !== null ? (x as Record<string, unknown>) : {}
+  if (kind === 'lot') {
+    return r.verdict === 'delivered' || r.verdict === 'undelivered' ? { ok: true, value: { verdict: r.verdict } } : { ok: false, error: BAD_LOT_VERDICT }
+  }
   if (r.verdict === 'keep' || r.verdict === 'cancel') return { ok: true, value: { verdict: r.verdict } }
   if (r.verdict === 'change' && kind === 'event' && typeof r.outcome === 'string') {
     return { ok: true, value: { verdict: 'change', outcome: r.outcome } }
@@ -227,7 +253,7 @@ export function courtVote(x: unknown, kind: AppealTarget['kind']): Checked<Court
 
 // Голос: только член суда на своём месте (в его 72 часа), один раз, не меняется; «оставить» — если
 // исход утверждён (апелляция); «изменить на …» — другой исход события или другая сторона пари
-export function checkCourtVote(t: AppealTarget, c: CourtCase, memberId: string, vote: unknown, now: number): string | null {
+export function checkCourtVote(t: CourtTarget, c: CourtCase, memberId: string, vote: unknown, now: number): string | null {
   const v = courtVote(vote, t.kind)
   if (!v.ok) return v.error
   if (courtVerdict(c, now)) return COURT_DECIDED
@@ -281,21 +307,23 @@ function verdictOf(v: CourtVerdict): CourtVerdict {
 // Дела суда комнаты из записей по порядку. Запись действует, если её разрешает та же проверка на её
 // время at (как roomOffers): подача — checkAppeal и жребий (checkDraw) на миг подачи; суд по «ждёт
 // суда» — checkCourtDraw; присоединение — checkJoin; голос — checkCourtVote; замена — checkReplace.
-// Записи о неизвестном событии или пари не действуют. Исход цели — по уже собранному событию или пари,
-// пари — на миг записи (offerAt)
+// Записи о неизвестном событии, пари или лоте не действуют. Исход цели — по уже собранному событию,
+// пари или лоту, пари — на миг записи (offerAt). lots — лоты комнаты (Р-38; нет — лотов нет)
 export function roomAppeals(
   records: readonly AppealRecord[],
-  targets: { events: readonly EventState[]; offers: readonly OfferState[] },
+  targets: { events: readonly EventState[]; offers: readonly OfferState[]; lots?: readonly LotState[] },
   room: CourtRoom,
 ): CourtCase[] {
   const cases = new Map<string, CourtCase>()
   // Пари — на миг записи (offerAt), как в свёртке пари: торг, кончившийся по времени со встречным,
   // принят в миг конца без записи (Р-37) — у него уже есть соперник
-  const find = (id: string, at: number): AppealTarget | null => {
+  const find = (id: string, at: number): CourtTarget | null => {
     const event = targets.events.find((e) => e.id === id)
     if (event) return { kind: 'event', event }
     const offer = targets.offers.find((o) => o.id === id)
-    return offer ? { kind: 'offer', offer: offerAt(offer, at) } : null
+    if (offer) return { kind: 'offer', offer: offerAt(offer, at) }
+    const lot = targets.lots?.find((l) => l.id === id)
+    return lot ? { kind: 'lot', lot } : null
   }
   for (const r of records) {
     const t = find(r.target, r.at)
@@ -385,10 +413,15 @@ export function courtRoom(state: RoomState): CourtRoom {
   return { hostId: state.hostId, members: state.members.map((m) => ({ id: m.id, addedAt: m.addedAt })) }
 }
 
-// Дела суда комнаты из журнала (roomAppeals) — по событиям и пари из того же журнала; комнаты нет — пусто
+// Дела суда комнаты из журнала (roomAppeals) — по событиям, пари и лотам из того же журнала; комнаты нет —
+// пусто
 export function logAppeals(
   log: readonly LogEntry[],
-  targets: { events: readonly EventState[]; offers: readonly OfferState[] } = { events: roomEvents(log), offers: logOffers(log) },
+  targets: { events: readonly EventState[]; offers: readonly OfferState[]; lots?: readonly LotState[] } = {
+    events: roomEvents(log),
+    offers: logOffers(log),
+    lots: logLots(log),
+  },
 ): CourtCase[] {
   const state = foldLog(log)
   return state ? roomAppeals(log.filter(isAppealEntry).map(appealRecord), targets, courtRoom(state)) : []

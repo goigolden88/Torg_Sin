@@ -4,6 +4,7 @@
 // журнала комнаты их берёт logOffers (Р-22: offer.created, offer.accepted, offer.revoked; Р-23: offer.marked,
 // offer.decided, offer.declined, offer.nominated; Р-31: court.drawn — суд по «ждёт суда»; Р-37: торг —
 // offer.bid, offer.bid-accepted). Итоги и статусы считаются, не хранятся. Ни DOM, ни Cloudflare
+import { auctionLatestEnd, auctionSpan, auctionStep, extendEnd, lastBid, nextBid, type AuctionTerms } from './auction'
 import { checkAmount, FINAL_TIME, MAX_EVENT_TEXT, NEED_CHECK, NEED_CONDITION, LONG_CHECK, LONG_CONDITION } from './event'
 import { appealView, courtVerdict, courtView, type CourtCase } from './court'
 import { NORMAL_TIMES, recordTimes, timesOf, type Times } from './pace'
@@ -79,12 +80,9 @@ export const NO_GUARANTOR = 'У пари нет гаранта'
 // «Торг до …» (Р-37): автор закрепляет сторону и свою сумму, участники до конца торга перебивают друг
 // друга, сколько поставят против него (встречное в торге — bid; слово «встречное» в коде — у counterTo).
 // Сроки — постоянные решения, не темпа: торг — от 10 минут до 3 дней с создания; встречное за 2 минуты
-// до конца переносит конец на 2 минуты после себя, но не дальше исходного конца + 30 минут
-const MINUTE = 60 * 1000
-export const AUCTION_MIN = 10 * MINUTE
-export const AUCTION_MAX = 3 * 24 * 60 * MINUTE
-export const AUCTION_EXTEND = 2 * MINUTE
-export const AUCTION_EXTEND_MAX = 30 * MINUTE
+// до конца переносит конец на 2 минуты после себя, но не дальше исходного конца + 30 минут. Сроки, шаг
+// по умолчанию и продление — общие с лотом (auction.ts)
+export { AUCTION_EXTEND, AUCTION_EXTEND_MAX, AUCTION_MAX, AUCTION_MIN, auctionLatestEnd, auctionStep, type AuctionTerms } from './auction'
 // Отказы торга: форма
 export const AUCTION_ADDRESSED = 'Торг — только открытое пари: адресата у него нет'
 export const BAD_START = 'Старт — сумма соперника: целое число больше нуля'
@@ -138,25 +136,14 @@ export function offerNets(stakes: OfferStakes, winner: OfferSide): { author: num
 }
 
 // Торг (Р-37): старт — наименьшая сумма соперника, шаг — на сколько новое встречное больше лучшего
-export type AuctionTerms = { start: number; step: number }
-// Встречное в торге: кто, когда, сколько ставит против суммы автора
+// (AuctionTerms — auction.ts). Встречное в торге: кто, когда, сколько ставит против суммы автора
 export type AuctionBid = { id: string; at: number; by: string; amount: number }
 // Торг в состоянии пари: endsAt — конец с продлениями; bids — действующие встречные по порядку (каждое
 // больше прежнего — последнее лучшее); taken — как принято лучшее: «принять сейчас» или конец торга
 export type AuctionState = AuctionTerms & { endsAt: number; bids: AuctionBid[]; taken: 'now' | 'end' | null }
 
-// Шаг по умолчанию — 10 % старта вниз до целой единицы, не меньше одной
-export function auctionStep(start: number): number {
-  return Math.max(1, Math.floor(start / 10))
-}
-
-// Позже этого торг не закончится: исходный конец (closesAt) + 30 минут продлений
-export function auctionLatestEnd(o: { closesAt: number }): number {
-  return o.closesAt + AUCTION_EXTEND_MAX
-}
-
 export function bestBid(a: AuctionState): AuctionBid | null {
-  return a.bids[a.bids.length - 1] ?? null
+  return lastBid(a)
 }
 
 // Пари на now (время сервера): торг кончился по времени, встречное было — лучшее принято в миг конца,
@@ -294,8 +281,8 @@ export function checkOfferInput(x: {
 // продления не уведут торг за исход). Ошибки нет — null
 export function checkOfferTimes(input: { closesAt: number; expectedAt: number; auction?: AuctionTerms | null }, now: number): string | null {
   if (input.auction) {
-    if (input.closesAt < now + AUCTION_MIN) return AUCTION_SHORT
-    if (input.closesAt > now + AUCTION_MAX) return AUCTION_LONG
+    const span = auctionSpan(input.closesAt, now)
+    if (span) return span === 'short' ? AUCTION_SHORT : AUCTION_LONG
     if (input.expectedAt < auctionLatestEnd(input)) return AUCTION_EXPECTED
     return null
   }
@@ -477,9 +464,8 @@ export function checkBid(o: OfferState, memberId: string, amount: unknown, room:
   if (!room.members.includes(memberId)) return NOT_MEMBER
   if (!Number.isSafeInteger(amount) || (amount as number) < 1) return BAD_BID
   if (!Number.isSafeInteger(o.amount + (amount as number))) return BANK_TOO_BIG
-  const best = bestBid(a)
-  if (!best) return (amount as number) < a.start ? BID_LOW : null
-  return (amount as number) < best.amount + a.step ? BID_STEP : null
+  const next = nextBid(amount as number, bestBid(a)?.amount ?? null, a)
+  return next === 'low' ? BID_LOW : next === 'step' ? BID_STEP : null
 }
 
 // «Принять сейчас» (Р-37): автор принимает лучшее встречное в любой миг торга — торг закончен
@@ -744,7 +730,7 @@ export function roomOffers(records: readonly OfferRecord[], room: RoomRoles): Of
         const a = o.auction as AuctionState
         a.bids.push({ id: r.id, at: r.at, by: r.memberId, amount: r.amount })
         // Продление: встречное за 2 минуты до конца — конец через 2 минуты после него, не дальше предела
-        a.endsAt = Math.min(auctionLatestEnd(o), Math.max(a.endsAt, r.at + AUCTION_EXTEND))
+        a.endsAt = extendEnd({ endsAt: a.endsAt, closesAt: o.closesAt }, r.at)
         break
       }
       case 'offer.bid-accepted': {
