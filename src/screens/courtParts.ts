@@ -4,7 +4,7 @@
 // правила, здесь — только перенос полей ответа. Без разметки: её — CourtBlock
 import type { CourtCase, CourtRoom } from '../rules/appeal'
 import type { EventState } from '../rules/event'
-import type { AppealView, CourtView, EventView, OfferView, TimesView } from '../rules/protocol'
+import type { AppealView, CourtView, EventView, LotView, OfferView, TimesView } from '../rules/protocol'
 import type { SavedRoom } from '../store/db'
 
 type WithCourt = { appeal?: AppealView | null; court?: CourtView | null } | null
@@ -87,7 +87,9 @@ export function awaitsMyVote(out: WithCourt, me: string, now?: number): boolean 
   return c.seats.some((s) => s.member === me && !s.vote && (now === undefined || now < s.until))
 }
 
-// В комнате на устройстве есть суд, где участник ещё не голосовал (события и пари последнего ответа)
-export function roomAwaitsMyVote(room: SavedRoom, events: readonly EventView[], offers: readonly OfferView[]): boolean {
-  return events.some((e) => awaitsMyVote(e.outcome, room.memberId)) || offers.some((o) => awaitsMyVote(o.outcome, room.memberId))
+// В комнате на устройстве есть суд, где участник ещё не голосовал (события, пари и лоты последнего ответа;
+// у лота суд — прямо в нём, Р-38)
+export function roomAwaitsMyVote(room: SavedRoom, events: readonly EventView[], offers: readonly OfferView[], lots: readonly LotView[] = []): boolean {
+  const me = room.memberId
+  return events.some((e) => awaitsMyVote(e.outcome, me)) || offers.some((o) => awaitsMyVote(o.outcome, me)) || lots.some((l) => awaitsMyVote(l, me))
 }

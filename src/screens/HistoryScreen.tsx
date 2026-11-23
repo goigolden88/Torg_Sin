@@ -5,10 +5,11 @@
 // Состояние — с сервера раз в 5 с (useRoom); нет связи — последнее известное
 import { useCallback, useState } from 'react'
 import { formatDate } from '../rules/date'
-import { savedEvents, savedOffers, savedSettlement, type SavedRoom } from '../store/db'
+import { savedEvents, savedLots, savedOffers, savedSettlement, type SavedRoom } from '../store/db'
 import { BackLink, useEscape } from './BackLink'
 import { eventHref, nameOf } from './eventParts'
 import { historyItems, myResultText, onlyMine, type HistoryItem } from './historyParts'
+import { lotHref } from './lotParts'
 import { offerHref } from './offerParts'
 import { byTotal, memberNumbers } from './settleParts'
 import { useRoom, useServerNow } from './useRoom'
@@ -25,7 +26,7 @@ export function HistoryScreen({ room, onUpdate }: { room: SavedRoom; onUpdate: (
     }, [back]),
   )
 
-  const all = historyItems(room, savedEvents(room), savedOffers(room), now)
+  const all = historyItems(room, savedEvents(room), savedOffers(room), now, savedLots(room))
   const shown = onlyMine(all, mine)
 
   return (
@@ -35,9 +36,9 @@ export function HistoryScreen({ room, onUpdate }: { room: SavedRoom; onUpdate: (
       {sync.state === 'fail' && <p className="error">{sync.text}</p>}
       <Totals room={room} />
       <section className="history-list" aria-label="Прошедшее">
-        <h3>Прошедшие события и пари</h3>
+        <h3>Прошедшие события, пари и лоты</h3>
         {all.length === 0 ? (
-          <p className="empty">{sync.state === 'busy' ? 'Загружаю…' : 'Прошедших событий и пари пока нет'}</p>
+          <p className="empty">{sync.state === 'busy' ? 'Загружаю…' : 'Прошедших событий, пари и лотов пока нет'}</p>
         ) : (
           <>
             <div className="chips history-filter" role="radiogroup" aria-label="Показать">
@@ -68,7 +69,7 @@ export function HistoryScreen({ room, onUpdate }: { room: SavedRoom; onUpdate: (
 
 // Строка прошедшего: условие, «Событие · Да» / «Пари · не состоялось — отозвано», мой результат, дата
 function Row({ room, item }: { room: SavedRoom; item: HistoryItem }) {
-  const href = item.kind === 'event' ? eventHref(room.id, item.id) : offerHref(room.id, item.id)
+  const href = item.kind === 'event' ? eventHref(room.id, item.id) : item.kind === 'lot' ? lotHref(room.id, item.id) : offerHref(room.id, item.id)
   const result = myResultText(item.mine, room.currency)
   const tone = item.mine.kind === 'net' && item.mine.amount > 0 ? 'win' : item.mine.kind === 'net' && item.mine.amount < 0 ? 'loss' : 'hint'
   return (
@@ -76,7 +77,7 @@ function Row({ room, item }: { room: SavedRoom; item: HistoryItem }) {
       <a className="event-item" href={href}>
         <span className="event-name">{item.condition}</span>
         <span className="history-outcome">
-          {item.kind === 'event' ? 'Событие' : 'Пари'} · исход: {item.outcome}
+          {item.kind === 'event' ? 'Событие' : item.kind === 'lot' ? 'Лот' : 'Пари'} · исход: {item.outcome}
         </span>
         <span className="history-result">
           <span className="hint">Ваш результат: </span>

@@ -93,6 +93,15 @@ import {
   type TransferActRequest,
   type TransferRequest,
   type TransferResponse,
+  isBidLotResponse,
+  isLotMarkResponse,
+  isLotResponse,
+  type BidLotRequest,
+  type BidLotResponse,
+  type CreateLotRequest,
+  type LotActRequest,
+  type LotMarkResponse,
+  type LotResponse,
 } from './rules/protocol'
 import { checkBackup, type Backup } from './rules/backup'
 
@@ -345,11 +354,44 @@ export function nominateGuarantor(server: string, roomId: string, key: string, o
   return call(offerUrl(server, roomId, offerId, 'nominate'), post(request, key), isNominateResponse)
 }
 
+// Лот (Р-38): повтор с тем же requestId — тот же ответ без второй записи (Р-13).
+// …/lots/<лот>/<действие>
+function lotUrl(server: string, roomId: string, lotId: string, action: string): string {
+  return roomUrl(server, roomId, 'lots/' + encodeURIComponent(lotId) + '/' + action)
+}
+
+// POST /rooms/<номер>/lots — выставить лот
+export function createLot(server: string, roomId: string, key: string, request: Omit<CreateLotRequest, 'v'>): Promise<Result<LotResponse>> {
+  return call(roomUrl(server, roomId, 'lots'), post(request, key), isLotResponse)
+}
+
+// POST …/lots/<лот>/bid — ставка
+export function bidLot(server: string, roomId: string, key: string, lotId: string, request: Omit<BidLotRequest, 'v'>): Promise<Result<BidLotResponse>> {
+  return call(lotUrl(server, roomId, lotId, 'bid'), post(request, key), isBidLotResponse)
+}
+
+// Отметка по лоту → адрес: «Снять лот», «Передал», «Не смогу передать», «Получил», «Не получил»
+export type LotMarkAction = 'withdraw' | 'handed' | 'cannot' | 'received' | 'not-received'
+
+// POST …/lots/<лот>/<отметка>
+export function markLot(
+  server: string,
+  roomId: string,
+  key: string,
+  lotId: string,
+  action: LotMarkAction,
+  request: Omit<LotActRequest, 'v'>,
+): Promise<Result<LotMarkResponse>> {
+  return call(lotUrl(server, roomId, lotId, action), post(request, key), isLotMarkResponse)
+}
+
 // Апелляция и суд (Р-25) — у события и у пари одними адресами: …/events/<событие>/ или
-// …/offers/<пари>/ + appeal | appeal/join | judge | replace. Повтор с тем же requestId — тот же ответ
-export type CourtKind = 'event' | 'offer'
+// …/offers/<пари>/ + appeal | appeal/join | judge | replace. Повтор с тем же requestId — тот же ответ.
+// Лот (Р-38) — только суд по «Не получил»: …/lots/<лот>/judge | replace, апелляции нет
+export type CourtKind = 'event' | 'offer' | 'lot'
 
 function courtUrl(server: string, roomId: string, kind: CourtKind, target: string, action: string): string {
+  if (kind === 'lot') return lotUrl(server, roomId, target, action)
   return kind === 'event' ? eventUrl(server, roomId, target, action) : offerUrl(server, roomId, target, action)
 }
 
