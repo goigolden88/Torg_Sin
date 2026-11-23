@@ -1,7 +1,7 @@
 // «История» комнаты (Р-11, этап 5): что считается прошедшим, когда оно им стало, исход и мой результат
 // одной строкой. Прошедшее уходит из «Событий» и «Пари» комнаты сюда. Событие — исход окончательный или
 // событие отменено (и судом); пари — исход окончательный или отменён судом, либо пари не состоялось
-// (истекло, отозвано, закрыто встречным). Остальное — не прошедшее, в том числе «голосование», «снято»
+// (истекло, отозвано, закрыто встречным; торг — никто не дал старт, Р-37). Суммы торга — из сумм (stakesOf). Остальное — не прошедшее, в том числе «голосование», «снято»
 // (Р-27), «ждёт суда», утверждён и идёт неделя апелляции; у пари — фазы гаранта (Р-31), суд, «утверждено».
 // Чистые функции без DOM — с тестами (historyParts.test.ts); статус и фазу считают правила (event.ts,
 // offer.ts), здесь — только выбор
@@ -39,15 +39,17 @@ export type OfferPhaseNow = Pick<OfferOutcome, 'phase' | 'finalAt' | 'approved' 
 
 // Миг, когда пари стало прошедшим; не прошедшее — null. status — offerStatus на now, out — исход на now
 // (offerOutcomeOf; не принято — null). Отозвано — миг отзыва; закрыто встречным — миг принятия встречного;
-// истекло — «приём до»; окончательно — с какого мига; отменено судом — миг решения суда
+// истекло — «приём до»; торг не состоялся (Р-37) — конец торга с продлениями; окончательно — с какого
+// мига; отменено судом — миг решения суда
 export function offerPastAt(
-  o: Pick<OfferView, 'closesAt' | 'withdrawnAt' | 'closedBy'>,
+  o: Pick<OfferView, 'closesAt' | 'withdrawnAt' | 'closedBy' | 'bidding'>,
   status: OfferStatus,
   out: OfferPhaseNow | null,
 ): number | null {
   if (status === 'withdrawn') return o.withdrawnAt ?? o.closesAt
   if (status === 'countered') return o.closedBy?.at ?? o.closesAt
   if (status === 'expired') return o.closesAt
+  if (status === 'failed') return o.bidding?.result?.at ?? o.bidding?.endsAt ?? o.closesAt
   if (status !== 'accepted' || !out) return null
   if (out.phase === 'final') return out.finalAt ?? out.approved?.at ?? o.closesAt
   if (out.phase === 'cancelled') return out.court?.decision?.at ?? o.closesAt
@@ -107,6 +109,7 @@ const NOT_HAPPENED: Partial<Record<OfferStatus, string>> = {
   expired: 'не состоялось — истекло',
   withdrawn: 'не состоялось — отозвано',
   countered: 'не состоялось — закрыто встречным',
+  failed: 'не состоялось — никто не дал старт', // торг без встречных (Р-37)
 }
 
 // Строка пари: исход — «Сбылось» / «Не сбылось», «отменено судом», «не состоялось — …»; мой результат —

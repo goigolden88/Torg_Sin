@@ -50,8 +50,11 @@ function routeFromHash(): Route {
     const id = decodeURIComponent(event[1])
     return { tab: 'rooms', view: event[2] === 'new' ? { kind: 'new-event', id } : { kind: 'event', id, event: decodeURIComponent(event[2]) } }
   }
+  // #/room/<номер>/offer/new?repeat=<номер пари> — «Повторить» не состоявшийся торг (Р-37): форма с его условиями
+  const repeat = /^#\/room\/([^/?]+)\/offer\/new\?repeat=([^/?&]+)$/.exec(hash)
+  if (repeat) return { tab: 'rooms', view: { kind: 'new-offer', id: decodeURIComponent(repeat[1]), repeat: decodeURIComponent(repeat[2]) } }
   // #/room/<номер>/offer/new — предложить пари, #/room/<номер>/offer/<номер пари> — пари
-  const offer = /^#\/room\/([^/?]+)\/offer\/([^/?]+)$/.exec(hash)
+  const offer =/^#\/room\/([^/?]+)\/offer\/([^/?]+)$/.exec(hash)
   if (offer) {
     const id = decodeURIComponent(offer[1])
     return { tab: 'rooms', view: offer[2] === 'new' ? { kind: 'new-offer', id } : { kind: 'offer', id, offer: decodeURIComponent(offer[2]) } }
