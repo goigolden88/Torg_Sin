@@ -134,7 +134,31 @@ export type LogEntry =
   | (EntryBase & { type: 'offer.bid'; offer: string; amount: number; requestId: string })
   // «Принять сейчас»: автор пари принимает лучшее встречное — торг закончен
   | (EntryBase & { type: 'offer.bid-accepted'; offer: string; requestId: string })
-  // Апелляция и суд (этап 4, Р-24, Р-25; правила — appeal.ts). target — событие-пул или пари; requestId —
+  // Лот (этап 7, Р-09, Р-38; правила — lot.ts). Номер лота — id записи lot.created; автор — продавец;
+  // closesAt — исходный конец торга (от 10 минут до 3 дней с создания); times — сроки темпа комнаты на
+  // миг создания (молчание, суд); requestId — номер запроса телефона: повтор узнаётся по нему. Конца
+  // торга, продления, победителя, молчания и итога в журнале нет — считаются
+  | (EntryBase & {
+      type: 'lot.created'
+      title: string
+      description: string
+      start: number // наименьшая первая ставка
+      step: number // на сколько следующая больше лучшей
+      closesAt: number
+      times?: Times
+      requestId: string
+    })
+  // Ставка (автор — кто ставит): сколько; не отзывается
+  | (EntryBase & { type: 'lot.bid'; lot: string; amount: number; requestId: string })
+  // «Снять лот» — продавец, пока ставок нет
+  | (EntryBase & { type: 'lot.withdrawn'; lot: string; requestId: string })
+  // После торга: «Передал» и «Не смогу передать» (автор — продавец), «Получил» и «Не получил» (автор —
+  // победитель). «Не получил» — суд по лоту (court.drawn дописывает сервер)
+  | (EntryBase & { type: 'lot.handed'; lot: string; requestId: string })
+  | (EntryBase & { type: 'lot.declined'; lot: string; requestId: string })
+  | (EntryBase & { type: 'lot.received'; lot: string; requestId: string })
+  | (EntryBase & { type: 'lot.disputed'; lot: string; requestId: string })
+  // Апелляция и суд (этап 4, Р-24, Р-25; правила — appeal.ts). target — событие-пул, пари или лот (Р-38); requestId —
   // номер запроса телефона. Апелляция подана (автор — ставивший или сторона); суд собран в этот миг:
   // seed — зерно жребия (случайные байты сервера, hex), candidates — кандидаты на этот миг
   | (EntryBase & { type: 'appeal.filed'; target: string; reason: string; seed: string; candidates: string[]; requestId: string })
@@ -144,7 +168,8 @@ export type LogEntry =
   // сервер при первом запросе к комнате
   // после перехода; автор — ведущий комнаты (не проверяется)
   | (EntryBase & { type: 'court.drawn'; target: string; seed: string; candidates: string[] })
-  // Голос члена суда: verdict — keep / cancel / change с outcome (пул) или winner (пари)
+  // Голос члена суда: verdict — keep / cancel / change с outcome (пул) или winner (пари); у лота —
+  // delivered / undelivered (Р-38)
   | (EntryBase & { type: 'court.voted'; target: string; requestId: string } & CourtVerdict)
   // Досрочная замена члена суда ведущим, с причиной
   | (EntryBase & { type: 'court.replaced'; target: string; member: string; reason: string; requestId: string })
@@ -211,6 +236,15 @@ export function applyEntry(state: RoomState | null, e: LogEntry): RoomState | nu
     case 'offer.nominated':
     case 'offer.bid':
     case 'offer.bid-accepted':
+      return state
+    // Лоты считает logLots (lot.ts)
+    case 'lot.created':
+    case 'lot.bid':
+    case 'lot.withdrawn':
+    case 'lot.handed':
+    case 'lot.declined':
+    case 'lot.received':
+    case 'lot.disputed':
       return state
     // Апелляции и суд считает logAppeals (appeal.ts)
     case 'appeal.filed':

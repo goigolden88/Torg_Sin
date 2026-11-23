@@ -66,8 +66,9 @@ export type RoomStateResponse = {
 // Расчёт (этап 5, Р-32; правила — settle.ts, roomSettlement). Режим «кто кому»: «по ставкам» /
 // «меньше переводов»
 export type SettleModeView = 'stakes' | 'fewest'
-// Число с основанием: сумма и из скольких событий и пари она сложена
-export type SettleSumView = { amount: number; events: number; offers: number }
+// Число с основанием: сумма и из скольких событий и пари она сложена; lots — из скольких лотов (Р-38;
+// сервер до лотов поля не шлёт)
+export type SettleSumView = { amount: number; events: number; offers: number; lots?: number }
 // Участник: итог (окончательные), ждёт окончательности, в игре; отдал и получил — по переводам «ждёт
 // подтверждения» и «получен»; баланс = итог + отдал − получил (плюс — ему должны)
 export type MemberSettlementView = {
@@ -173,12 +174,14 @@ export type OfferPhase = 'marking' | 'guarantor' | 'need-guarantor' | 'court' | 
 
 // Апелляция и суд (этап 4, Р-05, Р-24; правила — appeal.ts, court.ts). Голос суда: «оставить» (если
 // исход утверждён) / «отменить — вернуть ставки» / «изменить на …» — у пула исход события, у пари —
-// сторона, которая права. Голоса видны всем сразу (Р-11)
+// сторона, которая права. У лота (Р-38) — только «передано» / «не передано». Голоса видны всем сразу (Р-11)
 export type CourtVerdict =
   | { verdict: 'keep' }
   | { verdict: 'cancel' }
   | { verdict: 'change'; outcome: string }
   | { verdict: 'change'; winner: OfferSide }
+  | { verdict: 'delivered' }
+  | { verdict: 'undelivered' }
 export type CourtVote = { id: string; at: number; by: string } & CourtVerdict
 // Место суда: кто сейчас (null — место пустое: запасные кончились), с какого мига и до какого (не
 // включая) голосует; replaced — кого заменили, когда, кто (ведущий; по сроку — null) и почему
@@ -255,6 +258,49 @@ export type OfferView = OfferInfo & {
   withdrawnAt: number | null
   closedBy: { offer: string; at: number } | null
   outcome: OfferOutcomeView | null
+}
+
+// Лот (этап 7, Р-09, Р-38; правила — lot.ts): торг за вещь, цифровой товар или услугу. Ставка — кто,
+// когда, сколько; не отзывается, видна всем (Р-11)
+export type LotBid = { id: string; at: number; by: string; amount: number }
+// «торг идёт» / «снят» (продавцом, пока ставок не было) / «не продан» (к концу ставок нет) / «ждёт
+// передачи» (конец, «Передал» нет) / «передан» (продавец отметил, победитель молчит срок молчания —
+// «получил») / «в споре» («Не получил», суда нет: судить некому) / «ждёт суда» (суд собран) / «получен»
+// (долг победителя продавцу — в «Расчёте») / «не состоялся» («Не смогу передать») / «не передан» (суд)
+export type LotStatus = 'open' | 'withdrawn' | 'unsold' | 'awaiting' | 'handed' | 'dispute' | 'court' | 'received' | 'failed' | 'undelivered'
+// Лот на now: условия (closesAt — исходный конец, latestEnd — «не позже …», endsAt — конец с
+// продлениями; times — сроки, закреплённые при создании), ставки по порядку и лучшая; winner и amount —
+// победитель и его ставка (после конца со ставками, иначе null); отметки сторон — когда; disputeFrom —
+// с какого мига «Не получил» без «Передал» (конец + срок молчания); silenceUntil — после «Передал» — с
+// какого мига молчание победителя — «получил»; received — когда и как получено (отметкой, молчанием,
+// судом); closedAt — миг итога (снят, не продан, получен, не состоялся, не передан; иначе null); court —
+// суд по «Не получил» (нет — поля нет)
+export type LotView = {
+  id: string
+  at: number
+  sellerId: string
+  title: string
+  description: string
+  start: number
+  step: number
+  closesAt: number
+  latestEnd: number
+  endsAt: number
+  times: TimesView
+  status: LotStatus
+  bids: LotBid[]
+  best: LotBid | null
+  winner: string | null
+  amount: number | null
+  withdrawnAt: number | null
+  handedAt: number | null
+  declinedAt: number | null
+  disputedAt: number | null
+  disputeFrom: number | null
+  silenceUntil: number | null
+  received: { at: number; how: 'mark' | 'silence' | 'court' } | null
+  closedAt: number | null
+  court?: CourtView | null
 }
 
 // POST /rooms/<номер>/offers — предложить пари. side не задана — «сбудется»; to не задан — открытое;
@@ -629,7 +675,7 @@ const OUTCOME_STATUSES: readonly unknown[] = ['proposed', 'disputed', 'voting', 
 const APPROVALS: readonly unknown[] = ['unopposed', 'host', 'vote', 'agreed', 'court']
 
 function isVerdict(r: Record<string, unknown>): boolean {
-  if (r.verdict === 'keep' || r.verdict === 'cancel') return true
+  if (r.verdict === 'keep' || r.verdict === 'cancel' || r.verdict === 'delivered' || r.verdict === 'undelivered') return true
   return r.verdict === 'change' && (typeof r.outcome === 'string' || r.winner === 'author' || r.winner === 'taker')
 }
 
@@ -869,6 +915,34 @@ export function isOfferView(x: unknown): x is OfferView {
   )
 }
 
+const LOT_STATUSES: readonly unknown[] = ['open', 'withdrawn', 'unsold', 'awaiting', 'handed', 'dispute', 'court', 'received', 'failed', 'undelivered']
+const LOT_RECEIPTS: readonly unknown[] = ['mark', 'silence', 'court']
+
+// Лот с сервера (Р-38) — и копия на устройстве; суд — нет поля, null или как положено
+export function isLotView(x: unknown): x is LotView {
+  const r = record(x)
+  return (
+    !!r &&
+    strings(r, 'id', 'sellerId', 'title', 'description') &&
+    numbers(r, 'at', 'start', 'step', 'closesAt', 'latestEnd', 'endsAt') &&
+    isTimes(r.times) &&
+    LOT_STATUSES.includes(r.status) &&
+    list(r.bids, isBid) &&
+    nullable(r.best, isBid) &&
+    orNull(r.winner, 'string') &&
+    orNull(r.amount, 'number') &&
+    orNull(r.withdrawnAt, 'number') &&
+    orNull(r.handedAt, 'number') &&
+    orNull(r.declinedAt, 'number') &&
+    orNull(r.disputedAt, 'number') &&
+    orNull(r.disputeFrom, 'number') &&
+    orNull(r.silenceUntil, 'number') &&
+    nullable(r.received, (v) => numbers(v, 'at') && LOT_RECEIPTS.includes(v.how)) &&
+    orNull(r.closedAt, 'number') &&
+    (r.court === undefined || nullable(r.court, isCourtView))
+  )
+}
+
 function isOfferAct(r: Record<string, unknown>): boolean {
   return strings(r, 'id', 'by', 'offer') && numbers(r, 'at')
 }
@@ -948,7 +1022,7 @@ const TRANSFER_STATUSES: readonly unknown[] = ['pending', 'received', 'rejected'
 
 function isSettleSum(x: unknown): boolean {
   const r = record(x)
-  return !!r && numbers(r, 'amount', 'events', 'offers')
+  return !!r && numbers(r, 'amount', 'events', 'offers') && (r.lots === undefined || typeof r.lots === 'number')
 }
 
 function isTransferView(r: Record<string, unknown>): boolean {

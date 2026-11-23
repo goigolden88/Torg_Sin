@@ -22,7 +22,7 @@ export type CourtReplace = { id: string; at: number; by: string; member: string;
 // Р-35; нет — SEAT_TIME). Собирает roomAppeals (appeal.ts)
 export type CourtCase = {
   seatTime?: number
-  target: string // событие или пари
+  target: string // событие, пари или лот (Р-38)
   appeal: {
     id: string
     at: number
@@ -147,7 +147,8 @@ function verdictOf(v: CourtVerdict): CourtVerdict {
 export type CourtDecision = NonNullable<CourtView['decision']>
 
 // Решение суда на now: суд кончился (courtState) — вариант строгого большинства поданных голосов;
-// большинства нет — у апелляции исход остаётся («оставить»), у «ждёт суда» — отмена. Не кончился — null
+// большинства нет — у апелляции исход остаётся («оставить»), у «ждёт суда» — отмена (у лота, Р-38, — «не
+// передано», lotOutcome в lot.ts). Не кончился — null
 export function courtVerdict(c: CourtCase, now: number): CourtDecision | null {
   const { seats, decidedAt } = courtState(c, now)
   if (decidedAt === null) return null
