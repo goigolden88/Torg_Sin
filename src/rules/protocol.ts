@@ -334,6 +334,42 @@ export type LotActRequest = { v?: number; requestId?: string }
 export type LotMarkAct = { id: string; at: number; by: string; lot: string; mark: LotMark }
 export type LotMarkResponse = { v: number; marked: LotMarkAct; lot: LotView }
 
+// «Выбор» (этап 7, Р-09, Р-39; правила — choice.ts): голосование деньгами. Вариант — кто, когда предложил
+// и сколько в него вложено к now; вклад — кто, когда, в какой вариант, сколько: не отзывается, виден всем
+// (Р-11)
+export type ChoiceOptionView = { id: string; at: number; by: string; title: string; total: number }
+export type ChoiceStake = { id: string; at: number; by: string; option: string; amount: number }
+// «варианты» (фаза вариантов) / «вклады» (фаза вкладов) / «ждёт жребия» (ничья в конце продлений, жребия
+// ещё нет) / «решён» / «не состоялся» (меньше двух вариантов к концу фазы вариантов или вкладов нет)
+export type ChoiceStatus = 'options' | 'open' | 'draw' | 'decided' | 'failed'
+// Выбор на now: вопрос, получатель (участник; cashbox — подпись «касса»), сроки (optionsUntil — «варианты
+// до», closesAt — «вклады до», latestEnd — «не позже …», endsAt — конец вкладов с продлениями на now),
+// варианты с суммами, вклады по порядку; failed — почему не состоялся ('options' — меньше двух вариантов,
+// 'stakes' — вкладов нет; иначе null); winner — вариант-победитель, how — большей суммой ('sum') или
+// жребием ('draw'); draw — жребий сервера при ничьей (зерно, равные варианты); debts — кто сколько должен
+// получателю (только у решённого); closedAt — миг итога (не состоялся, решён; иначе null)
+export type ChoiceView = {
+  id: string
+  at: number
+  authorId: string
+  question: string
+  recipientId: string
+  cashbox: boolean
+  optionsUntil: number
+  closesAt: number
+  latestEnd: number
+  endsAt: number
+  status: ChoiceStatus
+  failed: 'options' | 'stakes' | null
+  options: ChoiceOptionView[]
+  stakes: ChoiceStake[]
+  winner: string | null
+  how: 'sum' | 'draw' | null
+  draw: { at: number; seed: string; options: string[] } | null
+  debts: { from: string; to: string; amount: number }[]
+  closedAt: number | null
+}
+
 // POST /rooms/<номер>/offers — предложить пари. side не задана — «сбудется»; to не задан — открытое;
 // guarantor не задан — ведущий; noGuarantor: true — без гаранта (Р-36; guarantor тогда не задают).
 // «Торг до …» (Р-37): auction { start, step? } вместо odds — старт (наименьшая сумма соперника) и шаг (не
@@ -976,7 +1012,29 @@ export function isLotView(x: unknown): x is LotView {
   )
 }
 
-const LOT_MARKS: readonly unknown[] = ['withdrawn', 'handed', 'declined', 'received', 'disputed']
+const CHOICE_STATUSES: readonly unknown[] = ['options', 'open', 'draw', 'decided', 'failed']
+
+// Выбор с сервера (Р-39) — и копия на устройстве
+export function isChoiceView(x: unknown): x is ChoiceView {
+  const r = record(x)
+  return (
+    !!r &&
+    strings(r, 'id', 'authorId', 'question', 'recipientId') &&
+    typeof r.cashbox === 'boolean' &&
+    numbers(r, 'at', 'optionsUntil', 'closesAt', 'latestEnd', 'endsAt') &&
+    CHOICE_STATUSES.includes(r.status) &&
+    (r.failed === null || r.failed === 'options' || r.failed === 'stakes') &&
+    list(r.options, (o) => strings(o, 'id', 'by', 'title') && numbers(o, 'at', 'total')) &&
+    list(r.stakes, (s) => strings(s, 'id', 'by', 'option') && numbers(s, 'at', 'amount')) &&
+    orNull(r.winner, 'string') &&
+    (r.how === null || r.how === 'sum' || r.how === 'draw') &&
+    nullable(r.draw, (d) => numbers(d, 'at') && strings(d, 'seed') && Array.isArray(d.options) && d.options.every((o) => typeof o === 'string')) &&
+    list(r.debts, (d) => strings(d, 'from', 'to') && numbers(d, 'amount')) &&
+    orNull(r.closedAt, 'number')
+  )
+}
+
+const LOT_MARKS: readonly unknown[] =['withdrawn', 'handed', 'declined', 'received', 'disputed']
 
 function isLotAct(r: Record<string, unknown>): boolean {
   return strings(r, 'id', 'by', 'lot') && numbers(r, 'at')
