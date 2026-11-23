@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest'
+import { BAD_LOT_VERDICT } from '../../src/rules/appeal'
+import { BAD_LOT_BID, BAD_LOT_START } from '../../src/rules/lot'
 import { BAD_BID, BAD_START } from '../../src/rules/offer'
 import { BAD_PACE, FAST_TIMES } from '../../src/rules/pace'
 import { isHealth, PROTOCOL_VERSION } from '../../src/rules/protocol'
@@ -83,6 +85,54 @@ describe('торг (Р-37): POST …/offers/<пари>/bid и …/bid/accept', (
     expect(r.status).toBe(400)
     expect(await r.json()).toEqual({ v: PROTOCOL_VERSION, error: BAD_START })
     expect(actions).toEqual([])
+  })
+})
+
+describe('лот (Р-38): POST …/lots и …/lots/<лот>/<действие>', () => {
+  const roomId = ulid(0)
+  const lotId = ulid(1)
+  const request = (path: string, body?: unknown) =>
+    new Request(`https://x/rooms/${roomId}/${path}`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer phone-key' },
+      ...(body !== undefined && { body: JSON.stringify(body) }),
+    })
+
+  it('форма лота — до комнаты: кривой старт 400 с текстом правил; годная — createLot, шаг — 10 % старта', async () => {
+    const { deps, actions } = fakeRooms()
+    const r = await handle(request('lots', { v: PROTOCOL_VERSION, title: 'Велосипед', start: 0, closesAt: 10 ** 7 }), deps)
+    expect(r.status).toBe(400)
+    expect(await r.json()).toEqual({ v: PROTOCOL_VERSION, error: BAD_LOT_START })
+    expect(actions).toEqual([])
+    await handle(request('lots', { v: PROTOCOL_VERSION, title: ' Велосипед ', start: 1000, closesAt: 10 ** 7 }), deps)
+    expect(actions).toEqual([
+      { type: 'createLot', keyHash: expect.any(String), input: { title: 'Велосипед', description: '', start: 1000, step: 100, closesAt: 10 ** 7 }, requestId: expect.any(String) },
+    ])
+  })
+
+  it('ставка: кривая сумма — 400 до комнаты; годная — bidLot', async () => {
+    const { deps, actions } = fakeRooms()
+    for (const amount of [0, -1, 2.5, '100', null]) {
+      const r = await handle(request(`lots/${lotId}/bid`, { v: PROTOCOL_VERSION, amount }), deps)
+      expect(r.status).toBe(400)
+      expect(await r.json()).toEqual({ v: PROTOCOL_VERSION, error: BAD_LOT_BID })
+    }
+    expect(actions).toEqual([])
+    await handle(request(`lots/${lotId}/bid`, { v: PROTOCOL_VERSION, amount: 1500 }), deps)
+    expect(actions).toEqual([{ type: 'bidLot', keyHash: expect.any(String), lot: lotId, amount: 1500, requestId: expect.any(String) }])
+  })
+
+  it('отметки — без тела: адрес → отметка; суд — judge с голосом лота; апелляции у лота нет', async () => {
+    const { deps, actions } = fakeRooms()
+    for (const path of ['withdraw', 'handed', 'cannot', 'received', 'not-received']) await handle(request(`lots/${lotId}/${path}`), deps)
+    expect(actions.map((a) => (a.type === 'markLot' ? a.mark : a.type))).toEqual(['withdrawn', 'handed', 'declined', 'received', 'disputed'])
+    const bad = await handle(request(`lots/${lotId}/judge`, { v: PROTOCOL_VERSION, verdict: 'keep' }), deps)
+    expect(bad.status).toBe(400)
+    expect(await bad.json()).toEqual({ v: PROTOCOL_VERSION, error: BAD_LOT_VERDICT })
+    await handle(request(`lots/${lotId}/judge`, { v: PROTOCOL_VERSION, verdict: 'delivered' }), deps)
+    expect(actions.at(-1)).toEqual({ type: 'judgeCourt', keyHash: expect.any(String), kind: 'lot', target: lotId, vote: { verdict: 'delivered' }, requestId: expect.any(String) })
+    expect((await handle(request(`lots/${lotId}/appeal`, { v: PROTOCOL_VERSION, reason: 'Хочу' }), deps)).status).toBe(404)
+    expect(actions).toHaveLength(6)
   })
 })
 

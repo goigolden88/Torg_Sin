@@ -150,6 +150,16 @@ import {
   type VoteOutcomeResponse,
 } from '../../src/rules/protocol'
 import * as A from '../../src/rules/appeal'
+import * as L from '../../src/rules/lot'
+import {
+  isBidLotResponse,
+  isLotMarkResponse,
+  isLotResponse,
+  type BidLotResponse,
+  type LotMarkResponse,
+  type LotResponse,
+  type LotView,
+} from '../../src/rules/protocol'
 import * as T from '../../src/rules/settle'
 import * as P from '../../src/rules/pace'
 import { NORMAL_TIMES } from '../../src/rules/pace'
@@ -159,6 +169,7 @@ import {
   isSettleModeResponse,
   isTransferResponse,
   type MemberSettlementView,
+  type SettleSumView,
   type SettlementView,
   type SettleModeResponse,
   type TransferResponse,
@@ -207,6 +218,7 @@ import {
   JOIN_TAKEN,
   NO_EVENT,
   NO_COURT,
+  NO_LOT,
   NO_MEMBER,
   NO_OBJECTION,
   NO_OFFER,
@@ -445,14 +457,16 @@ export function roomsSuite(
           me: created.memberId,
           events: [],
           offers: [],
+          // Лоты (Р-38): список и счётчик lots у чисел «Расчёта»
+          lots: [],
           settlement: {
             mode: 'stakes',
             members: [
               {
                 memberId: created.memberId,
-                total: { amount: 0, events: 0, offers: 0 },
-                pending: { amount: 0, events: 0, offers: 0 },
-                inPlay: { amount: 0, events: 0, offers: 0 },
+                total: { amount: 0, events: 0, offers: 0, lots: 0 },
+                pending: { amount: 0, events: 0, offers: 0, lots: 0 },
+                inPlay: { amount: 0, events: 0, offers: 0, lots: 0 },
                 sent: 0,
                 received: 0,
                 balance: 0,
@@ -3431,8 +3445,11 @@ export function roomsSuite(
         return state.settlement as SettlementView
       }
 
+      // Счётчик лотов (Р-38) у трёх чисел — 0, если не задан
       function row(memberId: string, change: Partial<MemberSettlementView> = {}): MemberSettlementView {
-        return { memberId, total: ZERO, pending: ZERO, inPlay: ZERO, sent: 0, received: 0, balance: 0, ...change }
+        const r = { memberId, total: ZERO, pending: ZERO, inPlay: ZERO, sent: 0, received: 0, balance: 0, ...change }
+        const sum = (x: SettleSumView): SettleSumView => ({ lots: 0, ...x })
+        return { ...r, total: sum(r.total), pending: sum(r.pending), inPlay: sum(r.inPlay) }
       }
 
       async function settleEntries(s: TestServer, roomId: string): Promise<string[]> {
@@ -3788,6 +3805,567 @@ export function roomsSuite(
         expect(settlement.transfers).toEqual([])
         expect(settlement.suggestions).toEqual([])
         expect(await settleEntries(s, id)).toEqual([])
+      })
+    })
+
+    describe('лот (Р-38)', () => {
+      const MINUTE = 60 * 1000
+      const HOUR = 60 * MINUTE
+      const DAY = 24 * HOUR
+      const SILENCE = NORMAL_TIMES.silence
+      const SEED = '9a'.repeat(16)
+      const ULID = /^[0-9A-HJKMNP-TV-Z]{26}$/
+
+      // Комната: Аня — ведущая, Боря, Вера и Гоша — участники
+      async function room4(s: TestServer, form: unknown = FORM) {
+        const room = await create(s, form)
+        const borya = await member(s, room, 'Боря')
+        const vera = await member(s, room, 'Вера')
+        const gosha = await member(s, room, 'Гоша')
+        return { room, borya, vera, gosha }
+      }
+
+      // Велосипед: старт 1000, шаг не задан — 100; торг — час
+      function lotForm(s: TestServer, change: Record<string, unknown> = {}): Record<string, unknown> {
+        return { v: PROTOCOL_VERSION, title: 'Велосипед «Кама»', description: 'Синий, с корзинкой', start: 1000, closesAt: s.clock.now + HOUR, ...change }
+      }
+
+      async function newLot(s: TestServer, roomId: string, key: string, body: unknown): Promise<LotView> {
+        const r = await ok<LotResponse>(send(s, roomId, 'lots', body, key))
+        expect(isLotResponse(r)).toBe(true)
+        return r.lot
+      }
+
+      function lotAct(s: TestServer, roomId: string, key: string | undefined, lotId: string, action: string, body: Record<string, unknown> = {}) {
+        return send(s, roomId, `lots/${lotId}/${action}`, { v: PROTOCOL_VERSION, ...body }, key)
+      }
+
+      function bid(s: TestServer, roomId: string, key: string | undefined, lotId: string, amount: unknown, requestId?: string) {
+        return lotAct(s, roomId, key, lotId, 'bid', { amount, requestId })
+      }
+
+      async function bidOk(s: TestServer, roomId: string, key: string, lotId: string, amount: number, requestId?: string): Promise<BidLotResponse> {
+        const r = await ok<BidLotResponse>(bid(s, roomId, key, lotId, amount, requestId))
+        expect(isBidLotResponse(r)).toBe(true)
+        return r
+      }
+
+      async function markOk(s: TestServer, roomId: string, key: string, lotId: string, action: string, requestId?: string): Promise<LotMarkResponse> {
+        const r = await ok<LotMarkResponse>(lotAct(s, roomId, key, lotId, action, { requestId }))
+        expect(isLotMarkResponse(r)).toBe(true)
+        return r
+      }
+
+      async function stateOf(s: TestServer, roomId: string, key: string): Promise<RoomStateResponse> {
+        const state = await ok<RoomStateResponse>(get(s, roomId, key))
+        expect(isRoomStateResponse(state)).toBe(true)
+        expect(Array.isArray(state.lots)).toBe(true)
+        return state
+      }
+
+      async function lotOf(s: TestServer, roomId: string, key: string, lotId: string): Promise<LotView> {
+        const found = (await stateOf(s, roomId, key)).lots?.find((l) => l.id === lotId)
+        expect(found).toBeDefined()
+        return found as LotView
+      }
+
+      async function lotEntries(s: TestServer, roomId: string): Promise<string[]> {
+        return (await readLog(s.storage(roomId))).map((e) => e.type).filter((t) => t.startsWith('lot.'))
+      }
+
+      // Три числа участника в «Расчёте»: сумма и счётчик лотов
+      async function sums(s: TestServer, roomId: string, key: string, ...ids: string[]) {
+        const settlement = (await stateOf(s, roomId, key)).settlement
+        return ids.map((id) => {
+          const m = settlement?.members.find((x) => x.memberId === id)
+          const short = (x: SettleSumView | undefined) => [x?.amount, x?.lots]
+          return { total: short(m?.total), pending: short(m?.pending), inPlay: short(m?.inPlay) }
+        })
+      }
+
+      it('выставить лот: продавец — автор, шаг — 10 % старта, сроки темпа — в записи; видно всем; повтор — тот же лот', async () => {
+        const s = await server()
+        const { room, borya, vera, gosha } = await room4(s)
+        const requestId = ulid(s.clock.now)
+        const form = lotForm(s, { requestId })
+        const closesAt = form.closesAt as number
+        const lot = await newLot(s, room.roomId, borya.key, form)
+        expect(lot).toEqual({
+          id: expect.stringMatching(ULID),
+          at: s.clock.now,
+          sellerId: borya.memberId,
+          title: 'Велосипед «Кама»',
+          description: 'Синий, с корзинкой',
+          start: 1000,
+          step: 100,
+          closesAt,
+          latestEnd: closesAt + AUCTION_EXTEND_MAX,
+          endsAt: closesAt,
+          times: NORMAL_TIMES,
+          status: 'open',
+          bids: [],
+          best: null,
+          winner: null,
+          amount: null,
+          withdrawnAt: null,
+          handedAt: null,
+          declinedAt: null,
+          disputedAt: null,
+          disputeFrom: null,
+          silenceUntil: null,
+          received: null,
+          closedAt: null,
+        })
+        expect((await readLog(s.storage(room.roomId))).at(-1)).toEqual({
+          id: lot.id,
+          at: s.clock.now,
+          memberId: borya.memberId,
+          type: 'lot.created',
+          title: 'Велосипед «Кама»',
+          description: 'Синий, с корзинкой',
+          start: 1000,
+          step: 100,
+          closesAt,
+          times: NORMAL_TIMES,
+          requestId,
+        })
+        for (const key of [room.key, borya.key, vera.key, gosha.key]) expect(await lotOf(s, room.roomId, key, lot.id)).toEqual(lot)
+        // Повтор — тот же лот без записи; тот же номер с другим названием или от другого — 409
+        expect(await newLot(s, room.roomId, borya.key, form)).toEqual(lot)
+        await refused(send(s, room.roomId, 'lots', { ...form, title: 'Самокат' }, borya.key), 409, REQUEST_USED)
+        await refused(send(s, room.roomId, 'lots', form, vera.key), 409, REQUEST_USED)
+        // Свой шаг; описание не задано — пустое; ведущий тоже продаёт
+        const own = await newLot(s, room.roomId, room.key, lotForm(s, { step: 50, description: undefined }))
+        expect(own).toMatchObject({ sellerId: room.memberId, step: 50, description: '' })
+        expect(await lotEntries(s, room.roomId)).toEqual(['lot.created', 'lot.created'])
+      })
+
+      it('ставки: перебивают друг друга, видны всем; лучшая — «в игре» у её автора; повтор ставки — тот же ответ', async () => {
+        const s = await server()
+        const { room, borya, vera, gosha } = await room4(s)
+        const lot = await newLot(s, room.roomId, borya.key, lotForm(s))
+        s.clock.now += 1000
+        const requestId = ulid(s.clock.now)
+        const first = await bidOk(s, room.roomId, vera.key, lot.id, 1000, requestId)
+        expect(first.bid).toEqual({ id: expect.stringMatching(ULID), at: s.clock.now, by: vera.memberId, lot: lot.id, amount: 1000 })
+        expect(first.lot).toMatchObject({ status: 'open', best: { id: first.bid.id, by: vera.memberId, amount: 1000 } })
+        expect((await readLog(s.storage(room.roomId))).at(-1)).toEqual({
+          id: first.bid.id,
+          at: s.clock.now,
+          memberId: vera.memberId,
+          type: 'lot.bid',
+          lot: lot.id,
+          amount: 1000,
+          requestId,
+        })
+        s.clock.now += 1000
+        const second = await bidOk(s, room.roomId, gosha.key, lot.id, 1100)
+        s.clock.now += 1000
+        const third = await bidOk(s, room.roomId, vera.key, lot.id, 1250)
+        const bids = [first, second, third].map(({ bid: b }) => ({ id: b.id, at: b.at, by: b.by, amount: b.amount }))
+        for (const key of [room.key, borya.key, vera.key, gosha.key]) {
+          expect(await lotOf(s, room.roomId, key, lot.id)).toMatchObject({ status: 'open', bids, best: bids[2], winner: null, endsAt: lot.closesAt })
+        }
+        // Перебитая ставка свободна: «в игре» — только лучшая
+        expect(await sums(s, room.roomId, room.key, vera.memberId, gosha.memberId)).toEqual([
+          { total: [0, 0], pending: [0, 0], inPlay: [1250, 1] },
+          { total: [0, 0], pending: [0, 0], inPlay: [0, 0] },
+        ])
+        // Повтор — та же ставка без записи; другая сумма или другой участник — 409
+        expect((await bidOk(s, room.roomId, vera.key, lot.id, 1000, requestId)).bid).toEqual(first.bid)
+        await refused(bid(s, room.roomId, vera.key, lot.id, 2000, requestId), 409, REQUEST_USED)
+        await refused(bid(s, room.roomId, gosha.key, lot.id, 1000, requestId), 409, REQUEST_USED)
+        expect(await lotEntries(s, room.roomId)).toEqual(['lot.created', 'lot.bid', 'lot.bid', 'lot.bid'])
+      })
+
+      it('отказы: форма — 400; продавец не ставит — 403; меньше старта и шага — 409; кривая сумма — 400; снять — продавец и пока ставок нет', async () => {
+        const s = await server()
+        const { room, borya, vera, gosha } = await room4(s)
+        const now = s.clock.now
+        const cases: [Record<string, unknown>, string][] = [
+          [{ title: ' ' }, L.NEED_LOT_TITLE],
+          [{ title: 'я'.repeat(L.MAX_LOT_TITLE + 1) }, L.LONG_LOT_TITLE],
+          [{ description: 'я'.repeat(301) }, L.LONG_LOT_DESCRIPTION],
+          [{ start: 0 }, L.BAD_LOT_START],
+          [{ start: 'сто' }, L.BAD_LOT_START],
+          [{ step: 0 }, L.BAD_LOT_STEP],
+          [{ closesAt: undefined }, L.NEED_LOT_END],
+          [{ closesAt: now + 10 * MINUTE - 1 }, L.LOT_SHORT],
+          [{ closesAt: now - HOUR }, L.LOT_SHORT],
+          [{ closesAt: now + 3 * DAY + 1 }, L.LOT_LONG],
+          [{ requestId: 'abc' }, BAD_REQUEST_ID],
+        ]
+        for (const [change, error] of cases) await refused(send(s, room.roomId, 'lots', lotForm(s, change), borya.key), 400, error)
+        const dima = await join(s, room, 'Дима')
+        await refused(send(s, room.roomId, 'lots', lotForm(s)), 403, NEED_KEY)
+        await refused(send(s, room.roomId, 'lots', lotForm(s), dima.key), 403, WAITING, 'waiting')
+        expect((await send(s, room.roomId, 'lots', lotForm(s, { v: PROTOCOL_VERSION + 1 }), borya.key)).status).toBe(400)
+        expect(await lotEntries(s, room.roomId)).toEqual([])
+        // Ровно 10 минут и ровно 3 дня — можно
+        await newLot(s, room.roomId, borya.key, lotForm(s, { closesAt: now + 10 * MINUTE }))
+        const lot = await newLot(s, room.roomId, borya.key, lotForm(s, { closesAt: now + 3 * DAY }))
+
+        await refused(bid(s, room.roomId, borya.key, lot.id, 1000), 403, L.OWN_LOT)
+        for (const amount of [0, -5, 1.5, 'сто', undefined]) await refused(bid(s, room.roomId, vera.key, lot.id, amount), 400, L.BAD_LOT_BID)
+        await refused(bid(s, room.roomId, vera.key, lot.id, 999), 409, L.LOT_BID_LOW)
+        await refused(bid(s, room.roomId, vera.key, lot.id, 1000, 'abc'), 400, BAD_REQUEST_ID)
+        await bidOk(s, room.roomId, vera.key, lot.id, 1000)
+        await refused(bid(s, room.roomId, gosha.key, lot.id, 1099), 409, L.LOT_BID_STEP)
+        // Свою перебить можно
+        await bidOk(s, room.roomId, vera.key, lot.id, 1100)
+        // Снять со ставками — нельзя; не продавец — 403
+        await refused(lotAct(s, room.roomId, borya.key, lot.id, 'withdraw'), 409, L.LOT_HAS_BIDS)
+        await refused(lotAct(s, room.roomId, vera.key, lot.id, 'withdraw'), 403, L.ONLY_SELLER)
+        // Нет лота, кривой номер, без ключа
+        await refused(bid(s, room.roomId, vera.key, ulid(), 1000), 404, NO_LOT)
+        await refused(lotAct(s, room.roomId, borya.key, ulid(), 'withdraw'), 404, NO_LOT)
+        await refused(bid(s, room.roomId, vera.key, 'не-номер', 1000), 404, NO_LOT)
+        await refused(bid(s, room.roomId, undefined, lot.id, 1200), 403, NEED_KEY)
+        // Апелляции у лота нет — такого адреса нет
+        expect((await lotAct(s, room.roomId, vera.key, lot.id, 'appeal', { reason: 'Хочу' })).status).toBe(404)
+
+        // Без ставок продавец снимает: тело не нужно; повтор — тот же ответ; снятый — ни ставки, ни второго снятия
+        const other = await newLot(s, room.roomId, borya.key, lotForm(s))
+        s.clock.now += 1000
+        const requestId = ulid(s.clock.now)
+        const withdrawn = await markOk(s, room.roomId, borya.key, other.id, 'withdraw', requestId)
+        expect(withdrawn.marked).toEqual({ id: expect.stringMatching(ULID), at: s.clock.now, by: borya.memberId, lot: other.id, mark: 'withdrawn' })
+        expect(withdrawn.lot).toMatchObject({ status: 'withdrawn', withdrawnAt: s.clock.now, closedAt: s.clock.now })
+        expect((await readLog(s.storage(room.roomId))).at(-1)).toMatchObject({ type: 'lot.withdrawn', memberId: borya.memberId, lot: other.id, requestId })
+        expect(await markOk(s, room.roomId, borya.key, other.id, 'withdraw', requestId)).toEqual(withdrawn)
+        await refused(lotAct(s, room.roomId, borya.key, other.id, 'handed', { requestId }), 409, REQUEST_USED)
+        await refused(bid(s, room.roomId, vera.key, other.id, 1000), 409, L.LOT_WITHDRAWN)
+        await refused(lotAct(s, room.roomId, borya.key, other.id, 'withdraw'), 409, L.LOT_WITHDRAWN)
+        const bare = await s.send(`/rooms/${room.roomId}/lots/${lot.id}/handed`, { method: 'POST', headers: { Authorization: 'Bearer ' + borya.key } })
+        expect(bare.status).toBe(409)
+        expect(await lotEntries(s, room.roomId)).toEqual(['lot.created', 'lot.created', 'lot.bid', 'lot.bid', 'lot.created', 'lot.withdrawn'])
+      })
+
+      it('продление: ставка на последних 2 минутах — конец через 2 минуты после неё, не дальше конца + 30 минут; к концу без ставок — «не продан»', async () => {
+        const s = await server()
+        const { room, borya, vera, gosha } = await room4(s)
+        const lot = await newLot(s, room.roomId, borya.key, lotForm(s))
+        const unsold = await newLot(s, room.roomId, borya.key, lotForm(s))
+        const closesAt = lot.closesAt
+        const latestEnd = closesAt + AUCTION_EXTEND_MAX
+        const endsAt = async () => (await lotOf(s, room.roomId, gosha.key, lot.id)).endsAt
+        s.clock.now = closesAt - 5 * MINUTE
+        await bidOk(s, room.roomId, vera.key, lot.id, 1000)
+        expect(await endsAt()).toBe(closesAt)
+        s.clock.now = closesAt - MINUTE
+        await bidOk(s, room.roomId, gosha.key, lot.id, 1100)
+        expect(await endsAt()).toBe(closesAt + MINUTE)
+        // После исходного конца, но до продлённого — ставка действует и продлевает ещё; второй лот уже не продан
+        s.clock.now = closesAt + 30 * 1000
+        await bidOk(s, room.roomId, vera.key, lot.id, 1200)
+        expect(await endsAt()).toBe(closesAt + 30 * 1000 + AUCTION_EXTEND)
+        expect(await lotOf(s, room.roomId, vera.key, unsold.id)).toMatchObject({ status: 'unsold', winner: null, closedAt: closesAt })
+        await refused(bid(s, room.roomId, vera.key, unsold.id, 1000), 409, L.LOT_OVER)
+        await refused(lotAct(s, room.roomId, borya.key, unsold.id, 'handed'), 409, L.LOT_UNSOLD)
+        let amount = 1200
+        let end = await endsAt()
+        const who = [gosha, vera]
+        for (let i = 0; end < latestEnd; i++) {
+          s.clock.now = end - 1000
+          amount += 100
+          await bidOk(s, room.roomId, who[i % 2].key, lot.id, amount)
+          end = await endsAt()
+          expect(end).toBe(Math.min(latestEnd, s.clock.now + AUCTION_EXTEND))
+        }
+        s.clock.now = latestEnd - 1000
+        await bidOk(s, room.roomId, gosha.key, lot.id, amount + 100)
+        expect(await endsAt()).toBe(latestEnd)
+        // Пока торг идёт — отметок после торга нет
+        await refused(lotAct(s, room.roomId, borya.key, lot.id, 'handed'), 409, L.LOT_NOT_OVER)
+        await refused(lotAct(s, room.roomId, gosha.key, lot.id, 'received'), 409, L.LOT_NOT_OVER)
+        s.clock.now = latestEnd
+        await refused(bid(s, room.roomId, vera.key, lot.id, amount + 200), 409, L.LOT_OVER)
+        expect(await lotOf(s, room.roomId, borya.key, lot.id)).toMatchObject({
+          status: 'awaiting',
+          endsAt: latestEnd,
+          winner: gosha.memberId,
+          amount: amount + 100,
+          disputeFrom: latestEnd + SILENCE,
+          closedAt: null,
+        })
+      })
+
+      it('после торга: «Получил» сразу, «Передал» и молчание победителя, «Не смогу передать»; долг — в «Расчёт», только когда получено', async () => {
+        const s = await server()
+        const { room, borya, vera, gosha } = await room4(s)
+        const a = await newLot(s, room.roomId, borya.key, lotForm(s, { title: 'Велосипед' }))
+        const b = await newLot(s, room.roomId, borya.key, lotForm(s, { title: 'Палатка', start: 500 }))
+        const c = await newLot(s, room.roomId, borya.key, lotForm(s, { title: 'Гитара', start: 300 }))
+        s.clock.now += 1000
+        await bidOk(s, room.roomId, vera.key, a.id, 1000)
+        await bidOk(s, room.roomId, gosha.key, b.id, 500)
+        await bidOk(s, room.roomId, vera.key, c.id, 300)
+        expect(await sums(s, room.roomId, room.key, borya.memberId, vera.memberId, gosha.memberId)).toEqual([
+          { total: [0, 0], pending: [0, 0], inPlay: [0, 0] },
+          { total: [0, 0], pending: [0, 0], inPlay: [1300, 2] },
+          { total: [0, 0], pending: [0, 0], inPlay: [500, 1] },
+        ])
+        // Конец торга: «ждёт передачи» — долг ждёт
+        s.clock.now = a.closesAt
+        for (const l of [a, b, c]) expect((await lotOf(s, room.roomId, gosha.key, l.id)).status).toBe('awaiting')
+        expect(await sums(s, room.roomId, room.key, borya.memberId, vera.memberId, gosha.memberId)).toEqual([
+          { total: [0, 0], pending: [1800, 3], inPlay: [0, 0] },
+          { total: [0, 0], pending: [-1300, 2], inPlay: [0, 0] },
+          { total: [0, 0], pending: [-500, 1], inPlay: [0, 0] },
+        ])
+        await refused(lotAct(s, room.roomId, gosha.key, a.id, 'received'), 403, L.ONLY_WINNER)
+        await refused(lotAct(s, room.roomId, vera.key, a.id, 'handed'), 403, L.ONLY_SELLER)
+        await refused(lotAct(s, room.roomId, vera.key, a.id, 'cannot'), 403, L.ONLY_SELLER)
+
+        // Велосипед: Вера «Получил» без «Передал» — получен сразу
+        s.clock.now += 1000
+        const requestId = ulid(s.clock.now)
+        const got = await markOk(s, room.roomId, vera.key, a.id, 'received', requestId)
+        expect(got.marked).toEqual({ id: expect.stringMatching(ULID), at: s.clock.now, by: vera.memberId, lot: a.id, mark: 'received' })
+        expect(got.lot).toMatchObject({ status: 'received', received: { at: s.clock.now, how: 'mark' }, closedAt: s.clock.now })
+        expect((await readLog(s.storage(room.roomId))).at(-1)).toMatchObject({ type: 'lot.received', memberId: vera.memberId, lot: a.id, requestId })
+        expect(await markOk(s, room.roomId, vera.key, a.id, 'received', requestId)).toEqual(got)
+        await refused(lotAct(s, room.roomId, vera.key, a.id, 'received'), 409, L.LOT_RECEIVED)
+        await refused(lotAct(s, room.roomId, borya.key, a.id, 'handed'), 409, L.LOT_RECEIVED)
+
+        // Палатка: Боря «Передал»; Гоша молчит срок молчания — получено без записи
+        const handed = await markOk(s, room.roomId, borya.key, b.id, 'handed')
+        const handedAt = s.clock.now
+        expect(handed.lot).toMatchObject({ status: 'handed', handedAt, silenceUntil: handedAt + SILENCE })
+        await refused(lotAct(s, room.roomId, borya.key, b.id, 'handed'), 409, L.LOT_HANDED)
+        // Гитара: Боря «Не смогу передать» — не состоялся, никто никому не должен
+        const failed = await markOk(s, room.roomId, borya.key, c.id, 'cannot')
+        expect(failed.marked.mark).toBe('declined')
+        expect(failed.lot).toMatchObject({ status: 'failed', declinedAt: s.clock.now, closedAt: s.clock.now })
+        await refused(lotAct(s, room.roomId, vera.key, c.id, 'received'), 409, L.LOT_FAILED)
+        await refused(lotAct(s, room.roomId, vera.key, c.id, 'not-received'), 409, L.LOT_FAILED)
+        s.clock.now = handedAt + SILENCE - 1
+        expect((await lotOf(s, room.roomId, borya.key, b.id)).status).toBe('handed')
+        s.clock.now = handedAt + SILENCE
+        expect(await lotOf(s, room.roomId, borya.key, b.id)).toMatchObject({ status: 'received', received: { at: handedAt + SILENCE, how: 'silence' } })
+        await refused(lotAct(s, room.roomId, gosha.key, b.id, 'not-received'), 409, L.LOT_RECEIVED)
+        // Итог: Боре должны 1000 и 500, гитара — не в счёт; «по ставкам» — прямые долги пар
+        expect(await sums(s, room.roomId, room.key, borya.memberId, vera.memberId, gosha.memberId)).toEqual([
+          { total: [1500, 2], pending: [0, 0], inPlay: [0, 0] },
+          { total: [-1000, 1], pending: [0, 0], inPlay: [0, 0] },
+          { total: [-500, 1], pending: [0, 0], inPlay: [0, 0] },
+        ])
+        const { settlement } = await stateOf(s, room.roomId, gosha.key)
+        expect(settlement?.suggestions).toHaveLength(2)
+        expect(settlement?.suggestions).toEqual(
+          expect.arrayContaining([
+            { from: vera.memberId, to: borya.memberId, amount: 1000 },
+            { from: gosha.memberId, to: borya.memberId, amount: 500 },
+          ]),
+        )
+        expect(await lotEntries(s, room.roomId)).toEqual([
+          'lot.created',
+          'lot.created',
+          'lot.created',
+          'lot.bid',
+          'lot.bid',
+          'lot.bid',
+          'lot.received',
+          'lot.handed',
+          'lot.declined',
+        ])
+      })
+
+      it('обе стороны молчат — «ждёт передачи»; «Не получил» без «Передал» — после срока молчания; судить некому — «в споре», пока сторона не уступит', async () => {
+        const s = await server()
+        // Двое: Аня продаёт, Боря покупает — судить некому
+        const room = await create(s)
+        const borya = await member(s, room, 'Боря')
+        const x = await newLot(s, room.roomId, room.key, lotForm(s, { title: 'Лыжи' }))
+        const y = await newLot(s, room.roomId, room.key, lotForm(s, { title: 'Санки' }))
+        s.clock.now += 1000
+        await bidOk(s, room.roomId, borya.key, x.id, 1000)
+        await bidOk(s, room.roomId, borya.key, y.id, 1000)
+        const disputeFrom = x.closesAt + SILENCE
+        s.clock.now = disputeFrom - 1
+        expect(await lotOf(s, room.roomId, borya.key, x.id)).toMatchObject({ status: 'awaiting', disputeFrom })
+        await refused(lotAct(s, room.roomId, borya.key, x.id, 'not-received'), 409, L.LOT_TOO_EARLY)
+        s.clock.now = disputeFrom
+        const disputed = await markOk(s, room.roomId, borya.key, x.id, 'not-received')
+        expect(disputed.marked.mark).toBe('disputed')
+        expect(disputed.lot).toMatchObject({ status: 'dispute', disputedAt: disputeFrom })
+        // Суда нет: записи court.drawn нет и после запроса комнаты
+        s.clock.now += HOUR
+        expect(await lotOf(s, room.roomId, room.key, x.id)).toMatchObject({ status: 'dispute' })
+        expect((await readLog(s.storage(room.roomId))).some((e) => e.type === 'court.drawn')).toBe(false)
+        await refused(lotAct(s, room.roomId, room.key, x.id, 'handed'), 409, L.LOT_DISPUTED)
+        await refused(lotAct(s, room.roomId, borya.key, x.id, 'not-received'), 409, L.LOT_DISPUTED)
+        await refused(lotAct(s, room.roomId, room.key, x.id, 'judge', { verdict: 'delivered' }), 409, NO_COURT)
+        // Санки — обе стороны молчат: долг ждёт, сколько бы ни прошло
+        s.clock.now += 30 * DAY
+        expect((await lotOf(s, room.roomId, room.key, y.id)).status).toBe('awaiting')
+        expect(await sums(s, room.roomId, room.key, room.memberId, borya.memberId)).toEqual([
+          { total: [0, 0], pending: [2000, 2], inPlay: [0, 0] },
+          { total: [0, 0], pending: [-2000, 2], inPlay: [0, 0] },
+        ])
+        // Уступили: в споре о лыжах Боря «Получил»; о санках Аня «Не смогу передать» после «Не получил»
+        expect((await markOk(s, room.roomId, borya.key, x.id, 'received')).lot).toMatchObject({ status: 'received', received: { how: 'mark' } })
+        await markOk(s, room.roomId, borya.key, y.id, 'not-received')
+        expect((await markOk(s, room.roomId, room.key, y.id, 'cannot')).lot.status).toBe('failed')
+        expect(await sums(s, room.roomId, room.key, room.memberId, borya.memberId)).toEqual([
+          { total: [1000, 1], pending: [0, 0], inPlay: [0, 0] },
+          { total: [-1000, 1], pending: [0, 0], inPlay: [0, 0] },
+        ])
+      })
+
+      it('«Не получил» — суд жребием без продавца и победителя: собран сам; голоса «передано» / «не передано»; решение окончательное', async () => {
+        const s = await server()
+        const room = await create(s)
+        const borya = await member(s, room, 'Боря')
+        const vera = await member(s, room, 'Вера')
+        const gosha = await member(s, room, 'Гоша')
+        const dasha = await member(s, room, 'Даша')
+        const zhenya = await member(s, room, 'Женя')
+        const people = [room, borya, vera, gosha, dasha, zhenya]
+        const keyOf = (id: string | null) => people.find((p) => p.memberId === id)?.key ?? 'нет-ключа'
+        const p = await newLot(s, room.roomId, borya.key, lotForm(s, { title: 'Ноутбук' }))
+        const q = await newLot(s, room.roomId, borya.key, lotForm(s, { title: 'Телефон', start: 2000 }))
+        s.clock.now += 1000
+        await bidOk(s, room.roomId, vera.key, p.id, 1000)
+        await bidOk(s, room.roomId, vera.key, q.id, 2000)
+        // Ноутбук: «Передал» — Вера «Не получил» в срок молчания
+        s.clock.now = p.closesAt + 1000
+        await markOk(s, room.roomId, borya.key, p.id, 'handed')
+        s.clock.now += 1000
+        const disputed = await markOk(s, room.roomId, vera.key, p.id, 'not-received')
+        expect(disputed.lot).toMatchObject({ status: 'dispute', disputedAt: s.clock.now })
+        // Суд собирается при следующем запросе к комнате: зерно сервера, кандидаты — кроме продавца и победителя
+        s.seeds.push(SEED)
+        s.clock.now += 1000
+        const drawnAt = s.clock.now
+        const candidates = [room.memberId, gosha.memberId, dasha.memberId, zhenya.memberId]
+        const order = A.drawCourt(SEED, candidates, room.memberId)
+        const seat = (m: string) => ({ member: m, since: drawnAt, until: drawnAt + p.times.court, replaced: null, vote: null })
+        for (const key of [room.key, borya.key, vera.key, gosha.key]) {
+          expect(await lotOf(s, room.roomId, key, p.id)).toMatchObject({
+            status: 'court',
+            court: { seed: SEED, drawnAt, candidates: order, seats: order.slice(0, 3).map(seat), decision: null },
+          })
+        }
+        const log = await readLog(s.storage(room.roomId))
+        expect(log.filter((e) => e.type === 'court.drawn')).toEqual([
+          { id: expect.any(String), at: drawnAt, memberId: room.memberId, type: 'court.drawn', target: p.id, seed: SEED, candidates },
+        ])
+        // В суде отметки сторон не действуют
+        await refused(lotAct(s, room.roomId, vera.key, p.id, 'received'), 409, L.LOT_IN_COURT)
+        await refused(lotAct(s, room.roomId, borya.key, p.id, 'cannot'), 409, L.LOT_IN_COURT)
+        // Голос: только «передано» / «не передано» и только член суда
+        const judge = (key: string, body: Record<string, unknown>) => lotAct(s, room.roomId, key, p.id, 'judge', body)
+        for (const body of [{}, { verdict: 'keep' }, { verdict: 'cancel' }, { verdict: 'change', winner: 'author' }]) {
+          await refused(judge(keyOf(order[0]), body), 400, A.BAD_LOT_VERDICT)
+        }
+        await refused(judge(keyOf(order[3]), { verdict: 'delivered' }), 403, A.NOT_JUROR)
+        await refused(judge(vera.key, { verdict: 'undelivered' }), 403, A.NOT_JUROR)
+        await refused(judge(borya.key, { verdict: 'delivered' }), 403, A.NOT_JUROR)
+        const voteId = ulid(s.clock.now)
+        const voted = await ok<JudgeResponse>(judge(keyOf(order[0]), { verdict: 'delivered', requestId: voteId }))
+        expect(isJudgeResponse(voted)).toBe(true)
+        expect(voted).toEqual({ v: PROTOCOL_VERSION, voted: { id: expect.any(String), at: s.clock.now, by: order[0], target: p.id, verdict: 'delivered' } })
+        expect(await ok(judge(keyOf(order[0]), { verdict: 'delivered', requestId: voteId }))).toEqual(voted)
+        await refused(judge(keyOf(order[0]), { verdict: 'undelivered' }), 409, A.VOTED)
+        s.clock.now += HOUR
+        await ok(judge(keyOf(order[1]), { verdict: 'undelivered' }))
+        expect((await lotOf(s, room.roomId, gosha.key, p.id)).status).toBe('court')
+        s.clock.now += HOUR
+        await ok(judge(keyOf(order[2]), { verdict: 'delivered' }))
+        // Два из трёх — «передано»: получен судом, долг — в итог сразу
+        expect(await lotOf(s, room.roomId, gosha.key, p.id)).toMatchObject({
+          status: 'received',
+          received: { at: s.clock.now, how: 'court' },
+          closedAt: s.clock.now,
+          court: { decision: { at: s.clock.now, majority: true, verdict: 'delivered' } },
+        })
+        await refused(judge(keyOf(order[0]), { verdict: 'delivered' }), 409, A.COURT_DECIDED)
+        await refused(lotAct(s, room.roomId, vera.key, p.id, 'not-received'), 409, L.LOT_IN_COURT)
+
+        // Телефон: «Передал» нет — Вера «Не получил» после срока молчания; ведущая заменяет члена суда
+        s.clock.now = q.closesAt + SILENCE
+        await markOk(s, room.roomId, vera.key, q.id, 'not-received')
+        s.seeds.push('5c'.repeat(16))
+        s.clock.now += 1000
+        const before = await lotOf(s, room.roomId, room.key, q.id)
+        expect(before.status).toBe('court')
+        const seats = before.court?.seats ?? []
+        const target = seats.find((x) => x.member !== room.memberId)?.member as string
+        const replaced = await ok<ReplaceJurorResponse>(lotAct(s, room.roomId, room.key, q.id, 'replace', { member: target, reason: 'Уехал без связи' }))
+        expect(isReplaceJurorResponse(replaced)).toBe(true)
+        expect(replaced.replaced).toMatchObject({ by: room.memberId, target: q.id, member: target, reason: 'Уехал без связи' })
+        const now = (await lotOf(s, room.roomId, room.key, q.id)).court?.seats.map((x) => x.member) ?? []
+        expect(now).not.toContain(target)
+        await ok(lotAct(s, room.roomId, keyOf(now[0]), q.id, 'judge', { verdict: 'undelivered' }))
+        await ok(lotAct(s, room.roomId, keyOf(now[1]), q.id, 'judge', { verdict: 'undelivered' }))
+        await ok(lotAct(s, room.roomId, keyOf(now[2]), q.id, 'judge', { verdict: 'delivered' }))
+        // «Не передано» — лот не передан, долга нет
+        expect(await lotOf(s, room.roomId, borya.key, q.id)).toMatchObject({
+          status: 'undelivered',
+          received: null,
+          closedAt: s.clock.now,
+          court: { decision: { majority: true, verdict: 'undelivered' } },
+        })
+        expect(await sums(s, room.roomId, room.key, borya.memberId, vera.memberId)).toEqual([
+          { total: [1000, 1], pending: [0, 0], inPlay: [0, 0] },
+          { total: [-1000, 1], pending: [0, 0], inPlay: [0, 0] },
+        ])
+      })
+
+      it('долг по лотам в обоих режимах «кто кому»: «по ставкам» — прямые долги пар, «меньше переводов» — общим счётом', async () => {
+        const s = await server()
+        const { room, borya, vera, gosha } = await room4(s)
+        // Боря продал Вере за 1000, Вера — Гоше за 1000
+        const one = await newLot(s, room.roomId, borya.key, lotForm(s))
+        const two = await newLot(s, room.roomId, vera.key, lotForm(s, { title: 'Самокат' }))
+        s.clock.now += 1000
+        await bidOk(s, room.roomId, vera.key, one.id, 1000)
+        await bidOk(s, room.roomId, gosha.key, two.id, 1000)
+        s.clock.now = one.closesAt
+        await markOk(s, room.roomId, vera.key, one.id, 'received')
+        await markOk(s, room.roomId, gosha.key, two.id, 'received')
+        const stakes = (await stateOf(s, room.roomId, room.key)).settlement
+        expect(stakes?.mode).toBe('stakes')
+        expect(stakes?.suggestions).toHaveLength(2)
+        expect(stakes?.suggestions).toEqual(
+          expect.arrayContaining([
+            { from: vera.memberId, to: borya.memberId, amount: 1000 },
+            { from: gosha.memberId, to: vera.memberId, amount: 1000 },
+          ]),
+        )
+        expect(await sums(s, room.roomId, room.key, borya.memberId, vera.memberId, gosha.memberId)).toEqual([
+          { total: [1000, 1], pending: [0, 0], inPlay: [0, 0] },
+          { total: [0, 2], pending: [0, 0], inPlay: [0, 0] },
+          { total: [-1000, 1], pending: [0, 0], inPlay: [0, 0] },
+        ])
+        await ok(send(s, room.roomId, 'settle-mode', { v: PROTOCOL_VERSION, mode: 'fewest' }, room.key))
+        const fewest = (await stateOf(s, room.roomId, vera.key)).settlement
+        expect(fewest?.mode).toBe('fewest')
+        expect(fewest?.suggestions).toEqual([{ from: gosha.memberId, to: borya.memberId, amount: 1000 }])
+      })
+
+      it('сроки темпа (Р-35): новый лот — с нынешним темпом комнаты; смена темпа старый лот не трогает', async () => {
+        const s = await server()
+        const { room, borya, vera } = await room4(s, { ...FORM, pace: 'fast' })
+        const fast = await newLot(s, room.roomId, borya.key, lotForm(s))
+        expect(fast.times).toEqual(P.FAST_TIMES)
+        expect((await readLog(s.storage(room.roomId))).at(-1)).toMatchObject({ type: 'lot.created', times: P.FAST_TIMES })
+        await ok(send(s, room.roomId, 'pace', { v: PROTOCOL_VERSION, pace: 'normal' }, room.key))
+        const normal = await newLot(s, room.roomId, borya.key, lotForm(s))
+        expect(normal.times).toEqual(NORMAL_TIMES)
+        expect((await lotOf(s, room.roomId, vera.key, fast.id)).times).toEqual(P.FAST_TIMES)
+        // Молчание победителя — по сроку лота: у быстрого — быстрый
+        s.clock.now += 1000
+        await bidOk(s, room.roomId, vera.key, fast.id, 1000)
+        await bidOk(s, room.roomId, vera.key, normal.id, 1000)
+        s.clock.now = fast.closesAt
+        const handedAt = s.clock.now
+        await markOk(s, room.roomId, borya.key, fast.id, 'handed')
+        await markOk(s, room.roomId, borya.key, normal.id, 'handed')
+        s.clock.now = handedAt + P.FAST_TIMES.silence
+        expect((await lotOf(s, room.roomId, vera.key, fast.id)).received).toEqual({ at: handedAt + P.FAST_TIMES.silence, how: 'silence' })
+        expect((await lotOf(s, room.roomId, vera.key, normal.id)).status).toBe('handed')
       })
     })
 
@@ -4149,7 +4727,7 @@ export function roomsSuite(
         expect(all.backups.map((b) => b.roomId)).toEqual([room.roomId])
       })
 
-      it('круг: событие, пари, суд и переводы — выгрузил на одной обёртке, загрузил в пустую на другой: ответ комнаты тем же ключам тот же', async () => {
+      it('круг: событие, пари, лот, суд и переводы — выгрузил на одной обёртке, загрузил в пустую на другой: ответ комнаты тем же ключам тот же', async () => {
         const s = await server()
         const room = await create(s)
         const borya = await member(s, room, 'Боря')
@@ -4180,6 +4758,13 @@ export function roomsSuite(
         // Переводы: Вера перевела Боре 50, Боря получил
         const sent = await ok<TransferResponse>(send(s, id, 'transfers', { v: PROTOCOL_VERSION, to: borya.memberId, amount: 50 }, vera.key))
         await ok(send(s, id, `transfers/${sent.transfer.id}/receive`, { v: PROTOCOL_VERSION }, borya.key))
+        // Лот Даши (Р-38): Боря — 500, Гоша перебил — 600; к концу — «ждёт передачи», Даша «Передал»
+        const lotForm = { v: PROTOCOL_VERSION, title: 'Палатка', start: 500, closesAt: s.clock.now + HOUR }
+        const { lot } = await ok<LotResponse>(send(s, id, 'lots', lotForm, dasha.key))
+        await ok(send(s, id, `lots/${lot.id}/bid`, { v: PROTOCOL_VERSION, amount: 500 }, borya.key))
+        await ok(send(s, id, `lots/${lot.id}/bid`, { v: PROTOCOL_VERSION, amount: 600 }, gosha.key))
+        s.clock.now = lot.closesAt
+        await ok(send(s, id, `lots/${lot.id}/handed`, { v: PROTOCOL_VERSION }, dasha.key))
         s.clock.now += HOUR
         const people = [room, borya, vera, gosha]
         const states = async (x: TestServer) => Promise.all(people.map((p) => ok<RoomStateResponse>(get(x, id, p.key))))
@@ -4189,6 +4774,9 @@ export function roomsSuite(
         expect(before[0].offers?.map((o) => o.status)).toEqual(['accepted', 'accepted', 'failed'])
         expect(before[0].offers?.[1].bidding).toMatchObject({ result: { how: 'end' }, best: { by: gosha.memberId, amount: 150 } })
         expect(before[0].settlement?.transfers).toHaveLength(1)
+        expect(before[0].lots).toHaveLength(1)
+        expect(before[0].lots?.[0]).toMatchObject({ status: 'handed', winner: gosha.memberId, amount: 600, bids: [{ by: borya.memberId }, { by: gosha.memberId }] })
+        expect(before[0].settlement?.members.find((m) => m.memberId === dasha.memberId)?.pending).toMatchObject({ amount: 600, lots: 1 })
         const copy = await fullCopy(s, id)
         // Туда: на другой обёртке — тот же ответ тем же ключам, та же копия
         const t = await other(s)

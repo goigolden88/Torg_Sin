@@ -22,6 +22,8 @@ import {
   type Odds,
 } from '../../src/rules/offer'
 import { appealReason, caseOf, courtVote, NOT_SEAT, replaceReason } from '../../src/rules/appeal'
+import { BAD_LOT_BID, checkLotInput, lotView } from '../../src/rules/lot'
+import type { LotMark } from '../../src/rules/protocol'
 import { checkBackup, type Backup } from '../../src/rules/backup'
 import { checkPace, timesOf, type PaceInput } from '../../src/rules/pace'
 import { checkMemberName, checkRoomInput } from '../../src/rules/room'
@@ -40,6 +42,7 @@ import {
   BAD_DEVICE_LINK,
   BAD_LINK,
   NO_EVENT,
+  NO_LOT,
   NO_OUTCOME,
   NO_ROOM,
   type ActionResult,
@@ -161,6 +164,12 @@ export async function handle(request: Request, deps: RoomsDeps): Promise<Respons
   const of = /^\/rooms\/([^/]+)\/offers(?:\/([^/]+)\/(accept|revoke|counter|bid|bid\/accept|mark|decide|decline|nominate|appeal|appeal\/join|judge|replace))?$/.exec(path)
   if (of && request.method === 'POST') {
     const r = await offerAction(of[1], of[2], of[3], request, deps)
+    return json(r.status, r.body)
+  }
+  // Лот (Р-38): /rooms/<номер>/lots и /rooms/<номер>/lots/<лот>/<действие>; суд по «Не получил» — judge | replace
+  const lt = /^\/rooms\/([^/]+)\/lots(?:\/([^/]+)\/(bid|withdraw|handed|cannot|received|not-received|judge|replace))?$/.exec(path)
+  if (lt && request.method === 'POST') {
+    const r = await lotAction(lt[1], lt[2], lt[3], request, deps)
     return json(r.status, r.body)
   }
   // Расчёт (Р-32): /rooms/<номер>/transfers, /rooms/<номер>/transfers/<перевод>/<действие>, /rooms/<номер>/settle-mode
@@ -356,6 +365,56 @@ async function offerAction(
   })
 }
 
+// Отметки по лоту: адрес → отметка
+const LOT_MARK_PATHS: Record<string, LotMark> = {
+  withdraw: 'withdrawn',
+  handed: 'handed',
+  cannot: 'declined',
+  received: 'received',
+  'not-received': 'disputed',
+}
+
+// POST /rooms/<номер>/lots { title, description?, start, step?, closesAt, requestId? } — выставить лот;
+// …/lots/<лот>/bid { amount, requestId? } — ставка; …/withdraw | handed | cannot | received | not-received
+// { requestId? } — отметки; суд — …/judge { verdict: "delivered" | "undelivered" } и …/replace (courtAction).
+// Форма — checkLotInput (400 с текстом правил), до комнаты
+async function lotAction(
+  roomId: string,
+  lotId: string | undefined,
+  action: string | undefined,
+  request: Request,
+  deps: RoomsDeps,
+): Promise<Reply<unknown>> {
+  const authorization = request.headers.get('Authorization')
+  const raw: unknown = await request.json().catch(() => null)
+  return withKey(roomId, authorization, async (keyHash) => {
+    if (lotId !== undefined && !ULID_PATTERN.test(lotId)) return failure(404, NO_LOT)
+    const mark = action === undefined ? undefined : LOT_MARK_PATHS[action]
+    const read = readBody(raw, mark !== undefined)
+    if (!read.ok) return read.reply
+    const b = read.body
+    if (lotId !== undefined && action !== undefined) {
+      const court = await courtAction(roomId, 'lot', lotId, action, b, keyHash, deps)
+      if (court) return court
+    }
+    const requestId = requestIdOf(b, deps)
+    if (lotId === undefined) {
+      const checked = checkLotInput({ title: b.title, description: b.description, start: b.start, step: b.step, closesAt: b.closesAt })
+      if (!checked.ok) return failure(400, checked.error)
+      if (!requestId) return failure(400, BAD_REQUEST_ID)
+      return reply(await deps.act(roomId, { type: 'createLot', keyHash, input: checked.value, requestId }))
+    }
+    if (action === 'bid') {
+      // Сумма — целое > 0 (как в checkLotBid); старт, шаг и конец торга — в комнате
+      if (!Number.isSafeInteger(b.amount) || (b.amount as number) < 1) return failure(400, BAD_LOT_BID)
+      if (!requestId) return failure(400, BAD_REQUEST_ID)
+      return reply(await deps.act(roomId, { type: 'bidLot', keyHash, lot: lotId, amount: b.amount as number, requestId }))
+    }
+    if (!requestId) return failure(400, BAD_REQUEST_ID)
+    return reply(await deps.act(roomId, { type: 'markLot', keyHash, lot: lotId, mark: mark as LotMark, requestId }))
+  })
+}
+
 // Кэф из тела: целые MIN_ODDS…MAX_ODDS (как в checkOfferInput); кривой — undefined
 function oddsOf(x: unknown): Odds | undefined {
   const odd = (v: unknown) => Number.isInteger(v) && (v as number) >= MIN_ODDS && (v as number) <= MAX_ODDS
@@ -429,7 +488,8 @@ async function eventAction(
 
 // Апелляция и суд (Р-25) у события и пари: …/appeal { reason }, …/appeal/join {}, …/judge { verdict:
 // "keep" | "change" | "cancel", outcome? (пул) | winner? (пари) }, …/replace { member, reason } — все с
-// requestId?. Не то действие — null
+// requestId?; у лота (Р-38) — только …/judge { verdict: "delivered" | "undelivered" } и …/replace. Не то
+// действие — null
 async function courtAction(
   roomId: string,
   kind: CourtKind,
@@ -777,13 +837,17 @@ export async function getRoom(roomId: string, authorization: string | null, deps
       // создании (Р-35; у старых — обычный набор, timesOf): экраны показывают их, а не константы
       events: r.events.map((e) => ({ ...eventView(e, now, caseOf(r.cases, e.id)), times: { ...timesOf(e) } })),
       offers: r.offers.map((o) => ({ ...offerView(o, now, caseOf(r.cases, o.id)), times: { ...timesOf(o) } })),
-      // Свод расчёта (Р-32) — на то же время, в режиме комнаты; виден всем участникам
+      // Лоты (Р-38): ставки, конец с продлениями, ход после торга и суд по «Не получил»; times — в самом виде
+      lots: r.lots.map((l) => lotView(l, now, caseOf(r.cases, l.id))),
+      // Свод расчёта (Р-32) — на то же время, в режиме комнаты; виден всем участникам; с лотами — у чисел
+      // счётчик lots (Р-38)
       settlement: roomSettlement(
         {
           currency: state.currency,
           members: state.members.map((m) => m.id),
           events: r.events,
           offers: r.offers,
+          lots: r.lots,
           cases: r.cases,
           transfers: r.transfers,
         },
