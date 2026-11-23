@@ -191,5 +191,5 @@ export function choiceMine(v: ChoiceView, me: string, now: number): number | nul
   const debts = choiceDebts(choiceState(v), now)
   if (me === v.recipientId) return debts.reduce((s, d) => s + d.amount, 0)
   if (!v.stakes.some((s) => s.by === me)) return null
-  return -debts.filter((d) => d.from === me).reduce((s, d) => s + d.amount, 0)
+  return 0 - debts.filter((d) => d.from === me).reduce((s, d) => s + d.amount, 0) // 0 − 0 = 0, не −0
 }
