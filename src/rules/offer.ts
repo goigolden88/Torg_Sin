@@ -9,7 +9,7 @@ import { checkAmount, FINAL_TIME, MAX_EVENT_TEXT, NEED_CHECK, NEED_CONDITION, LO
 import { appealView, courtVerdict, courtView, type CourtCase } from './court'
 import { NORMAL_TIMES, recordTimes, timesOf, type Times } from './pace'
 import type { AppealView, BiddingView, CourtView, OfferInfo, OfferView } from './protocol'
-import { foldLog, type LogEntry, type RoomState } from './room'
+import { applyEntry, foldLog, type LogEntry, type RoomState } from './room'
 
 // Сроки пари — обычного темпа (Р-35): все три — срок молчания (silence), окончательность — срок
 // апелляции (FINAL_TIME). Правила берут сроки пари (times — закреплённые при создании, timesOf);
@@ -382,6 +382,10 @@ export type OfferRecord =
   // Торг (Р-37): встречное — сколько ставит против суммы автора; «принять сейчас» — автор принимает лучшее
   | OfferAct<'offer.bid', { amount: number }>
   | OfferAct<'offer.bid-accepted'>
+  // «Выбыл» (Р-41; записи member.dropped / member.reinstated журнала, автор — ведущий): выбывший гарант —
+  // молчание гаранта; запись — обо всех пари, где он гарант
+  | { type: 'member.dropped'; id: string; at: number; memberId: string; member: string }
+  | { type: 'member.reinstated'; id: string; at: number; memberId: string; member: string }
 
 export type OfferMark = { by: OfferSide; winner: OfferSide; at: number }
 
@@ -404,6 +408,9 @@ export type OfferState = Omit<OfferCreated, 'type' | 'memberId' | 'guarantor' | 
   decision: { winner: OfferSide; at: number; by: string } | null
   declinedAt: number | null // нынешний гарант отказался
   nominations: Partial<Record<OfferSide, string>> // кого называют стороны, пока нужен другой гарант
+  // Нынешний гарант помечен «выбыл» (Р-41) — с какого мига; нет — в игре. Считается молчанием гаранта:
+  // его срок кончается, как только решение у него (basePhase)
+  guarantorAway?: number
 }
 
 // failed — торг «не состоялся» (Р-37): к концу ни одного встречного, никто никому не должен
@@ -576,7 +583,7 @@ export type OfferPhase = 'marking' | 'guarantor' | 'need-guarantor' | 'court' | 
 function basePhase(o: OfferState, now: number) {
   const times = timesOf(o)
   const turnAt = guarantorTurn(o)
-  const until = o.guarantorId === null ? null : Math.max(turnAt, o.guarantorSince ?? turnAt) + times.silence
+  const until = guarantorUntil(o, turnAt, times.silence)
   let phase: OfferPhase = 'marking'
   let needSince: number | null = null
   if (o.agreed) phase = 'final'
@@ -587,6 +594,15 @@ function basePhase(o: OfferState, now: number) {
   else if (now >= until) [phase, needSince] = ['need-guarantor', until]
   else if (now >= turnAt) phase = 'guarantor'
   return { phase, turnAt, until, needSince }
+}
+
+// До какого мига решает нынешний гарант: срок молчания с мига, как решение у него (назначен позже — с
+// назначения); без гаранта — null. Гарант «выбыл» (Р-41) — молчание: срок кончается, как только решение у
+// него, но не раньше пометки
+function guarantorUntil(o: OfferState, turnAt: number, silence: number): number | null {
+  if (o.guarantorId === null) return null
+  const from = Math.max(turnAt, o.guarantorSince ?? turnAt)
+  return o.guarantorAway === undefined ? from + silence : Math.min(from + silence, Math.max(from, o.guarantorAway))
 }
 
 // То же с судом по «ждёт суда» (Р-31): суд собран — «ждёт суда». После сбора отметки, решения и
@@ -672,6 +688,20 @@ function auctionRecordOk(r: OfferCreated, a: AuctionTerms): boolean {
   )
 }
 
+// Гарант пари помечен «выбыл» или пометку сняли (Р-41), миг at. Пометка — молчание гаранта (guarantorAway).
+// Снятие: решение уже ушло от гаранта из-за пометки (нужен другой) — так и остаётся, как отказ в тот миг
+// (declinedAt); не ушло — гарант снова в игре
+function guarantorDropped(o: OfferState, dropped: boolean, at: number): void {
+  if (dropped) {
+    if (o.guarantorAway === undefined) o.guarantorAway = at
+    return
+  }
+  if (o.guarantorAway === undefined) return
+  const until = guarantorUntil(o, guarantorTurn(o), timesOf(o).silence)
+  if (o.declinedAt === null && until !== null && at >= until) o.declinedAt = until
+  delete o.guarantorAway
+}
+
 // Пари комнаты из записей по порядку создания. Запись действует, если её разрешают правила выше на
 // её время at (так сервер и свёртка не расходятся); записи о неизвестном пари не действуют. Торг,
 // кончившийся к at записи о пари, принимается до неё (offerAt): встречное в миг конца уже не действует
@@ -718,6 +748,10 @@ export function roomOffers(records: readonly OfferRecord[], room: RoomRoles): Of
         declinedAt: null,
         nominations: {},
       })
+      continue
+    }
+    if (r.type === 'member.dropped' || r.type === 'member.reinstated') {
+      for (const o of offers.values()) if (o.guarantorId === r.member) guarantorDropped(o, r.type === 'member.dropped', r.at)
       continue
     }
     const o = offers.get(r.offer)
@@ -778,6 +812,7 @@ export function roomOffers(records: readonly OfferRecord[], room: RoomRoles): Of
           o.guarantorSince = r.at
           o.declinedAt = null
           o.nominations = {}
+          delete o.guarantorAway
         }
         break
       }
@@ -945,12 +980,22 @@ export function roomRoles(state: RoomState): RoomRoles {
 export function logOffers(log: readonly LogEntry[]): OfferState[] {
   const state = foldLog(log)
   if (!state) return []
+  // «Выбыл» (Р-41) — только пометки, которые свёртка комнаты приняла (ведущий, участник в игре)
+  const valid = new Set<string>()
+  let s = null as RoomState | null
+  for (const e of log) {
+    const next = applyEntry(s, e)
+    if ((e.type === 'member.dropped' || e.type === 'member.reinstated') && next !== s) valid.add(e.id)
+    s = next
+  }
   const records = log.flatMap((e): OfferRecord[] =>
     isOfferEntry(e)
       ? [offerRecord(e)]
       : e.type === 'court.drawn'
         ? [{ type: 'court.drawn', id: e.id, at: e.at, memberId: e.memberId, offer: e.target }]
-        : [],
+        : (e.type === 'member.dropped' || e.type === 'member.reinstated') && valid.has(e.id)
+          ? [{ type: e.type, id: e.id, at: e.at, memberId: e.memberId, member: e.member } as OfferRecord]
+          : [],
   )
   return roomOffers(records, roomRoles(state))
 }

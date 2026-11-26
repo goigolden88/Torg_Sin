@@ -171,6 +171,8 @@ import {
   type ChoiceView,
 } from '../../src/rules/protocol'
 import * as T from '../../src/rules/settle'
+import * as M from '../../src/rules/member'
+import { isDropResponse, isLeaveResponse, type AdmitResponse, type DropResponse, type LeaveResponse } from '../../src/rules/protocol'
 import * as P from '../../src/rules/pace'
 import { NORMAL_TIMES } from '../../src/rules/pace'
 import { isPaceResponse, type PaceResponse } from '../../src/rules/protocol'
@@ -464,7 +466,8 @@ export function roomsSuite(
           v: PROTOCOL_VERSION,
           // Темп не выбран — обычный (Р-35)
           room: { id: created.roomId, name: 'Дача', currency: 'RUB', hostId: created.memberId, createdAt: s.clock.now, pace: 'normal', times: NORMAL_TIMES },
-          members: [{ id: created.memberId, name: 'Аня' }],
+          // Вышел и «выбыл» (Р-40, Р-41) — у каждого участника
+          members: [{ id: created.memberId, name: 'Аня', left: false, dropped: false }],
           me: created.memberId,
           events: [],
           offers: [],
@@ -609,8 +612,8 @@ export function roomsSuite(
         const state = await ok<RoomStateResponse>(get(s, room.roomId, j.key))
         expect(state.me).toBe(j.memberId)
         expect(state.members).toEqual([
-          { id: room.memberId, name: 'Аня' },
-          { id: j.memberId, name: 'Боря' },
+          { id: room.memberId, name: 'Аня', left: false, dropped: false },
+          { id: j.memberId, name: 'Боря', left: false, dropped: false },
         ])
         // Повтор — тот же ответ, без новой записи; отклонить впущенного нельзя
         const log = await readLog(s.storage(room.roomId))
@@ -4970,6 +4973,387 @@ export function roomsSuite(
         const seats = (await offerOf(offer.id))?.outcome?.court?.seats ?? []
         expect(seats).toHaveLength(3)
         for (const seat of seats) expect(seat).toMatchObject({ since: s.clock.now, until: s.clock.now + 5 * DAY })
+      })
+    })
+
+    describe('жизнь комнаты: выйти и «выбыл» (Р-40, Р-41)', () => {
+      const HOUR = 60 * 60 * 1000
+      const DAY = 24 * HOUR
+      const CONDITION = 'Вася бросит курить до Нового года'
+      const LOT = 'Велосипед «Кама»'
+      const QUESTION = 'Куда едем в субботу?'
+
+      // Комната: Аня — ведущая, Боря, Вера, Гоша и Даша — участники
+      async function room5(s: TestServer) {
+        const room = await create(s)
+        const borya = await member(s, room, 'Боря')
+        const vera = await member(s, room, 'Вера')
+        const gosha = await member(s, room, 'Гоша')
+        const dasha = await member(s, room, 'Даша')
+        return { room, borya, vera, gosha, dasha }
+      }
+      type Room5 = Awaited<ReturnType<typeof room5>>
+
+      function act(s: TestServer, roomId: string, key: string | undefined, path: string, body: Record<string, unknown> = {}) {
+        return send(s, roomId, path, { v: PROTOCOL_VERSION, ...body }, key)
+      }
+      function leave(s: TestServer, roomId: string, key: string, requestId?: string) {
+        return act(s, roomId, key, 'leave', { requestId })
+      }
+      function flag(s: TestServer, roomId: string, key: string, memberId: string, action: 'drop' | 'restore', requestId?: string) {
+        return act(s, roomId, key, `members/${memberId}/${action}`, { requestId })
+      }
+      function offerForm(s: TestServer, change: Record<string, unknown> = {}): Record<string, unknown> {
+        return { condition: CONDITION, check: 'Скажет сам', odds: { a: 3, b: 1 }, amount: 300, closesAt: s.clock.now + HOUR, expectedAt: s.clock.now + DAY, ...change }
+      }
+      async function newOffer(s: TestServer, roomId: string, key: string, change: Record<string, unknown> = {}) {
+        return (await ok<CreateOfferResponse>(act(s, roomId, key, 'offers', offerForm(s, change)))).offer
+      }
+      function eventForm(s: TestServer): Record<string, unknown> {
+        return { condition: 'Вася пробежит 10 км', check: 'Скрин из приложения', closesAt: s.clock.now + HOUR, expectedAt: s.clock.now + 2 * HOUR }
+      }
+      function lotForm(s: TestServer): Record<string, unknown> {
+        return { title: LOT, start: 1000, closesAt: s.clock.now + HOUR }
+      }
+      function choiceForm(s: TestServer): Record<string, unknown> {
+        return { question: QUESTION, options: ['Дача', 'Озеро'], optionsUntil: s.clock.now + HOUR, closesAt: s.clock.now + 2 * HOUR }
+      }
+      async function stateOf(s: TestServer, roomId: string, key: string): Promise<RoomStateResponse> {
+        const state = await ok<RoomStateResponse>(get(s, roomId, key))
+        expect(isRoomStateResponse(state)).toBe(true)
+        return state
+      }
+      async function outcomeOf(s: TestServer, roomId: string, key: string, offerId: string) {
+        return (await stateOf(s, roomId, key)).offers?.find((o) => o.id === offerId)?.outcome ?? null
+      }
+      async function drawn(s: TestServer, roomId: string): Promise<string[][]> {
+        return (await readLog(s.storage(roomId))).flatMap((e) => (e.type === 'court.drawn' ? [e.candidates] : []))
+      }
+
+      it('выйти: ведущему — «Сначала передайте ведение»; участник без открытого выходит — ключи его устройств не пускают, у всех «вышел»; повтор — тот же ответ', async () => {
+        const s = await server()
+        const { room, borya, gosha } = await room5(s)
+        const id = room.roomId
+        await refused(leave(s, id, room.key), 403, M.HOST_LEAVES)
+        // Второе устройство Гоши и ещё одна неиспользованная ссылка для устройства
+        const link = await ok<DeviceLinkResponse>(act(s, id, gosha.key, 'device'))
+        const second = await ok<ClaimDeviceResponse>(act(s, id, undefined, 'device/claim', { token: link.token }))
+        const unused = await ok<DeviceLinkResponse>(act(s, id, gosha.key, 'device'))
+        const requestId = ulid(s.clock.now)
+        const left = await ok<LeaveResponse>(leave(s, id, gosha.key, requestId))
+        expect(isLeaveResponse(left)).toBe(true)
+        expect(left.left).toMatchObject({ at: s.clock.now, by: gosha.memberId, revoked: [] })
+        // Ответ потерялся — повтор: тот же ответ, второй записи нет
+        s.clock.now += 1000
+        expect(await ok(leave(s, id, gosha.key, requestId))).toEqual(left)
+        expect((await readLog(s.storage(id))).filter((e) => e.type === 'member.left')).toHaveLength(1)
+        // Ни один ключ Гоши не пускает, ссылка для устройства погасла
+        await refused(get(s, id, gosha.key), 403, M.LEFT)
+        await refused(get(s, id, second.key), 403, M.LEFT)
+        await refused(act(s, id, gosha.key, 'events', eventForm(s)), 403, M.LEFT)
+        await refused(leave(s, id, gosha.key), 403, M.LEFT)
+        await refused(act(s, id, undefined, 'device/claim', { token: unused.token }), 403, BAD_DEVICE_LINK)
+        // У всех — «вышел»; ссылку для устройства вышедшему не выдать
+        const state = await stateOf(s, id, borya.key)
+        expect(state.members.find((m) => m.id === gosha.memberId)).toEqual({ id: gosha.memberId, name: 'Гоша', left: true, dropped: false })
+        await refused(act(s, id, room.key, 'device', { member: gosha.memberId }), 404, NO_MEMBER)
+      })
+
+      it('выйти: отказ называет, что мешает, — ставка, пари, встречное в торге, свой торг, лот, «Выбор», гарант, суд, переводы', async () => {
+        type Setup = (s: TestServer, p: Room5) => Promise<[string, string][]>
+        const cases: Setup[] = [
+          // Ставка в незавершённом событии
+          async (s, { room, borya, vera }) => {
+            const { event } = await ok<CreateEventResponse>(act(s, room.roomId, vera.key, 'events', eventForm(s)))
+            await ok(act(s, room.roomId, borya.key, `events/${event.id}/bets`, { outcome: '1', amount: 100 }))
+            return [[borya.key, M.openBet(event.condition)]]
+          },
+          // Принятое пари — обеим сторонам
+          async (s, { room, borya, vera }) => {
+            const offer = await newOffer(s, room.roomId, borya.key, { to: vera.memberId })
+            await ok(act(s, room.roomId, vera.key, `offers/${offer.id}/accept`))
+            return [
+              [borya.key, M.openOffer(CONDITION)],
+              [vera.key, M.openOffer(CONDITION)],
+            ]
+          },
+          // Встречное в идущем торге; автору торга со встречными — свой торг
+          async (s, { room, borya, vera }) => {
+            const offer = await newOffer(s, room.roomId, vera.key, { odds: undefined, auction: { start: 100 } })
+            await ok(act(s, room.roomId, borya.key, `offers/${offer.id}/bid`, { amount: 100 }))
+            return [
+              [borya.key, M.ownBid(CONDITION)],
+              [vera.key, M.ownAuction(CONDITION)],
+            ]
+          },
+          // Лот — продавцу и лучшей ставке
+          async (s, { room, borya, vera }) => {
+            const { lot } = await ok<LotResponse>(act(s, room.roomId, borya.key, 'lots', lotForm(s)))
+            await ok(act(s, room.roomId, vera.key, `lots/${lot.id}/bid`, { amount: 1000 }))
+            return [
+              [borya.key, M.openLot(LOT)],
+              [vera.key, M.openLot(LOT)],
+            ]
+          },
+          // Вклад в идущий «Выбор»
+          async (s, { room, borya, vera }) => {
+            const { choice } = await ok<ChoiceResponse>(act(s, room.roomId, vera.key, 'choices', choiceForm(s)))
+            s.clock.now = choice.optionsUntil
+            await ok(act(s, room.roomId, borya.key, `choices/${choice.id}/stake`, { option: choice.options[0].id, amount: 100 }))
+            return [[borya.key, M.openChoice(QUESTION)]]
+          },
+          // Гарант незавершённого (ещё не принятого) пари; гарант раньше переводов
+          async (s, { room, borya, vera, gosha }) => {
+            await newOffer(s, room.roomId, vera.key, { to: gosha.memberId, guarantor: borya.memberId })
+            await ok(act(s, room.roomId, borya.key, 'transfers', { to: vera.memberId, amount: 50 }))
+            return [[borya.key, M.guarantorIn(CONDITION)]]
+          },
+          // Член суда без голоса, пока решения нет
+          async (s, { room, borya, vera, gosha }) => {
+            const offer = await newOffer(s, room.roomId, vera.key, { to: gosha.memberId, noGuarantor: true })
+            await ok(act(s, room.roomId, gosha.key, `offers/${offer.id}/accept`))
+            s.clock.now = offer.expectedAt
+            await ok(act(s, room.roomId, vera.key, `offers/${offer.id}/mark`, { winner: 'author' }))
+            await ok(act(s, room.roomId, gosha.key, `offers/${offer.id}/mark`, { winner: 'taker' }))
+            await stateOf(s, room.roomId, room.key)
+            expect(await drawn(s, room.roomId)).toHaveLength(1)
+            return [[borya.key, M.jurorIn(CONDITION)]]
+          },
+          // Перевод ждёт подтверждения — обоим
+          async (s, { room, borya, vera }) => {
+            await ok(act(s, room.roomId, borya.key, 'transfers', { to: vera.memberId, amount: 50 }))
+            return [
+              [borya.key, M.UNSETTLED],
+              [vera.key, M.UNSETTLED],
+            ]
+          },
+        ]
+        for (const setup of cases) {
+          const s = await server()
+          const p = await room5(s)
+          const before = (await readLog(s.storage(p.room.roomId))).length
+          for (const [key, error] of await setup(s, p)) await refused(leave(s, p.room.roomId, key), 409, error)
+          // Отказ ничего не пишет: ни выхода, ни отзыва
+          const after = await readLog(s.storage(p.room.roomId))
+          expect(after.slice(before).filter((e) => e.type === 'member.left' || e.type === 'offer.revoked')).toEqual([])
+        }
+      })
+
+      it('выйти после расчёта: долг по окончательному пари — «не отмечены»; перевод подтверждён — выходят оба', async () => {
+        const s = await server()
+        const { room, borya, vera } = await room5(s)
+        const id = room.roomId
+        // Боря 300 против 100 Веры, оба отметили «прав автор» — окончательно: Вера должна Боре 100
+        const offer = await newOffer(s, id, borya.key, { to: vera.memberId })
+        await ok(act(s, id, vera.key, `offers/${offer.id}/accept`))
+        await ok(act(s, id, borya.key, `offers/${offer.id}/mark`, { winner: 'author' }))
+        await ok(act(s, id, vera.key, `offers/${offer.id}/mark`, { winner: 'author' }))
+        await refused(leave(s, id, borya.key), 409, M.UNSETTLED)
+        await refused(leave(s, id, vera.key), 409, M.UNSETTLED)
+        const { transfer } = await ok<TransferResponse>(act(s, id, vera.key, 'transfers', { to: borya.memberId, amount: 100 }))
+        await refused(leave(s, id, borya.key), 409, M.UNSETTLED)
+        await ok(act(s, id, borya.key, `transfers/${transfer.id}/receive`))
+        await ok(leave(s, id, borya.key))
+        await ok(leave(s, id, vera.key))
+        // Долги и итоги остались в «Расчёте»: у вышедших — их окончательное пари
+        const rows = (await stateOf(s, id, room.key)).settlement?.members ?? []
+        expect(rows.find((r) => r.memberId === borya.memberId)).toMatchObject({ total: { amount: 100 }, balance: 0 })
+      })
+
+      it('выйти: свои непринятые пари и торги без встречных отзываются той же меткой времени; чужие и истёкшие — нет', async () => {
+        const s = await server()
+        const { room, borya, vera } = await room5(s)
+        const id = room.roomId
+        const expired = await newOffer(s, id, borya.key)
+        s.clock.now += 2 * HOUR
+        const open = await newOffer(s, id, borya.key, { to: vera.memberId })
+        const auction = await newOffer(s, id, borya.key, { odds: undefined, auction: { start: 100 } })
+        const others = await newOffer(s, id, vera.key, { to: borya.memberId })
+        const left = await ok<LeaveResponse>(leave(s, id, borya.key))
+        expect(left.left.revoked).toEqual([open.id, auction.id])
+        // В журнале — отзывы перед выходом, все — Бори и в тот же миг
+        const tail = (await readLog(s.storage(id))).slice(-3)
+        expect(tail.map((e) => [e.type, e.memberId, e.at])).toEqual([
+          ['offer.revoked', borya.memberId, s.clock.now],
+          ['offer.revoked', borya.memberId, s.clock.now],
+          ['member.left', borya.memberId, s.clock.now],
+        ])
+        const offers = (await stateOf(s, id, vera.key)).offers ?? []
+        const status = (offerId: string) => offers.find((o) => o.id === offerId)?.status
+        expect([status(expired.id), status(open.id), status(auction.id), status(others.id)]).toEqual(['expired', 'withdrawn', 'withdrawn', 'open'])
+      })
+
+      it('вернуться: по ссылке с тем же именем, впускает ведущий — тот же участник (имя, история); старый ключ не пускает', async () => {
+        const s = await server()
+        const { room, borya, vera } = await room5(s)
+        const id = room.roomId
+        const { event } = await ok<CreateEventResponse>(act(s, id, borya.key, 'events', eventForm(s)))
+        await ok(leave(s, id, borya.key))
+        // Новый участник с именем вышедшего — это его возврат: у ведущего заявка с его номером
+        const j = await join(s, room, 'боря')
+        expect(j.join).toBe('waiting')
+        await refused(get(s, id, j.key), 403, WAITING, 'waiting')
+        const list = await ok<JoinRequestsResponse>(send(s, id, 'requests', undefined, room.key))
+        expect(list.requests).toEqual([{ id: j.memberId, name: 'боря', at: s.clock.now, member: borya.memberId }])
+        const admitted = await ok<AdmitResponse>(act(s, id, room.key, 'admit', { request: j.memberId }))
+        expect(admitted.member).toEqual({ id: borya.memberId, name: 'Боря' })
+        // Повтор «впустить» — тот же ответ
+        expect(await ok(act(s, id, room.key, 'admit', { request: j.memberId }))).toEqual(admitted)
+        const log = await readLog(s.storage(id))
+        expect(log.filter((e) => e.type === 'member.returned')).toHaveLength(1)
+        // Новый ключ — тот же Боря: имя, событие; участник один, «в комнате»
+        const state = await stateOf(s, id, j.key)
+        expect(state.me).toBe(borya.memberId)
+        expect(state.members.filter((m) => m.name === 'Боря')).toEqual([{ id: borya.memberId, name: 'Боря', left: false, dropped: false }])
+        expect(state.events.find((e) => e.id === event.id)?.authorId).toBe(borya.memberId)
+        await refused(get(s, id, borya.key), 403, WRONG_KEY)
+        // Имя участника в комнате по-прежнему занято
+        await refused(send(s, id, 'join', { v: PROTOCOL_VERSION, invite: room.invite, name: 'Вера' }), 409, NAME_TAKEN)
+        // Снова вышел — новый ключ тоже не пускает
+        await ok(leave(s, id, j.key))
+        await refused(get(s, id, j.key), 403, M.LEFT)
+        expect((await stateOf(s, id, vera.key)).members.find((m) => m.id === borya.memberId)?.left).toBe(true)
+      })
+
+      it('«выбыл»: ставит и снимает ведущий; нового нельзя — ставки, пари, встречные, вклады, события, лоты, апелляции; своё доигрывается', async () => {
+        const s = await server()
+        const { room, borya, vera, gosha } = await room5(s)
+        const id = room.roomId
+        // До пометки: пари Бори Вере (гарант — ведущая) принято; лот Веры со ставкой Гоши; событие и выбор Гоши
+        const offer = await newOffer(s, id, borya.key, { to: vera.memberId })
+        await ok(act(s, id, vera.key, `offers/${offer.id}/accept`))
+        const { lot } = await ok<LotResponse>(act(s, id, vera.key, 'lots', lotForm(s)))
+        await ok(act(s, id, gosha.key, `lots/${lot.id}/bid`, { amount: 1000 }))
+        const { event } = await ok<CreateEventResponse>(act(s, id, gosha.key, 'events', eventForm(s)))
+        const { choice } = await ok<ChoiceResponse>(act(s, id, gosha.key, 'choices', choiceForm(s)))
+        const { lot: other } = await ok<LotResponse>(act(s, id, gosha.key, 'lots', lotForm(s)))
+        const open = await newOffer(s, id, borya.key)
+        const auction = await newOffer(s, id, borya.key, { odds: undefined, auction: { start: 100 } })
+        // Только ведущий; ведущего не помечают; нет участника; не помечен — снимать нечего
+        await refused(flag(s, id, borya.key, vera.memberId, 'drop'), 403, M.ONLY_HOST_DROP)
+        await refused(flag(s, id, room.key, room.memberId, 'drop'), 409, M.HOST_NOT_DROPPED)
+        await refused(flag(s, id, room.key, ulid(s.clock.now), 'drop'), 404, M.NO_MEMBER)
+        await refused(flag(s, id, room.key, vera.memberId, 'restore'), 409, M.NOT_DROPPED)
+        const requestId = ulid(s.clock.now)
+        const dropped = await ok<DropResponse>(flag(s, id, room.key, vera.memberId, 'drop', requestId))
+        expect(isDropResponse(dropped)).toBe(true)
+        expect(dropped.dropped).toMatchObject({ at: s.clock.now, by: room.memberId, member: vera.memberId, dropped: true })
+        expect(await ok(flag(s, id, room.key, vera.memberId, 'drop', requestId))).toEqual(dropped)
+        await refused(flag(s, id, room.key, vera.memberId, 'drop'), 409, M.ALREADY_DROPPED)
+        expect((await stateOf(s, id, borya.key)).members.find((m) => m.id === vera.memberId)).toEqual({ id: vera.memberId, name: 'Вера', left: false, dropped: true })
+        // Нового — нельзя
+        const no = (r: Promise<Response>) => refused(r, 403, M.DROPPED)
+        await no(act(s, id, vera.key, 'events', eventForm(s)))
+        await no(act(s, id, vera.key, `events/${event.id}/bets`, { outcome: '1', amount: 100 }))
+        await no(act(s, id, vera.key, 'offers', offerForm(s)))
+        await no(act(s, id, vera.key, `offers/${open.id}/accept`))
+        await no(act(s, id, vera.key, `offers/${open.id}/counter`, { closesAt: s.clock.now + HOUR }))
+        await no(act(s, id, vera.key, `offers/${auction.id}/bid`, { amount: 100 }))
+        await no(act(s, id, vera.key, 'lots', lotForm(s)))
+        await no(act(s, id, vera.key, `lots/${other.id}/bid`, { amount: 1000 }))
+        await no(act(s, id, vera.key, 'choices', choiceForm(s)))
+        await no(act(s, id, vera.key, `choices/${choice.id}/option`, { title: 'Лес' }))
+        // Ни адресатом, ни гарантом выбывшую не назвать
+        await refused(act(s, id, borya.key, 'offers', offerForm(s, { to: vera.memberId })), 400, BAD_ADDRESSEE)
+        await refused(act(s, id, borya.key, 'offers', offerForm(s, { guarantor: vera.memberId })), 400, BAD_GUARANTOR)
+        // Своё — доигрывает: лот после торга, вклад — нельзя
+        s.clock.now = choice.optionsUntil
+        await ok(act(s, id, vera.key, `lots/${lot.id}/handed`))
+        await no(act(s, id, vera.key, `choices/${choice.id}/stake`, { option: choice.options[0].id, amount: 100 }))
+        // Исход своего пари отмечает; решил гарант — апелляцию не подать
+        s.clock.now = offer.expectedAt
+        await ok(act(s, id, borya.key, `offers/${offer.id}/mark`, { winner: 'author' }))
+        await ok(act(s, id, vera.key, `offers/${offer.id}/mark`, { winner: 'taker' }))
+        await ok(act(s, id, room.key, `offers/${offer.id}/decide`, { winner: 'author' }))
+        await no(act(s, id, vera.key, `offers/${offer.id}/appeal`, { reason: 'Вася не бросил' }))
+        // Переводы отмечает, комнату видит
+        await ok(act(s, id, vera.key, 'transfers', { to: borya.memberId, amount: 100 }))
+        expect((await stateOf(s, id, vera.key)).me).toBe(vera.memberId)
+        // Пометку сняли — снова можно новое
+        await ok(flag(s, id, room.key, vera.memberId, 'restore'))
+        await refused(flag(s, id, room.key, vera.memberId, 'restore'), 409, M.NOT_DROPPED)
+        await ok(act(s, id, vera.key, 'events', eventForm(s)))
+        expect((await stateOf(s, id, borya.key)).members.find((m) => m.id === vera.memberId)?.dropped).toBe(false)
+      })
+
+      it('жребий суда не берёт выбывших и вышедших; пометку сняли — снова кандидат', async () => {
+        const s = await server()
+        const { room, borya, vera, gosha, dasha } = await room5(s)
+        const id = room.roomId
+        // Пари Веры Гоше без гаранта: судьи — Аня, Боря, Даша
+        const first = await newOffer(s, id, vera.key, { to: gosha.memberId, noGuarantor: true })
+        await ok(act(s, id, gosha.key, `offers/${first.id}/accept`))
+        await ok(flag(s, id, room.key, dasha.memberId, 'drop'))
+        await ok(leave(s, id, borya.key))
+        s.clock.now = first.expectedAt
+        await ok(act(s, id, vera.key, `offers/${first.id}/mark`, { winner: 'author' }))
+        await ok(act(s, id, gosha.key, `offers/${first.id}/mark`, { winner: 'taker' }))
+        expect(await outcomeOf(s, id, room.key, first.id)).toMatchObject({ phase: 'court' })
+        expect(await drawn(s, id)).toEqual([[room.memberId]])
+        // Даше сняли «выбыл» — во втором суде она кандидат, вышедший Боря — нет
+        await ok(flag(s, id, room.key, dasha.memberId, 'restore'))
+        s.clock.now += 1
+        const second = await newOffer(s, id, vera.key, { to: gosha.memberId, noGuarantor: true })
+        await ok(act(s, id, gosha.key, `offers/${second.id}/accept`))
+        s.clock.now = second.expectedAt
+        await ok(act(s, id, vera.key, `offers/${second.id}/mark`, { winner: 'author' }))
+        await ok(act(s, id, gosha.key, `offers/${second.id}/mark`, { winner: 'taker' }))
+        await stateOf(s, id, room.key)
+        expect(await drawn(s, id)).toEqual([[room.memberId], [room.memberId, dasha.memberId]])
+      })
+
+      it('гарант «выбыл» — молчание гаранта: сразу «нужен другой гарант», выбывшего не назвать, через срок — суд без него', async () => {
+        const s = await server()
+        const { room, borya, vera, gosha } = await room5(s)
+        const id = room.roomId
+        const offer = await newOffer(s, id, borya.key, { to: vera.memberId, guarantor: gosha.memberId })
+        await ok(act(s, id, vera.key, `offers/${offer.id}/accept`))
+        s.clock.now = offer.expectedAt
+        await ok(act(s, id, borya.key, `offers/${offer.id}/mark`, { winner: 'author' }))
+        await ok(act(s, id, vera.key, `offers/${offer.id}/mark`, { winner: 'taker' }))
+        expect(await outcomeOf(s, id, room.key, offer.id)).toMatchObject({ phase: 'guarantor', guarantorUntil: offer.expectedAt + GUARANTOR_SILENCE })
+        s.clock.now += HOUR
+        const droppedAt = s.clock.now
+        await ok(flag(s, id, room.key, gosha.memberId, 'drop'))
+        expect(await outcomeOf(s, id, room.key, offer.id)).toMatchObject({ phase: 'need-guarantor', needSince: droppedAt, guarantorUntil: droppedAt })
+        await refused(act(s, id, gosha.key, `offers/${offer.id}/decide`, { winner: 'author' }), 409, GUARANTOR_LAPSED)
+        await refused(act(s, id, borya.key, `offers/${offer.id}/nominate`, { guarantor: gosha.memberId }), 400, BAD_GUARANTOR)
+        // Стороны не сошлись на новом гаранте срок молчания — суд сам; Гоши среди кандидатов нет
+        s.clock.now = droppedAt + NEED_GUARANTOR_TIME
+        expect(await outcomeOf(s, id, room.key, offer.id)).toMatchObject({ phase: 'court' })
+        const [candidates] = await drawn(s, id)
+        expect(candidates).not.toContain(gosha.memberId)
+        expect(candidates).toContain(room.memberId)
+      })
+
+      it('хвост #128 (Р-36): все, кроме сторон, выбыли или вышли — суд не собрать: «нужен гарант», выбывшего не назвать; пометку сняли — суд собирается сам', async () => {
+        const s = await server()
+        const room = await create(s)
+        const borya = await member(s, room, 'Боря')
+        const vera = await member(s, room, 'Вера')
+        const id = room.roomId
+        // Пари Ани Боре без гаранта: судить может только Вера
+        const offer = await newOffer(s, id, room.key, { to: borya.memberId, noGuarantor: true })
+        await ok(act(s, id, borya.key, `offers/${offer.id}/accept`))
+        await ok(flag(s, id, room.key, vera.memberId, 'drop'))
+        // Пока Вера выбыла, нового «без гаранта» не завести: судить некому
+        await refused(act(s, id, room.key, 'offers', offerForm(s, { to: borya.memberId, noGuarantor: true })), 400, NO_GUARANTOR_JUDGES)
+        s.clock.now = offer.expectedAt
+        await ok(act(s, id, room.key, `offers/${offer.id}/mark`, { winner: 'author' }))
+        await ok(act(s, id, borya.key, `offers/${offer.id}/mark`, { winner: 'taker' }))
+        s.clock.now += HOUR
+        // Суд не собрать: записи суда нет, исход — «нужен гарант» с мига расхождения
+        const out = await outcomeOf(s, id, borya.key, offer.id)
+        expect(out).toMatchObject({ phase: 'need-guarantor', guarantorId: null, needSince: offer.expectedAt, approved: null })
+        expect(out?.court).toBeUndefined()
+        expect(await drawn(s, id)).toEqual([])
+        // Стороны называют общего гаранта — выбывшую назвать нельзя
+        await refused(act(s, id, room.key, `offers/${offer.id}/nominate`, { guarantor: vera.memberId }), 400, BAD_GUARANTOR)
+        // Пометку сняли — судить снова есть кому: суд собирается сам при следующем запросе
+        await ok(flag(s, id, room.key, vera.memberId, 'restore'))
+        s.clock.now += 1
+        expect(await outcomeOf(s, id, borya.key, offer.id)).toMatchObject({ phase: 'court' })
+        expect(await drawn(s, id)).toEqual([[vera.memberId]])
       })
     })
 

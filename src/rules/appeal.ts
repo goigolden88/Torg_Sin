@@ -8,7 +8,7 @@ import { eventBettors, eventOutcome, MAX_EVENT_TEXT, roomEvents, type EventState
 import { bestLotBid, logLots, lotCourtDue, type LotState } from './lot'
 import { courtDue, logOffers, offerAt, offerOutcome, type OfferSide, type OfferState } from './offer'
 import type { CourtVerdict } from './protocol'
-import { foldLog, type LogEntry, type RoomState } from './room'
+import { absentAt, foldLog, type Absence, type LogEntry, type RoomState } from './room'
 
 export { COURT_SIZE, SEAT_TIME, courtHash, courtState, courtVerdict, courtView, drawCourt, type CourtCase } from './court'
 
@@ -63,8 +63,9 @@ export type AppealTarget = { kind: 'event'; event: EventState } | { kind: 'offer
 // прежние места, перебирающие событие и пари, не менялись; проверки суда принимают любой
 export type CourtTarget = AppealTarget | { kind: 'lot'; lot: LotState }
 
-// Ведущий и участники комнаты с мигом, когда впущены: кандидаты в суд — участники на миг жребия
-export type CourtRoom = { hostId: string; members: readonly { id: string; addedAt: number }[] }
+// Ведущий и участники комнаты с мигом, когда впущены, и промежутками «вне игры» (вышел, выбыл — Р-40, Р-41;
+// нет — всегда в игре): кандидаты в суд — участники в игре на миг жребия
+export type CourtRoom = { hostId: string; members: readonly { id: string; addedAt: number; absent?: readonly Absence[] }[] }
 
 // Записи апелляции и суда — как будут в журнале комнаты: memberId — автор записи, at — время сервера,
 // target — событие или пари. Зерно — случайные байты сервера (hex); candidates — кандидаты на миг жребия
@@ -181,10 +182,10 @@ function seatTimeOf(t: CourtTarget): { seatTime?: number } {
 // Кандидаты в суд на миг at: участники комнаты, впущенные к этому мигу, кроме заинтересованных — у
 // пула: ставившие, автор, предмет спора, ведущий, решивший возражение; у пари: стороны и нынешний
 // гарант; у лота (Р-38): продавец и победитель; и кроме also — подавшего и присоединившихся (они и так ставившие или стороны). Голосовавшие
-// по возражению (Р-17) — кандидаты. Порядок — участников комнаты
+// по возражению (Р-17) — кандидаты. Вышедшие и выбывшие на этот миг (Р-41) — не кандидаты. Порядок — участников комнаты
 export function courtCandidates(t: CourtTarget, room: CourtRoom, at: number, also: readonly string[] = []): string[] {
   const out = new Set([...dispute(t, at).interested, ...also])
-  return [...new Set(room.members.filter((m) => m.addedAt <= at).map((m) => m.id))].filter((m) => !out.has(m))
+  return [...new Set(room.members.filter((m) => m.addedAt <= at && !absentAt(m, at)).map((m) => m.id))].filter((m) => !out.has(m))
 }
 
 // Подать апелляцию на now: исход утверждён, но не согласием и ещё не окончательный (срок апелляции
@@ -408,9 +409,12 @@ export function appealRecord(e: AppealEntry): AppealRecord {
   }
 }
 
-// Ведущий и участники комнаты с мигом, когда впущены, — для кандидатов в суд
+// Ведущий и участники комнаты с мигом, когда впущены, и промежутками «вне игры» — для кандидатов в суд
 export function courtRoom(state: RoomState): CourtRoom {
-  return { hostId: state.hostId, members: state.members.map((m) => ({ id: m.id, addedAt: m.addedAt })) }
+  return {
+    hostId: state.hostId,
+    members: state.members.map((m) => ({ id: m.id, addedAt: m.addedAt, ...(m.absent && { absent: m.absent }) })),
+  }
 }
 
 // Дела суда комнаты из журнала (roomAppeals) — по событиям, пари и лотам из того же журнала; комнаты нет —
