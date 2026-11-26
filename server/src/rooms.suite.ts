@@ -464,7 +464,8 @@ export function roomsSuite(
           v: PROTOCOL_VERSION,
           // Темп не выбран — обычный (Р-35)
           room: { id: created.roomId, name: 'Дача', currency: 'RUB', hostId: created.memberId, createdAt: s.clock.now, pace: 'normal', times: NORMAL_TIMES },
-          members: [{ id: created.memberId, name: 'Аня' }],
+          // Вышел и «выбыл» (Р-40, Р-41) — у каждого участника
+          members: [{ id: created.memberId, name: 'Аня', left: false, dropped: false }],
           me: created.memberId,
           events: [],
           offers: [],
@@ -609,8 +610,8 @@ export function roomsSuite(
         const state = await ok<RoomStateResponse>(get(s, room.roomId, j.key))
         expect(state.me).toBe(j.memberId)
         expect(state.members).toEqual([
-          { id: room.memberId, name: 'Аня' },
-          { id: j.memberId, name: 'Боря' },
+          { id: room.memberId, name: 'Аня', left: false, dropped: false },
+          { id: j.memberId, name: 'Боря', left: false, dropped: false },
         ])
         // Повтор — тот же ответ, без новой записи; отклонить впущенного нельзя
         const log = await readLog(s.storage(room.roomId))

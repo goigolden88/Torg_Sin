@@ -26,14 +26,18 @@ import {
 } from '../../src/rules/backup'
 import {
   foldLog,
+  inRoom,
   joinRequests,
+  keyMember,
   nameTaken,
   NAME_TAKEN,
+  returningMember,
   type JoinRequest,
   type LogEntry,
   type RoomInput,
   type RoomState,
 } from '../../src/rules/room'
+import * as member from '../../src/rules/member'
 import {
   agreementOut,
   BAD_SUBJECT,
@@ -134,6 +138,8 @@ import type {
   ChoiceView,
   Clarification,
   CourtAct,
+  DropResponse,
+  LeaveResponse,
   CourtVerdict,
   EventInfo,
   JoinAppealResponse,
@@ -351,15 +357,21 @@ function fail(status: Failure['status'], error: string, join?: Failure['join']):
 
 type Caller = { ok: true; log: LogEntry[]; state: RoomState; me: string }
 
-// Кто прислал ключ: участник — дальше; заявка — «ждём» или «отклонили»; отвязанный или чужой — отказ
+// Кто прислал ключ: участник — дальше; заявка — «ждём» или «отклонили»; отвязанный или чужой — отказ.
+// Ключ заявки, впущенной возвратом, — того участника (keyMember, Р-40); вышедший — «Вы вышли из комнаты»
+// (ключи его устройств при выходе отвязаны, но и неотвязанный не пускает)
 async function caller(storage: RoomStorage, keyHash: string): Promise<Caller | Failure> {
   const log = await readLog(storage)
   const state = foldLog(log)
   if (!state) return fail(404, NO_ROOM)
   const owner = await storage.get<KeyRecord>(KEY + keyHash)
-  if (!owner || owner.unlinkedAt !== undefined) return fail(403, WRONG_KEY)
-  if (state.members.some((m) => m.id === owner.memberId)) return { ok: true, log, state, me: owner.memberId }
-  const request = joinRequests(log).find((r) => r.id === owner.memberId)
+  if (!owner) return fail(403, WRONG_KEY)
+  const requests = joinRequests(log)
+  const me = state.members.find((m) => m.id === keyMember(requests, owner.memberId))
+  if (me && !inRoom(me)) return fail(403, member.LEFT)
+  if (owner.unlinkedAt !== undefined) return fail(403, WRONG_KEY)
+  if (me) return { ok: true, log, state, me: me.id }
+  const request = requests.find((r) => r.id === owner.memberId)
   if (request?.status === 'waiting') return fail(403, WAITING, 'waiting')
   if (request?.status === 'rejected') return fail(403, REJECTED, 'rejected')
   return fail(403, WRONG_KEY)
@@ -516,6 +528,9 @@ export type RoomAction =
   | { type: 'renewInvite'; keyHash: string; invite: string } // новая ссылка-приглашение
   | { type: 'issueDevice'; keyHash: string; member: string | null; unlink: boolean; tokenHash: string }
   | { type: 'claimDevice'; tokenHash: string; keyHash: string } // новый ключ по ссылке для устройства
+  // Жизнь комнаты (Р-40, Р-41; правила — member.ts): выйти самому; ведущий ставит (dropped) и снимает «выбыл»
+  | { type: 'leave'; keyHash: string; requestId: string }
+  | { type: 'dropMember'; keyHash: string; member: string; dropped: boolean; requestId: string }
   // События-пул: форма уже проверена (event.ts, checkEventInput); сроки — здесь, по времени сервера
   | { type: 'createEvent'; keyHash: string; input: EventInput; requestId: string }
   | { type: 'placeBet'; keyHash: string; event: string; outcome: string; amount: number; requestId: string }
@@ -588,12 +603,14 @@ export type JoinStatus = JoinRequest['status']
 export type ActionValues = {
   preview: { name: string; hostName: string }
   join: { memberId: string; key: string; join: JoinStatus }
-  requests: { requests: { id: string; name: string; at: number }[] }
+  requests: { requests: { id: string; name: string; at: number; member?: string }[] }
   admit: { member: { id: string; name: string } }
   reject: { request: string }
   renewInvite: { invite: string }
   issueDevice: { member: string; expiresAt: number }
   claimDevice: { memberId: string }
+  leave: { left: LeaveResponse['left'] }
+  dropMember: { dropped: DropResponse['dropped'] }
   createEvent: { event: EventInfo }
   placeBet: { bet: BetInfo }
   clarifyEvent: { clarification: Clarification }
@@ -672,6 +689,12 @@ export async function act<K extends ActionType>(
       break
     case 'claimDevice':
       r = await claimDevice(storage, a.tokenHash, a.keyHash, now)
+      break
+    case 'leave':
+      r = await leave(storage, a, now)
+      break
+    case 'dropMember':
+      r = await dropMember(storage, a, now)
       break
     case 'createEvent':
       r = await createEvent(storage, a, now)
@@ -836,7 +859,13 @@ async function listRequests(storage: RoomStorage, keyHash: string): Promise<Acti
   const c = await hostCaller(storage, keyHash)
   if (!c.ok) return c
   const waiting = joinRequests(c.log).filter((r) => r.status === 'waiting')
-  return ok({ requests: waiting.map((r) => ({ id: r.id, name: r.name, at: r.at })) })
+  // Заявка с именем вышедшего — его возврат (Р-40): member — его номер
+  return ok({
+    requests: waiting.map((r) => {
+      const back = returningMember(c.state, r.name)
+      return { id: r.id, name: r.name, at: r.at, ...(back && { member: back.id }) }
+    }),
+  })
 }
 
 // Заявка по номеру — для решения ведущего
@@ -844,25 +873,30 @@ async function hostRequest(
   storage: RoomStorage,
   keyHash: string,
   requestId: string,
-): Promise<{ ok: true; me: string; request: JoinRequest } | Failure> {
+): Promise<{ ok: true; me: string; state: RoomState; request: JoinRequest } | Failure> {
   const c = await hostCaller(storage, keyHash)
   if (!c.ok) return c
   const request = joinRequests(c.log).find((r) => r.id === requestId)
   if (!request) return fail(404, NO_REQUEST)
-  return { ok: true, me: c.me, request }
+  return { ok: true, me: c.me, state: c.state, request }
 }
 
 // Впустить: участник в списке, ключ заявки открывает комнату. Повтор — тот же ответ без новой
-// записи; отклонённую не впустить — пусть подаст новую заявку
+// записи; отклонённую не впустить — пусть подаст новую заявку. Заявка с именем вышедшего — возврат
+// (Р-40): тот же участник — имя, история, итоги (member.returned), ключ заявки открывает его
 async function admit(storage: RoomStorage, keyHash: string, requestId: string, now: number): Promise<ActionResult<'admit'>> {
   const found = await hostRequest(storage, keyHash, requestId)
   if (!found.ok) return found
   const { me, request } = found
   if (request.status === 'rejected') return fail(409, ALREADY_REJECTED)
-  if (request.status === 'waiting') {
-    await append(storage, [{ id: ulid(now), at: now, memberId: me, type: 'member.added', member: request.id, name: request.name }])
-  }
-  return ok({ member: { id: request.id, name: request.name } })
+  if (request.status === 'admitted') return ok({ member: { id: request.member ?? request.id, name: request.name } })
+  const back = returningMember(found.state, request.name)
+  await append(storage, [
+    back
+      ? { id: ulid(now), at: now, memberId: me, type: 'member.returned', member: back.id, request: request.id }
+      : { id: ulid(now), at: now, memberId: me, type: 'member.added', member: request.id, name: request.name },
+  ])
+  return ok({ member: back ? { id: back.id, name: back.name } : { id: request.id, name: request.name } })
 }
 
 // Отклонить: ключ заявки отвечает «Ведущий отклонил заявку». Повтор — тот же ответ; впущенного не отклонить
@@ -896,7 +930,8 @@ async function issueDevice(
   if (!c.ok) return c
   const member = a.member ?? c.me
   if (member !== c.me && c.me !== c.state.hostId) return fail(403, HOST_ONLY)
-  if (!c.state.members.some((m) => m.id === member)) return fail(404, NO_MEMBER)
+  // Вышедшему (Р-40) ссылки нет: вернуться — по ссылке-приглашению
+  if (!c.state.members.some((m) => m.id === member && inRoom(m))) return fail(404, NO_MEMBER)
   const expiresAt = now + DEVICE_LINK_TTL
   await storage.put<DeviceRecord>(DEVICE + a.tokenHash, { member, unlink: a.unlink, expiresAt, at: now })
   await append(storage, [{ id: ulid(now), at: now, memberId: c.me, type: 'device.issued', member, unlink: a.unlink, expiresAt }])
@@ -906,7 +941,8 @@ async function issueDevice(
 // Ссылку для другого устройства использовали: новый ключ того же участника. Одна ссылка — один раз;
 // с отметкой «отвязать прежние» — старые ключи участника и его неиспользованные ссылки гаснут
 async function claimDevice(storage: RoomStorage, tokenHash: string, keyHash: string, now: number): Promise<ActionResult<'claimDevice'>> {
-  const state = foldLog(await readLog(storage))
+  const log = await readLog(storage)
+  const state = foldLog(log)
   const link = await storage.get<DeviceRecord>(DEVICE + tokenHash)
   if (
     !state ||
@@ -914,25 +950,115 @@ async function claimDevice(storage: RoomStorage, tokenHash: string, keyHash: str
     link.usedAt !== undefined ||
     link.revokedAt !== undefined ||
     now >= link.expiresAt ||
-    !state.members.some((m) => m.id === link.member)
+    !state.members.some((m) => m.id === link.member && inRoom(m))
   ) {
     return fail(403, BAD_DEVICE_LINK)
   }
   // Сначала — «использована»: оборвётся дальше — повторно ссылка всё равно не сработает
   await storage.put<DeviceRecord>(DEVICE + tokenHash, { ...link, usedAt: now })
-  if (link.unlink) {
-    for (const [k, rec] of await storage.list<KeyRecord>({ prefix: KEY })) {
-      if (rec.memberId === link.member && rec.unlinkedAt === undefined) await storage.put<KeyRecord>(k, { ...rec, unlinkedAt: now })
-    }
-    for (const [k, rec] of await storage.list<DeviceRecord>({ prefix: DEVICE })) {
-      if (k !== DEVICE + tokenHash && rec.member === link.member && rec.usedAt === undefined && rec.revokedAt === undefined) {
-        await storage.put<DeviceRecord>(k, { ...rec, revokedAt: now })
-      }
-    }
-  }
+  if (link.unlink) await unlinkMember(storage, joinRequests(log), link.member, now, DEVICE + tokenHash)
   await storage.put<KeyRecord>(KEY + keyHash, { memberId: link.member, at: now })
   await append(storage, [{ id: ulid(now), at: now, memberId: link.member, type: 'device.linked', member: link.member, unlink: link.unlink }])
   return ok({ memberId: link.member })
+}
+
+// Ключи участника (и ключи заявок, впущенных его возвратом) больше не открывают комнату; его
+// неиспользованные ссылки для другого устройства гаснут (кроме keep — ссылки, которой отвязывают)
+async function unlinkMember(storage: RoomStorage, requests: readonly JoinRequest[], id: string, now: number, keep?: string): Promise<void> {
+  for (const [k, rec] of await storage.list<KeyRecord>({ prefix: KEY })) {
+    if (keyMember(requests, rec.memberId) === id && rec.unlinkedAt === undefined) await storage.put<KeyRecord>(k, { ...rec, unlinkedAt: now })
+  }
+  for (const [k, rec] of await storage.list<DeviceRecord>({ prefix: DEVICE })) {
+    if (k !== keep && rec.member === id && rec.usedAt === undefined && rec.revokedAt === undefined) {
+      await storage.put<DeviceRecord>(k, { ...rec, revokedAt: now })
+    }
+  }
+}
+
+// --- Жизнь комнаты (Р-40, Р-41). Правила — checkLeave / leaveRevocations / checkDrop (member.ts) на время
+// сервера; состав «вышел / выбыл» — свёртка комнаты
+
+type LeftEntry = Extract<LogEntry, { type: 'member.left' }>
+type DropEntry = Extract<LogEntry, { type: 'member.dropped' | 'member.reinstated' }>
+
+// Выход в ответе: отозванные пари — записи offer.revoked того же участника той же меткой времени сразу перед ним
+function leftOut(log: readonly LogEntry[], e: LeftEntry): LeaveResponse['left'] {
+  const revoked: string[] = []
+  for (let i = log.indexOf(e) - 1; i >= 0; i--) {
+    const x = log[i]
+    if (x.type !== 'offer.revoked' || x.at !== e.at || x.memberId !== e.memberId) break
+    revoked.unshift(x.offer)
+  }
+  return { id: e.id, at: e.at, by: e.memberId, revoked }
+}
+
+// Выйти: сам участник, не ведущий, без незавершённого и с отмеченными переводами (checkLeave; отказ — что
+// мешает первым). Его непринятые пари и торги без встречных отзываются той же меткой времени; ключи его
+// устройств и ссылки для них гаснут. Повтор с тем же номером запроса — тот же ответ (ключ уже не пускает:
+// повтор узнаётся по записи ключа)
+async function leave(storage: RoomStorage, a: { keyHash: string; requestId: string }, now: number): Promise<ActionResult<'leave'>> {
+  const log = await readLog(storage)
+  const owner = await storage.get<KeyRecord>(KEY + a.keyHash)
+  const again = owner ? byRequest(log, a.requestId) : undefined
+  if (owner && again) {
+    const id = keyMember(joinRequests(log), owner.memberId)
+    return again.type === 'member.left' && again.memberId === id ? ok({ left: leftOut(log, again) }) : fail(409, REQUEST_USED)
+  }
+  const c = await caller(storage, a.keyHash)
+  if (!c.ok) return c
+  const events = roomEvents(c.log)
+  const offers = logOffers(c.log)
+  const lots = lot.logLots(c.log)
+  const choices = choice.logChoices(c.log)
+  const cases = appeal.logAppeals(c.log, { events, offers, lots })
+  const refused = member.checkLeave({ state: c.state, events, offers, lots, choices, cases, transfers: logTransfers(c.log) }, c.me, now)
+  if (refused) return fail(refused === member.HOST_LEAVES ? 403 : 409, refused)
+  const entries: LogEntry[] = member
+    .leaveRevocations(offers, c.me, now)
+    .map((o) => ({ id: ulid(now), at: now, memberId: c.me, type: 'offer.revoked', offer: o.id, requestId: ulid(now) }))
+  const left: LeftEntry = { id: ulid(now), at: now, memberId: c.me, type: 'member.left', requestId: a.requestId }
+  entries.push(left)
+  // Журнал — первым: вышедшего не пускает уже он (caller), ключи гасим следом
+  await append(storage, entries)
+  await unlinkMember(storage, joinRequests(c.log), c.me, now)
+  return ok({ left: leftOut(entries, left) })
+}
+
+function dropOut(e: DropEntry): DropResponse['dropped'] {
+  return { id: e.id, at: e.at, by: e.memberId, member: e.member, dropped: e.type === 'member.dropped' }
+}
+
+// Отказ «выбыл»: не ведущий — 403, нет участника — 404, «уже не то состояние» — 409
+function dropRefusal(error: string): Failure {
+  if (error === member.ONLY_HOST_DROP) return fail(403, error)
+  return fail(error === member.NO_MEMBER ? 404 : 409, error)
+}
+
+// Ведущий ставит (dropped) и снимает «выбыл» (checkDrop). Повтор с тем же номером запроса — тот же ответ
+async function dropMember(
+  storage: RoomStorage,
+  a: { keyHash: string; member: string; dropped: boolean; requestId: string },
+  now: number,
+): Promise<ActionResult<'dropMember'>> {
+  const c = await caller(storage, a.keyHash)
+  if (!c.ok) return c
+  const type = a.dropped ? 'member.dropped' : 'member.reinstated'
+  const again = byRequest(c.log, a.requestId)
+  if (again) {
+    const same = (again.type === 'member.dropped' || again.type === 'member.reinstated') && again.type === type && again.memberId === c.me && again.member === a.member
+    return same ? ok({ dropped: dropOut(again as DropEntry) }) : fail(409, REQUEST_USED)
+  }
+  const refused = member.checkDrop(c.state, c.me, a.member, a.dropped)
+  if (refused) return dropRefusal(refused)
+  const entry: DropEntry = { id: ulid(now), at: now, memberId: c.me, type, member: a.member, requestId: a.requestId }
+  await append(storage, [entry])
+  return ok({ dropped: dropOut(entry) })
+}
+
+// Выбывший (Р-41) не начинает нового: отказ 403; в игре — null
+function droppedRefusal(c: Caller): Failure | null {
+  const refused = member.checkActive(c.state, c.me)
+  return refused ? fail(403, refused) : null
 }
 
 // Завести событие: любой участник. Повтор с тем же номером запроса — то же событие и тот же
@@ -946,8 +1072,10 @@ async function createEvent(
   if (!c.ok) return c
   const repeat = roomEvents(c.log).find((e) => e.requestId === a.requestId)
   if (repeat) return sameEvent(repeat, c.me, a.input) ? ok({ event: infoOf(repeat) }) : fail(409, EVENT_TAKEN)
+  const dropped = droppedRefusal(c)
+  if (dropped) return dropped
   const { input } = a
-  if (input.subject !== null && !c.state.members.some((m) => m.id === input.subject)) return fail(400, BAD_SUBJECT)
+  if (input.subject !== null && !c.state.members.some((m) => m.id === input.subject && inRoom(m))) return fail(400, BAD_SUBJECT)
   const late = checkEventTimes(input, now)
   if (late) return fail(400, late)
   const id = ulid(now)
@@ -1017,6 +1145,8 @@ async function placeBet(
     const same = b.memberId === c.me && b.event === a.event && b.outcome === a.outcome && b.amount === a.amount
     return same ? ok({ bet: betOf(b) }) : fail(409, BET_TAKEN)
   }
+  const dropped = droppedRefusal(c)
+  if (dropped) return dropped
   const event = events.find((e) => e.id === a.event)
   if (!event) return fail(404, NO_EVENT)
   const status = eventStatus(event, now)
@@ -1238,7 +1368,9 @@ async function voteOutcome(storage: RoomStorage, a: OutcomeAction, now: number):
 // статус «истекло» считается, не записывается). Повтор с тем же номером запроса — тот же ответ без
 // новой записи (и после сроков); тот же номер с другим содержимым или от другого — 409
 
-type OfferCaller = Caller & { offers: OfferState[]; roles: RoomRoles; again: OfferEntry | undefined }
+// roles — ведущий и участники в игре (Р-41): гарант, адресат, новый гарант и судьи «без гаранта» — из них;
+// принимают и торгуются тоже они. inRoom — участники, не вышедшие: о ком спор — из них
+type OfferCaller = Caller & { offers: OfferState[]; roles: RoomRoles; inRoom: RoomRoles; again: OfferEntry | undefined }
 
 // Пари — на now (offerAt, Р-37): торг, кончившийся со встречным, уже принят — так его видят и проверки
 // без времени (checkMark, checkWithdraw, sideOf)
@@ -1246,7 +1378,14 @@ async function offerCaller(storage: RoomStorage, keyHash: string, requestId: str
   const c = await caller(storage, keyHash)
   if (!c.ok) return c
   const again = c.log.find((e): e is OfferEntry => isOfferEntry(e) && e.requestId === requestId)
-  return { ...c, offers: logOffers(c.log).map((o) => offerAt(o, now)), roles: roomRoles(c.state), again }
+  const hostId = roomRoles(c.state).hostId
+  return {
+    ...c,
+    offers: logOffers(c.log).map((o) => offerAt(o, now)),
+    roles: { hostId, members: member.playingMembers(c.state) },
+    inRoom: { hostId, members: member.roomMembers(c.state) },
+    again,
+  }
 }
 
 // Отказ правил пари: «не вам» — 403, «уже не то состояние» — 409, кривое тело — 400; истекло —
@@ -1300,7 +1439,7 @@ async function writeOffer(
 ): Promise<ActionResult<'createOffer'>> {
   const guarantor = offerGuarantor(input, c.me, c.roles)
   if (!guarantor.ok) return fail(400, guarantor.error)
-  const subject = checkOfferSubject(input, c.me, c.roles)
+  const subject = checkOfferSubject(input, c.me, c.inRoom)
   if (subject) return fail(400, subject)
   const late = checkOfferTimes(input, now)
   if (late) return fail(late === CLOSE_PASSED ? 409 : 400, late)
@@ -1363,6 +1502,8 @@ async function createOffer(
         e.guarantor === (input.noGuarantor ? null : (input.guarantor ?? c.state.hostId)),
     )
   }
+  const dropped = droppedRefusal(c)
+  if (dropped) return dropped
   return writeOffer(storage, c, input, null, a.requestId, now)
 }
 
@@ -1396,6 +1537,8 @@ async function counterOffer(
   const input = original && terms && counterInput(original, terms)
   if (c.again) return repeatedOffer(c, (e) => e.counterTo === a.offer && !!input && sameTerms(e, input) && e.guarantor === (input.noGuarantor ? null : input.guarantor))
   if (!original || !input) return fail(404, NO_OFFER)
+  const dropped = droppedRefusal(c)
+  if (dropped) return dropped
   const refused = checkCounter(original, c.me, c.roles, now)
   if (refused) return offerRefusal(refused)
   const checked = checkOfferInput(input)
@@ -1423,6 +1566,8 @@ async function acceptOffer(
       : fail(409, REQUEST_USED)
   }
   if (!o) return fail(404, NO_OFFER)
+  const dropped = droppedRefusal(c)
+  if (dropped) return dropped
   const refused = checkAccept(o, c.me, c.roles, now)
   if (refused) return offerRefusal(refused)
   const entry = { id: ulid(now), at: now, memberId: c.me, type: 'offer.accepted', offer: o.id, requestId: a.requestId } as const
@@ -1473,6 +1618,8 @@ async function bidOffer(
       : fail(409, REQUEST_USED)
   }
   if (!o) return fail(404, NO_OFFER)
+  const dropped = droppedRefusal(c)
+  if (dropped) return dropped
   const refused = checkBid(o, c.me, a.amount, c.roles, now)
   if (refused) return offerRefusal(refused)
   const entry = { id: ulid(now), at: now, memberId: c.me, type: 'offer.bid', offer: o.id, amount: a.amount, requestId: a.requestId } as const
@@ -1650,7 +1797,8 @@ type LotCaller = Caller & { lots: lot.LotState[]; room: lot.LotRoom; again: LogE
 async function lotCaller(storage: RoomStorage, keyHash: string, requestId: string): Promise<LotCaller | Failure> {
   const c = await caller(storage, keyHash)
   if (!c.ok) return c
-  const room = { members: c.state.members.map((m) => m.id) }
+  // Участники — не вышедшие (Р-40)
+  const room = { members: member.roomMembers(c.state) }
   return { ...c, lots: lot.logLots(c.log), room, again: byRequest(c.log, requestId) }
 }
 
@@ -1697,6 +1845,8 @@ async function createLot(
     const e = c.again
     return e.type === 'lot.created' && e.memberId === c.me && sameLot(e, input) ? lotReply(c.log, e.id, now, {}) : fail(409, REQUEST_USED)
   }
+  const dropped = droppedRefusal(c)
+  if (dropped) return dropped
   const late = lot.checkLotTimes(input, now)
   if (late) return fail(400, late)
   const entry: LotCreatedEntry = {
@@ -1737,6 +1887,8 @@ async function bidLot(
   }
   const l = c.lots.find((x) => x.id === a.lot)
   if (!l) return fail(404, NO_LOT)
+  const dropped = droppedRefusal(c)
+  if (dropped) return dropped
   const refused = lot.checkLotBid(l, c.me, a.amount, c.room, now)
   if (refused) return lotRefusal(refused)
   const entry: LotBidEntry = { id: ulid(now), at: now, memberId: c.me, type: 'lot.bid', lot: l.id, amount: a.amount, requestId: a.requestId }
@@ -1795,7 +1947,8 @@ type ChoiceCaller = Caller & { choices: choice.ChoiceState[]; room: choice.Choic
 async function choiceCaller(storage: RoomStorage, keyHash: string, requestId: string): Promise<ChoiceCaller | Failure> {
   const c = await caller(storage, keyHash)
   if (!c.ok) return c
-  const room = { hostId: c.state.hostId, members: c.state.members.map((m) => m.id) }
+  // Участники — не вышедшие (Р-40): получателем вышедшего не назначить
+  const room = { hostId: c.state.hostId, members: member.roomMembers(c.state) }
   return { ...c, choices: choice.logChoices(c.log), room, again: byRequest(c.log, requestId) }
 }
 
@@ -1851,6 +2004,8 @@ async function createChoice(
     const e = c.again
     return e.type === 'choice.created' && e.memberId === c.me && sameChoice(e, input) ? choiceReply(c.log, e.id, now, {}) : fail(409, REQUEST_USED)
   }
+  const dropped = droppedRefusal(c)
+  if (dropped) return dropped
   const late = choice.checkChoiceTimes(input, now)
   if (late) return fail(400, late)
   const entry: ChoiceCreatedEntry = {
@@ -1892,6 +2047,8 @@ async function addChoiceOption(
   }
   const found = c.choices.find((x) => x.id === a.choice)
   if (!found) return fail(404, NO_CHOICE)
+  const dropped = droppedRefusal(c)
+  if (dropped) return dropped
   const refused = choice.checkChoiceOption(found, c.me, a.title, c.room, now)
   if (refused) return choiceRefusal(refused)
   const title = (choice.checkOptionTitle(a.title) as { ok: true; value: string }).value
@@ -1922,6 +2079,8 @@ async function stakeChoice(
   }
   const found = c.choices.find((x) => x.id === a.choice)
   if (!found) return fail(404, NO_CHOICE)
+  const dropped = droppedRefusal(c)
+  if (dropped) return dropped
   const refused = choice.checkChoiceStake(found, c.me, a.option, a.amount, c.room, now)
   if (refused) return choiceRefusal(refused)
   const entry: ChoiceStakeEntry = {
@@ -2043,6 +2202,8 @@ async function appealOutcome(
       : fail(409, REQUEST_USED)
   }
   const d: CourtCaller = c
+  const dropped = droppedRefusal(c)
+  if (dropped) return dropped
   const refused = appeal.checkAppeal(d.dispute, d.court, c.me, a.reason, d.room, now)
   if (refused) return courtRefusal(refused)
   const candidates = appeal.courtCandidates(d.dispute, d.room, now, [c.me])
@@ -2074,6 +2235,8 @@ async function joinAppeal(storage: RoomStorage, a: CourtAction, now: number): Pr
     return e.type === 'appeal.joined' && e.target === a.target && e.memberId === c.me ? ok({ joined: courtAct(e) }) : fail(409, REQUEST_USED)
   }
   const d: CourtCaller = c
+  const dropped = droppedRefusal(c)
+  if (dropped) return dropped
   const refused = appeal.checkJoin(d.dispute, d.court, c.me, now)
   if (refused) return courtRefusal(refused)
   const entry: JoinedEntry = { id: ulid(now), at: now, memberId: c.me, type: 'appeal.joined', target: a.target, requestId: a.requestId }

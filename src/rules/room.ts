@@ -44,6 +44,14 @@ export type LogEntry =
   | (EntryBase & { type: 'join.requested'; request: string; name: string })
   // Ведущий отклонил заявку; автор — ведущий
   | (EntryBase & { type: 'join.rejected'; request: string })
+  // Жизнь комнаты (Р-40, Р-41; правила — member.ts). Участник вышел сам (автор — он); его непринятые пари
+  // отзываются записями offer.revoked той же меткой времени перед этой записью; requestId — номер запроса
+  | (EntryBase & { type: 'member.left'; requestId: string })
+  // Вышедший вернулся по ссылке: ведущий (автор) впустил заявку request — это тот же участник member
+  | (EntryBase & { type: 'member.returned'; member: string; request: string })
+  // Ведущий (автор) пометил участника member «выбыл» и снял пометку; requestId — номер запроса
+  | (EntryBase & { type: 'member.dropped'; member: string; requestId: string })
+  | (EntryBase & { type: 'member.reinstated'; member: string; requestId: string })
   // Ведущий сменил ссылку-приглашение; токена в журнале нет
   | (EntryBase & { type: 'invite.changed' })
   // Выдана «ссылка для другого устройства» участнику member; автор — он сам или ведущий;
@@ -211,6 +219,43 @@ export type Member = {
   name: string
   addedBy: string // впущен кем
   addedAt: number // и когда
+  // Жизнь комнаты (Р-40, Р-41): вышел — с какого мига (вернулся — поля нет); выбыл — с какого мига (пометку
+  // сняли — поля нет); absent — все промежутки «вне игры» (вышел или выбыл; to — конец, null — ещё идёт):
+  // по ним жребий суда на любой миг. У старых комнат полей нет — все в комнате
+  leftAt?: number
+  droppedAt?: number
+  absent?: Absence[]
+}
+
+export type Absence = { why: 'left' | 'dropped'; from: number; to: number | null }
+
+// Участник вне игры на миг at: вышел или выбыл — промежуток absent покрывает at: from < at ≤ to. Границы
+// так, чтобы сервер и свёртка не расходились в одну миллисекунду: запрос сначала дописывает суд по «ждёт
+// суда» (drawDue), потом своё действие — тем же at; суд в миг пометки — ещё с участником, в миг снятия — ещё без
+export function absentAt(m: { absent?: readonly Absence[] }, at: number): boolean {
+  return (m.absent ?? []).some((a) => a.from < at && (a.to === null || at <= a.to))
+}
+
+// Участник в комнате (не вышел) и в игре (не вышел и не выбыл) — сейчас
+export function inRoom(m: Member): boolean {
+  return m.leftAt === undefined
+}
+
+export function inPlay(m: Member): boolean {
+  return m.leftAt === undefined && m.droppedAt === undefined
+}
+
+// Начать и закончить промежуток «вне игры» у участника; прежний участник не меняется
+function away(m: Member, why: Absence['why'], at: number): Member {
+  return { ...m, absent: [...(m.absent ?? []), { why, from: at, to: null }] }
+}
+
+function back(m: Member, why: Absence['why'], at: number): Member {
+  return { ...m, absent: (m.absent ?? []).map((a) => (a.why === why && a.to === null ? { ...a, to: at } : a)) }
+}
+
+function withMember(state: RoomState, id: string, change: (m: Member) => Member): RoomState {
+  return { ...state, members: state.members.map((m) => (m.id === id ? change(m) : m)) }
 }
 
 export type RoomState = {
@@ -231,6 +276,36 @@ export function applyEntry(state: RoomState | null, e: LogEntry): RoomState | nu
     case 'member.added':
       if (!state || state.members.some((m) => m.id === e.member)) return state
       return { ...state, members: [...state.members, { id: e.member, name: e.name, addedBy: e.memberId, addedAt: e.at }] }
+    // Жизнь комнаты (Р-40, Р-41): проверки — на сервере (member.ts); свёртка держит только порядок — ведущий
+    // не выходит и не «выбыл», вышедший не «выбывает», пометки ставит и снимает ведущий
+    case 'member.left': {
+      const m = state?.members.find((x) => x.id === e.memberId)
+      if (!state || !m || m.id === state.hostId || m.leftAt !== undefined) return state
+      return withMember(state, m.id, (x) => ({ ...away(x, 'left', e.at), leftAt: e.at }))
+    }
+    case 'member.returned': {
+      const m = state?.members.find((x) => x.id === e.member)
+      if (!state || !m || m.leftAt === undefined || e.memberId !== state.hostId) return state
+      return withMember(state, m.id, (x) => {
+        const next = back(x, 'left', e.at)
+        delete next.leftAt
+        return next
+      })
+    }
+    case 'member.dropped': {
+      const m = state?.members.find((x) => x.id === e.member)
+      if (!state || !m || e.memberId !== state.hostId || m.id === state.hostId || !inPlay(m)) return state
+      return withMember(state, m.id, (x) => ({ ...away(x, 'dropped', e.at), droppedAt: e.at }))
+    }
+    case 'member.reinstated': {
+      const m = state?.members.find((x) => x.id === e.member)
+      if (!state || !m || e.memberId !== state.hostId || m.droppedAt === undefined) return state
+      return withMember(state, m.id, (x) => {
+        const next = back(x, 'dropped', e.at)
+        delete next.droppedAt
+        return next
+      })
+    }
     // Заявки, ссылка и устройства участников не меняют: заявки считает joinRequests
     case 'join.requested':
     case 'join.rejected':
@@ -308,6 +383,8 @@ export type JoinRequest = {
   name: string
   at: number // подана
   status: 'waiting' | 'admitted' | 'rejected'
+  // Впущена как возврат вышедшего (member.returned, Р-40): номер того участника — ключ заявки открывает его
+  member?: string
 }
 
 // Заявки из журнала по порядку подачи. Решение — первое: впущенную не отклонить и наоборот
@@ -318,11 +395,24 @@ export function joinRequests(log: readonly LogEntry[]): JoinRequest[] {
       requests.set(e.request, { id: e.request, name: e.name, at: e.at, status: 'waiting' })
       continue
     }
-    const id = e.type === 'member.added' ? e.member : e.type === 'join.rejected' ? e.request : null
+    const id = e.type === 'member.added' ? e.member : e.type === 'join.rejected' || e.type === 'member.returned' ? e.request : null
     const r = id === null ? undefined : requests.get(id)
-    if (r && r.status === 'waiting') requests.set(r.id, { ...r, status: e.type === 'member.added' ? 'admitted' : 'rejected' })
+    if (!r || r.status !== 'waiting') continue
+    if (e.type === 'member.returned') requests.set(r.id, { ...r, status: 'admitted', member: e.member })
+    else requests.set(r.id, { ...r, status: e.type === 'member.added' ? 'admitted' : 'rejected' })
   }
   return [...requests.values()]
+}
+
+// Чей ключ: номер из записи ключа — участник или заявка; заявка, впущенная возвратом, — тот участник (Р-40)
+export function keyMember(requests: readonly JoinRequest[], id: string): string {
+  return requests.find((r) => r.id === id)?.member ?? id
+}
+
+// Вышедший участник с этим именем (без учёта регистра): заявка с ним — возврат того же участника (Р-40)
+export function returningMember(state: RoomState, name: string): Member | null {
+  const key = nameKey(name)
+  return state.members.find((m) => m.leftAt !== undefined && nameKey(m.name) === key) ?? null
 }
 
 // Имя для сравнения: без учёта регистра
@@ -330,11 +420,13 @@ function nameKey(name: string): string {
   return name.trim().toLowerCase()
 }
 
-// Имя занято участником или ждущей заявкой (отклонённая имя не держит)
+// Имя занято участником в комнате или ждущей заявкой (отклонённая имя не держит). Имя вышедшего не занято:
+// заявка с ним — возврат того же участника (returningMember, Р-40)
 export function nameTaken(state: RoomState, requests: readonly JoinRequest[], name: string): boolean {
   const key = nameKey(name)
   return (
-    state.members.some((m) => nameKey(m.name) === key) || requests.some((r) => r.status === 'waiting' && nameKey(r.name) === key)
+    state.members.some((m) => inRoom(m) && nameKey(m.name) === key) ||
+    requests.some((r) => r.status === 'waiting' && nameKey(r.name) === key)
   )
 }
 

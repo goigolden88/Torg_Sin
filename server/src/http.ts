@@ -45,6 +45,7 @@ import {
   NO_CHOICE,
   NO_EVENT,
   NO_LOT,
+  NO_MEMBER,
   NO_OUTCOME,
   NO_ROOM,
   type ActionResult,
@@ -155,6 +156,12 @@ export async function handle(request: Request, deps: RoomsDeps): Promise<Respons
     const r = await roomAction(sub[1], sub[2], request, deps)
     if (r) return json(r.status, r.body)
   }
+  // Жизнь комнаты (Р-40, Р-41): /rooms/<номер>/leave и /rooms/<номер>/members/<участник>/drop | restore
+  const life = /^\/rooms\/([^/]+)\/(?:(leave)|members\/([^/]+)\/(drop|restore))$/.exec(path)
+  if (life && request.method === 'POST') {
+    const r = await memberAction(life[1], life[3], life[4] as 'drop' | 'restore' | undefined, request, deps)
+    return json(r.status, r.body)
+  }
   // События-пул: /rooms/<номер>/events и /rooms/<номер>/events/<событие>/<действие>; апелляция и суд —
   // appeal | appeal/join | judge | replace (Р-25)
   const ev = /^\/rooms\/([^/]+)\/events(?:\/([^/]+)\/(bets|clarify|cancel|propose|object|agree|decide|vote|appeal|appeal\/join|judge|replace))?$/.exec(path)
@@ -198,6 +205,28 @@ export async function handle(request: Request, deps: RoomsDeps): Promise<Respons
     return json(r.status, r.body)
   }
   return notFound()
+}
+
+// POST /rooms/<номер>/leave { requestId? } — выйти самому (Р-40); …/members/<участник>/drop | restore
+// { requestId? } — ведущий ставит и снимает «выбыл» (Р-41). Отказы — тексты правил (member.ts)
+async function memberAction(
+  roomId: string,
+  memberId: string | undefined,
+  action: 'drop' | 'restore' | undefined,
+  request: Request,
+  deps: RoomsDeps,
+): Promise<Reply<unknown>> {
+  const authorization = request.headers.get('Authorization')
+  const raw: unknown = await request.json().catch(() => null)
+  return withKey(roomId, authorization, async (keyHash) => {
+    if (memberId !== undefined && !ULID_PATTERN.test(memberId)) return failure(404, NO_MEMBER)
+    const read = readBody(raw, true)
+    if (!read.ok) return read.reply
+    const requestId = requestIdOf(read.body, deps)
+    if (!requestId) return failure(400, BAD_REQUEST_ID)
+    if (memberId === undefined || action === undefined) return reply(await deps.act(roomId, { type: 'leave', keyHash, requestId }))
+    return reply(await deps.act(roomId, { type: 'dropMember', keyHash, member: memberId, dropped: action === 'drop', requestId }))
+  })
 }
 
 // POST /rooms/<номер>/pace { pace: "normal" | "fast" | "custom", times?, requestId? } — ведущий меняет темп
@@ -874,7 +903,8 @@ export async function getRoom(roomId: string, authorization: string | null, deps
         pace: r.pace.pace,
         times: { ...r.pace.times },
       },
-      members: state.members.map((m) => ({ id: m.id, name: m.name })),
+      // Вышел и «выбыл» (Р-40, Р-41) — у каждого участника
+      members: state.members.map((m) => ({ id: m.id, name: m.name, left: m.leftAt !== undefined, dropped: m.droppedAt !== undefined })),
       me: r.me,
       // Апелляция и суд (Р-25) — у исхода своего события или пари; times — сроки, закреплённые при
       // создании (Р-35; у старых — обычный набор, timesOf): экраны показывают их, а не константы

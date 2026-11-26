@@ -11,7 +11,9 @@
 // 9 — «Лот» (Р-38): lots в состоянии комнаты, счётчик lots в числах «Расчёта», голоса суда «передано» /
 // «не передано», адреса …/lots
 // 10 — «Выбор» (Р-39): choices в состоянии комнаты, счётчик choices в числах «Расчёта», адреса …/choices
-export const PROTOCOL_VERSION = 10
+// 11 — выйти и «выбыл» (Р-40, Р-41): left и dropped у участника, member у заявки-возврата, адреса …/leave
+// и …/members/<участник>/drop | restore
+export const PROTOCOL_VERSION = 11
 
 // Ответ GET /health: сервер жив, его протокол и время (UTC, мс) — по нему закрываются сроки
 export type Health = { v: number; ok: true; time: number }
@@ -56,11 +58,12 @@ export type CreateRoomResponse = { v: number; roomId: string; invite: string; me
 // свод расчёта на now (Р-32; сервер до этапа 5 поля не шлёт), видят все участники; room.pace и
 // room.times — нынешний темп комнаты и его сроки (Р-35; сервер до темпа полей не шлёт); lots — лоты по
 // порядку создания (Р-38; все лоты комнаты со ставками — тайных нет; сервер до лотов поля не шлёт);
-// choices — выборы по порядку создания (Р-39; вклады видны всем; сервер до выбора поля не шлёт)
+// choices — выборы по порядку создания (Р-39; вклады видны всем; сервер до выбора поля не шлёт); у
+// участника left — вышел, dropped — помечен «выбыл» (Р-40, Р-41; сервер до выкатки полей не шлёт)
 export type RoomStateResponse = {
   v: number
   room: { id: string; name: string; currency: string; hostId: string; createdAt: number; pace?: PaceView; times?: TimesView }
-  members: { id: string; name: string }[]
+  members: MemberView[]
   me: string
   events: EventView[]
   offers?: OfferView[]
@@ -69,6 +72,19 @@ export type RoomStateResponse = {
   settlement?: SettlementView
   now: number
 }
+
+// Участник комнаты: вышел (left) и «выбыл» (dropped) — Р-40, Р-41
+export type MemberView = { id: string; name: string; left?: boolean; dropped?: boolean }
+
+// POST /rooms/<номер>/leave { requestId? } — выйти самому (Р-40): отказ называет, что мешает; при выходе
+// отзываются его непринятые пари и торги без встречных (revoked — какие). Ключи его устройств больше не
+// пускают; вернуться — по ссылке-приглашению с тем же именем, впускает ведущий
+export type LeaveRequest = { v?: number; requestId?: string }
+export type LeaveResponse = { v: number; left: { id: string; at: number; by: string; revoked: string[] } }
+
+// POST /rooms/<номер>/members/<участник>/drop | restore { requestId? } — ведущий ставит и снимает «выбыл» (Р-41)
+export type DropRequest = { v?: number; requestId?: string }
+export type DropResponse = { v: number; dropped: { id: string; at: number; by: string; member: string; dropped: boolean } }
 
 // Расчёт (этап 5, Р-32; правила — settle.ts, roomSettlement). Режим «кто кому»: «по ставкам» /
 // «меньше переводов»
@@ -595,7 +611,8 @@ export type JoinRoomRequest = { v?: number; invite: string; name: string; reques
 export type JoinRoomResponse = { v: number; memberId: string; key: string; join: 'waiting' | 'admitted' | 'rejected' }
 
 // GET /rooms/<номер>/requests — ждущие заявки, только ведущему
-export type JoinRequestsResponse = { v: number; requests: { id: string; name: string; at: number }[] }
+// member — заявка вышедшего с его именем: впустить — вернуть того же участника (Р-40); нет — новый
+export type JoinRequestsResponse = { v: number; requests: { id: string; name: string; at: number; member?: string }[] }
 
 // POST /rooms/<номер>/admit и /reject — решение ведущего по заявке
 export type DecideRequest = { v?: number; request: string }
@@ -712,10 +729,24 @@ export function isRoomStateResponse(x: unknown): x is RoomStateResponse {
   if (r.choices !== undefined && !(Array.isArray(r.choices) && r.choices.every(isChoiceView))) return false
   // Свод расчёта — с этапа 5: сервер без него (до выкатки) не ломает сайт
   if (r.settlement !== undefined && !isSettlementView(r.settlement)) return false
+  // Вышел и «выбыл» (Р-40, Р-41): сервер без них (до выкатки) не ломает сайт
+  const flag = (x: unknown) => x === undefined || typeof x === 'boolean'
   return r.members.every((m) => {
     const member = record(m)
-    return !!member && strings(member, 'id', 'name')
+    return !!member && strings(member, 'id', 'name') && flag(member.left) && flag(member.dropped)
   })
+}
+
+export function isLeaveResponse(x: unknown): x is LeaveResponse {
+  const r = versioned(x)
+  const left = r && record(r.left)
+  return !!left && strings(left, 'id', 'by') && typeof left.at === 'number' && Array.isArray(left.revoked) && left.revoked.every((s) => typeof s === 'string')
+}
+
+export function isDropResponse(x: unknown): x is DropResponse {
+  const r = versioned(x)
+  const d = r && record(r.dropped)
+  return !!d && strings(d, 'id', 'by', 'member') && typeof d.at === 'number' && typeof d.dropped === 'boolean'
 }
 
 function numbers(r: Record<string, unknown>, ...names: string[]): boolean {
