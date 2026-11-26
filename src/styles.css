@@ -1349,6 +1349,26 @@ h3 {
   margin-top: 1.5rem;
 }
 
+/* Жизнь комнаты (Р-40, Р-41): кнопка ведущего — справа в строке участника, подтверждение и отказ — на всю
+   строку под именем; «Выйти из комнаты» — под копией */
+.member .member-action {
+  margin-left: auto;
+}
+
+.member .member-confirm {
+  flex-basis: 100%;
+  margin: 0 0 0.5rem;
+}
+
+.leave {
+  margin-top: 1rem;
+}
+
+/* «История»: строка с датой переносится на узком экране — отступ сверху и снизу, как у текста */
+.history-life .member {
+  padding-block: 0.4rem;
+}
+
 .history .win {
   color: var(--ok);
   font-weight: 600;
@@ -1621,8 +1641,10 @@ h3 {
     gap: 1rem;
   }
 
+  /* Сжимается до ширины строки: длинная подпись («Отклонить — это другой человек») переносится, а не
+     вылезает за рамку заявки */
   .request .row .button {
-    flex: none;
+    flex: 0 1 auto;
   }
 
   .times,

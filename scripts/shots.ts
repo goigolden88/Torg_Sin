@@ -34,6 +34,7 @@ import { history } from './shots/history.ts'
 import { known } from './shots/known.ts'
 import { layout } from './shots/layout.ts'
 import { lots } from './shots/lots.ts'
+import { members } from './shots/members.ts'
 import { noGuarantor } from './shots/no-guarantor.ts'
 import { offerOutcomes } from './shots/offer-outcomes.ts'
 import { offers } from './shots/offers.ts'
@@ -221,6 +222,11 @@ const SCENARIOS: Scenario[] = [
     name: 'choices',
     about: '«Выбор»: пусто, «Новый выбор», фаза вариантов, комната, фаза вкладов, итог, ничья и жребий, «Расчёт», «История» (170–177)',
     perSize: (c, size) => choices(c.cdp, size, c.startServer),
+  },
+  {
+    name: 'members',
+    about: 'выйти и «выбыл»: участники до и после, подтверждение, комната и событие выбывшего, отказ в выходе, вышел, заявка-возврат, «История» (180–190)',
+    perSize: (c, size) => members(c.cdp, size, c.startServer),
   },
   {
     name: 'layout',

@@ -3,12 +3,13 @@
 // (historyParts), не здесь; пусто — «Выборов пока нет», всё прошло — «Идущих выборов нет». У каждого — вопрос,
 // получатель, сколько вариантов, строка статуса; вложил — «вы вложили … в „…“». Выборы — последнее известное
 // с сервера, статус и отсчёт — по времени сервера (choiceOutcome). На экране выбора — тот же список рядом,
-// открытый отмечен
+// открытый отмечен. Помеченному «выбыл» (Р-41) «Начать выбор» нет
 import type { ChoiceView } from '../rules/protocol'
 import { plural } from '../rules/currency'
 import { savedChoices, type SavedRoom } from '../store/db'
 import { choiceHref, choiceOutcomeOf, choicePastNow, choiceStatusText, myOption, myStake, newChoiceHref, optionTitle, recipientLine } from './choiceParts'
 import { money } from './eventParts'
+import { iAmDropped } from './memberParts'
 import { useServerNow, type Clock } from './useRoom'
 
 export function ChoiceList({ room, clock, current }: { room: SavedRoom; clock: Clock | null; current?: string }) {
@@ -22,9 +23,11 @@ export function ChoiceList({ room, clock, current }: { room: SavedRoom; clock: C
     <section className="events choices" aria-label="Выбор">
       <div className="events-head">
         <h3>Выбор</h3>
-        <a className="button" href={newChoiceHref(room.id)}>
-          Начать выбор
-        </a>
+        {!iAmDropped(room) && (
+          <a className="button" href={newChoiceHref(room.id)}>
+            Начать выбор
+          </a>
+        )}
       </div>
       {options.length + stakes.length === 0 ? (
         <p className="empty">{choices.length === 0 ? 'Выборов пока нет' : 'Идущих выборов нет'}</p>

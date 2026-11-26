@@ -91,6 +91,34 @@ describe('хранилище на устройстве', () => {
     expect(list[0].name).toBe('Дача')
   })
 
+  it('вышел из комнаты (Р-40): комната убрана, остальные на месте; нет такой — ничего', async () => {
+    const store = createStore(new IDBFactory())
+    await store.saveRoom(room('A', 1))
+    await store.saveRoom(room('B', 2))
+    await store.removeRoom('A')
+    await store.removeRoom('Z')
+    expect((await store.listRooms()).map((r) => r.id)).toEqual(['B'])
+    expect(await store.getRoom('A')).toBeUndefined()
+  })
+
+  it('вышел и «выбыл» у участника (Р-40, Р-41): ответ сервера записан как есть', async () => {
+    const store = createStore(new IDBFactory())
+    const state: RoomStateResponse = {
+      v: 11,
+      room: { id: 'A', name: 'Комната A', currency: 'RUB', hostId: 'MA', createdAt: 1 },
+      members: [
+        { id: 'MA', name: 'Аня', left: false, dropped: false },
+        { id: 'MB', name: 'Боря', left: true, dropped: false },
+        { id: 'MV', name: 'Вера', left: false, dropped: true },
+      ],
+      me: 'MA',
+      events: [],
+      now: 5,
+    }
+    await store.saveRoom(withState(room('A', 1), state, 5))
+    expect((await store.getRoom('A'))?.members).toEqual(state.members)
+  })
+
   it('схема заводится с первого открытия: комнаты и заявки', async () => {
     const factory = new IDBFactory()
     const db = await openDb(factory)

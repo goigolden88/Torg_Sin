@@ -4,11 +4,12 @@
 // нет», всё прошло — «Идущих лотов нет». У каждого — название, продавец, лучшая ставка или старт, статус;
 // член суда по лоту, который ещё не голосовал, — «вы в суде»; мою ставку перебили — «вас перебили». Лоты —
 // последнее известное с сервера, статус и отсчёт — по времени сервера (lotOutcome). На экране лота — тот
-// же список рядом, открытый отмечен
+// же список рядом, открытый отмечен. Помеченному «выбыл» (Р-41) «Выставить лот» нет
 import type { LotView } from '../rules/protocol'
 import { savedLots, type SavedRoom } from '../store/db'
 import { awaitsMyVote } from './courtParts'
 import { bestLine, lotHref, lotOutbid, lotOutcomeOf, lotPastNow, lotState, lotStatusText, newLotHref } from './lotParts'
+import { iAmDropped } from './memberParts'
 import { who } from './offerParts'
 import { useServerNow, type Clock } from './useRoom'
 
@@ -23,9 +24,11 @@ export function LotList({ room, clock, current }: { room: SavedRoom; clock: Cloc
     <section className="events lots" aria-label="Лоты">
       <div className="events-head">
         <h3>Лоты</h3>
-        <a className="button" href={newLotHref(room.id)}>
-          Выставить лот
-        </a>
+        {!iAmDropped(room) && (
+          <a className="button" href={newLotHref(room.id)}>
+            Выставить лот
+          </a>
+        )}
       </div>
       {open.length + after.length === 0 ? (
         <p className="empty">{lots.length === 0 ? 'Лотов пока нет' : 'Идущих лотов нет'}</p>

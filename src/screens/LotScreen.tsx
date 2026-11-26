@@ -24,6 +24,7 @@ import { CourtBlock } from './CourtBlock'
 import { money, nameOf } from './eventParts'
 import { historyHref } from './historyParts'
 import { LotList, LotStatusLine } from './LotList'
+import { iAmDropped } from './memberParts'
 import {
   afterLine,
   LOT_COURT_WHY,
@@ -94,7 +95,8 @@ export function LotScreen({ room, lotId, onUpdate }: { room: SavedRoom; lotId: s
   const best = l.bids[l.bids.length - 1] ?? null
   const winner = out.winner
   const open = out.status === 'open'
-  const mayBid = checkLotBid(state, me, nextLotBid(l), lotRoomOf(room), now) === null
+  // Помеченный «выбыл» (Р-41) не ставит; передать, получить и снять своё — как раньше
+  const mayBid = !iAmDropped(room) && checkLotBid(state, me, nextLotBid(l), lotRoomOf(room), now) === null
   const mayWithdraw = checkLotWithdraw(state, me, now) === null
   const mayHand = checkHanded(state, me, now) === null
   const mayDecline = checkDeclined(state, me, now) === null

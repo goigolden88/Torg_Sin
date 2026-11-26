@@ -10,6 +10,7 @@ import { checkMemberName, MAX_MEMBER_NAME } from '../rules/room'
 import { ulid } from '../rules/ulid'
 import { store, withState, type SavedJoin, type SavedRoom } from '../store/db'
 import { BackLink, useEscape } from './BackLink'
+import { REJECTED_HINT } from './memberParts'
 import { usePoll } from './usePoll'
 
 const ROOM_NOT_SAVED = 'Ведущий впустил, но комната не записалась на этом устройстве — обновите страницу'
@@ -100,6 +101,7 @@ export function JoinRoom({ link, onJoined }: { link: InviteLink; onJoined: (room
           <p className="hint">
             Комната «{phase.join.roomName}», ведущий — {phase.join.hostName}. Вы просились как {phase.join.name}.
           </p>
+          <p className="hint">{REJECTED_HINT}.</p>
           <div className="row">
             <button className="button" type="button" onClick={() => void askAgain(phase.join.name)}>
               Попроситься снова

@@ -7,17 +7,22 @@
 // Под участниками — «Расчёт» (SettleBlock; на очках — «Таблица очков»), «События» (EventList), под ними —
 // «Пари» (OfferList), под ними — «Лоты» (LotList, Р-38), под ними — «Выбор» (ChoiceList, Р-39); прошедшее из
 // них — в «Истории», строка «История · N» под «Выбором». На iPhone в браузере —
-// заметка про экран «Домой» (HomeScreenNote). В самом низу — «Скачать копию комнаты» (BackupBlock)
-import { useCallback, useRef, useState, type FormEvent } from 'react'
-import { admitRequest, changePace, fetchBackup, fetchRequests, issueDeviceLink, rejectRequest, renewInvite } from '../api'
+// заметка про экран «Домой» (HomeScreenNote). Внизу — «Скачать копию комнаты» (BackupBlock), под ней —
+// «Выйти из комнаты» (LeaveBlock, Р-40; ведущему — подпись «Сначала передайте ведение»). Жизнь комнаты
+// (Р-40, Р-41, Р-46; memberParts): у участника — «вышел» / «выбыл», ведущему — «Пометить „выбыл“» / «Снять
+// „выбыл“»; помеченному вверху — строка «Ведущий пометил вас „выбыл“…», кнопок нового в списках нет;
+// заявка-возврат вышедшего — «Похож на вышедшего…», «Вернуть его» / «Отклонить — это другой человек»
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
+import { admitRequest, changePace, dropMember, fetchBackup, fetchRequests, issueDeviceLink, leaveRoom, rejectRequest, renewInvite } from '../api'
 import { currencyLabel } from '../rules/currency'
 import { formatDate, formatDateTime } from '../rules/date'
 import { deviceLink, inviteLink } from '../rules/link'
 import { checkPaceChange, PACE_LABELS, paceSummary, type RoomPace } from '../rules/pace'
 import type { JoinRequestsResponse } from '../rules/protocol'
 import { formKey, requestFor, type PendingRequest } from '../rules/request'
+import type { LogEntry } from '../rules/room'
 import { ulid } from '../rules/ulid'
-import { savedChoices, savedEvents, savedLots, savedOffers, savedSettlement, type SavedRoom } from '../store/db'
+import { savedChoices, savedEvents, savedLots, savedOffers, savedSettlement, store, type SavedRoom } from '../store/db'
 import { BackLink, useEscape } from './BackLink'
 import { BACKUP_FAILED, BACKUP_NOTE, backupFileName, backupText, deliveryWay } from './backupParts'
 import { ChoiceList } from './ChoiceList'
@@ -26,6 +31,18 @@ import { historyHref, historyItems, historyLine } from './historyParts'
 import { HomeScreenNote } from './HomeScreenNote'
 import { LinkBox, siteUrl } from './LinkBox'
 import { LotList } from './LotList'
+import {
+  DROP_LABEL,
+  dropAction,
+  dropQuestion,
+  DROPPED_NOTE,
+  HOST_CANNOT_LEAVE,
+  iAmDropped,
+  LEAVE_CONFIRM,
+  leftAt,
+  memberMark,
+  returnLine,
+} from './memberParts'
 import { OfferList } from './OfferList'
 import { PacePicker } from './PacePicker'
 import { draftTimes, PACE_CHANGE_NOTE, paceDraft, paceInput, paceLine, type PaceDraft } from './paceParts'
@@ -35,7 +52,7 @@ import { useRoom, useServerNow, type Clock } from './useRoom'
 
 type Panel = 'none' | 'invite' | 'device'
 
-export function RoomView({ room, onUpdate }: { room: SavedRoom; onUpdate: (room: SavedRoom) => void }) {
+export function RoomView({ room, onUpdate, onLeft }: { room: SavedRoom; onUpdate: (room: SavedRoom) => void; onLeft: (id: string) => void }) {
   const [panel, setPanel] = useState<Panel>('none')
   const { sync, clock, pace, refresh, save, latest } = useRoom(room, onUpdate)
 
@@ -56,6 +73,11 @@ export function RoomView({ room, onUpdate }: { room: SavedRoom; onUpdate: (room:
       </p>
       {sync.state === 'busy' && <p className="hint">Обновляю с сервера…</p>}
       {sync.state === 'fail' && <p className="error">{sync.text}</p>}
+      {iAmDropped(room) && (
+        <p className="error" role="status">
+          {DROPPED_NOTE}
+        </p>
+      )}
       <PaceBlock room={room} pace={pace} isHost={isHost} onChanged={refresh} />
       <HomeScreenNote room={room} />
 
@@ -77,11 +99,7 @@ export function RoomView({ room, onUpdate }: { room: SavedRoom; onUpdate: (room:
       <h3>Участники</h3>
       <ul className="members">
         {room.members.map((m) => (
-          <li key={m.id} className="member">
-            <span>{m.name}</span>
-            {m.id === room.hostId && <span className="badge">ведущий</span>}
-            {m.id === room.memberId && <span className="badge muted">вы</span>}
-          </li>
+          <Member key={m.id} room={room} member={m} onChanged={refresh} />
         ))}
       </ul>
       <SettleBlock room={room} />
@@ -91,7 +109,138 @@ export function RoomView({ room, onUpdate }: { room: SavedRoom; onUpdate: (room:
       <ChoiceList room={room} clock={clock} />
       <HistoryLink room={room} clock={clock} />
       <BackupBlock room={room} />
+      <LeaveBlock room={room} isHost={isHost} onLeft={onLeft} />
     </div>
+  )
+}
+
+const dropPending = new Map<string, PendingRequest>() // по комнате и участнику: повтор — тот же номер (Р-13)
+
+// Участник в списке: имя, «ведущий», «вы», «вышел» / «выбыл»; ведущему — «Пометить „выбыл“» / «Снять
+// „выбыл“» с подтверждением (dropAction). Отказ сервера — его текстом под строкой
+function Member({ room, member, onChanged }: { room: SavedRoom; member: SavedRoom['members'][number]; onChanged: () => Promise<void> }) {
+  const [asking, setAsking] = useState(false)
+  const [sending, setSending] = useState(false)
+  const [error, setError] = useState('')
+  const busy = useRef(false)
+  const action = dropAction(room, member)
+  const mark = memberMark(member)
+
+  async function send() {
+    if (!action || busy.current) return
+    const slot = room.id + '/' + member.id
+    const request = requestFor(dropPending.get(slot) ?? null, formKey(room.id, member.id, action), ulid)
+    dropPending.set(slot, request)
+    busy.current = true
+    setSending(true)
+    setError('')
+    try {
+      const res = await dropMember(room.server, room.id, room.key, member.id, action === 'drop', { requestId: request.requestId })
+      if (!res.ok) return setError(res.error)
+      dropPending.delete(slot)
+      setAsking(false)
+      await onChanged()
+    } finally {
+      busy.current = false
+      setSending(false)
+    }
+  }
+
+  return (
+    <li className="member">
+      <span>{member.name}</span>
+      {member.id === room.hostId && <span className="badge">ведущий</span>}
+      {member.id === room.memberId && <span className="badge muted">вы</span>}
+      {mark && <span className="badge muted">{mark}</span>}
+      {action && !asking && (
+        <button className="button secondary member-action" type="button" onClick={() => setAsking(true)}>
+          {DROP_LABEL[action]}
+        </button>
+      )}
+      {action && asking && (
+        <div className="confirm member-confirm" role="group" aria-label={DROP_LABEL[action] + '?'}>
+          <p>{dropQuestion(action, member.name)}</p>
+          <div className="row">
+            <button className="button" type="button" onClick={send} disabled={sending}>
+              {sending ? 'Минутку…' : action === 'drop' ? 'Да, пометить' : 'Да, снять'}
+            </button>
+            <button className="button secondary" type="button" onClick={() => setAsking(false)} disabled={sending}>
+              Не надо
+            </button>
+          </div>
+        </div>
+      )}
+      {error && <p className="error member-confirm">{error}</p>}
+    </li>
+  )
+}
+
+const leavePending = new Map<string, PendingRequest>() // по комнате: повтор «Выйти» — тот же номер (Р-13)
+
+// Внизу комнаты — «Выйти из комнаты» (Р-40) с подтверждением; отказ сервера (что мешает) — его текстом.
+// Вышел — комната уходит с устройства и из «Моих комнат» (onLeft). Ведущему кнопки нет — подпись
+function LeaveBlock({ room, isHost, onLeft }: { room: SavedRoom; isHost: boolean; onLeft: (id: string) => void }) {
+  const [asking, setAsking] = useState(false)
+  const [sending, setSending] = useState(false)
+  const [error, setError] = useState('')
+  const busy = useRef(false)
+
+  async function leave() {
+    if (busy.current) return
+    const request = requestFor(leavePending.get(room.id) ?? null, formKey(room.id, 'leave'), ulid)
+    leavePending.set(room.id, request)
+    busy.current = true
+    setSending(true)
+    setError('')
+    try {
+      const res = await leaveRoom(room.server, room.id, room.key, { requestId: request.requestId })
+      if (!res.ok) return setError(res.error)
+      leavePending.delete(room.id)
+      await store()
+        .removeRoom(room.id)
+        .catch(() => undefined)
+      onLeft(room.id)
+      location.hash = '#/'
+    } finally {
+      busy.current = false
+      setSending(false)
+    }
+  }
+
+  if (isHost) {
+    return (
+      <section className="leave" aria-label="Выйти из комнаты">
+        <p className="hint">{HOST_CANNOT_LEAVE}</p>
+      </section>
+    )
+  }
+  return (
+    <section className="leave" aria-label="Выйти из комнаты">
+      {asking ? (
+        <div className="confirm" role="group" aria-label="Выйти из комнаты?">
+          <p>{LEAVE_CONFIRM}</p>
+          <div className="row">
+            <button className="button" type="button" onClick={leave} disabled={sending}>
+              {sending ? 'Выхожу…' : 'Да, выйти'}
+            </button>
+            <button className="button secondary" type="button" onClick={() => setAsking(false)} disabled={sending}>
+              Остаться
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="row">
+          <button className="button secondary" type="button" onClick={() => setAsking(true)}>
+            Выйти из комнаты
+          </button>
+        </div>
+      )}
+      {error && (
+        <p className="error" role="alert">
+          {error}
+        </p>
+      )}
+    </section>
   )
 }
 
@@ -287,6 +436,21 @@ function Requests({ room, onAdmitted }: { room: SavedRoom; onAdmitted: () => Pro
   }, [server, id, key])
   usePoll(tick)
 
+  // Возврат вышедшего (Р-46): когда он вышел — по журналу комнаты (копия участника), один раз на возврат;
+  // журнал не пришёл — строка без даты
+  const [log, setLog] = useState<{ for: string; log: LogEntry[] } | null>(null)
+  const returning = requests.filter((r) => typeof r.member === 'string').map((r) => r.member).join(',')
+  useEffect(() => {
+    if (!returning || log?.for === returning) return
+    let live = true
+    void fetchBackup(server, id, key).then((res) => {
+      if (live) setLog({ for: returning, log: res.ok ? res.value.log : [] })
+    })
+    return () => {
+      live = false
+    }
+  }, [returning, log, server, id, key])
+
   async function decide(request: JoinRequest, admit: boolean) {
     setBusy(request.id)
     setError('')
@@ -302,22 +466,29 @@ function Requests({ room, onAdmitted }: { room: SavedRoom; onAdmitted: () => Pro
     <section className="requests" aria-label="Заявки">
       <h3>Заявки ({requests.length})</h3>
       <ul className="request-list">
-        {requests.map((r) => (
-          <li key={r.id} className="request">
-            <div className="request-who">
-              <span className="request-name">{r.name}</span>
-              <span className="hint">просится с {formatDateTime(r.at)}</span>
-            </div>
-            <div className="row">
-              <button className="button" type="button" disabled={busy !== null} onClick={() => decide(r, true)}>
-                {busy === r.id ? 'Минутку…' : 'Впустить'}
-              </button>
-              <button className="button secondary" type="button" disabled={busy !== null} onClick={() => decide(r, false)}>
-                Отклонить
-              </button>
-            </div>
-          </li>
-        ))}
+        {requests.map((r) => {
+          // Сервер узнал вышедшего (Р-46): «Вернуть его» — то же «Впустить» (возврат делает сервер),
+          // «Отклонить — это другой человек» — то же «Отклонить»; простого «Впустить» нет
+          const back = typeof r.member === 'string' ? r.member : null
+          const backName = back === null ? '' : (room.members.find((m) => m.id === back)?.name ?? r.name)
+          return (
+            <li key={r.id} className="request">
+              <div className="request-who">
+                <span className="request-name">{r.name}</span>
+                {back !== null && <span className="error">{returnLine(backName, log ? leftAt(log.log, back) : null)}</span>}
+                <span className="hint">просится с {formatDateTime(r.at)}</span>
+              </div>
+              <div className="row">
+                <button className="button" type="button" disabled={busy !== null} onClick={() => decide(r, true)}>
+                  {busy === r.id ? 'Минутку…' : back !== null ? 'Вернуть его' : 'Впустить'}
+                </button>
+                <button className="button secondary" type="button" disabled={busy !== null} onClick={() => decide(r, false)}>
+                  {back !== null ? 'Отклонить — это другой человек' : 'Отклонить'}
+                </button>
+              </div>
+            </li>
+          )
+        })}
       </ul>
       {error && <p className="error">{error}</p>}
     </section>
