@@ -46,6 +46,9 @@ export class Cdp {
   private next = 0
   private pending = new Map<number, Pending>()
   private ws: WebSocket
+  // Хранилища устройств (контексты браузера), открытые сценарием: закрываются после него — иначе
+  // страницы прошлых сценариев опрашивают сервер и отнимают время у следующих
+  private contexts: string[] = []
 
   private constructor(ws: WebSocket) {
     this.ws = ws
@@ -72,6 +75,19 @@ export class Cdp {
     const id = ++this.next
     this.ws.send(JSON.stringify({ id, method, params, sessionId }))
     return new Promise<T>((resolve, reject) => this.pending.set(id, { resolve: (v) => resolve(v as T), reject }))
+  }
+
+  // Новое хранилище устройства — запомнить, чтобы закрыть после сценария
+  async createContext(): Promise<string> {
+    const { browserContextId } = await this.send<{ browserContextId: string }>('Target.createBrowserContext')
+    this.contexts.push(browserContextId)
+    return browserContextId
+  }
+
+  // Закрыть устройства сценария (вместе с их страницами)
+  async closeContexts(): Promise<void> {
+    const all = this.contexts.splice(0)
+    for (const browserContextId of all) await this.send('Target.disposeBrowserContext', { browserContextId }).catch(() => undefined)
   }
 
   close(): void {
@@ -138,7 +154,7 @@ export class Device {
     name: string,
     options: { userAgent?: string; standalone?: boolean; clipboard?: boolean } = {},
   ): Promise<Device> {
-    const { browserContextId } = await cdp.send<{ browserContextId: string }>('Target.createBrowserContext')
+    const browserContextId = await cdp.createContext()
     const { targetId } = await cdp.send<{ targetId: string }>('Target.createTarget', { url: 'about:blank', browserContextId })
     const { sessionId } = await cdp.send<{ sessionId: string }>('Target.attachToTarget', { targetId, flatten: true })
     await cdp.send('Page.enable', {}, sessionId)
@@ -206,8 +222,9 @@ export class Device {
     throw new Error(`${this.name}: в ${selector} не дождался «${text}». В блоке:\n${seen}`)
   }
 
-  // Нажать видимую кнопку, ссылку или подпись (флажок, выбор) по тексту: сначала точное совпадение, потом начало
-  async click(text: string): Promise<void> {
+  // Нажать видимую кнопку, ссылку или подпись (флажок, выбор) по тексту: сначала точное совпадение, потом начало.
+  // Один раз и сразу — сценарии жмут через press: кнопка, нажатая до ответа сервера, ещё закрыта (#149)
+  private async click(text: string): Promise<void> {
     const done = await this.eval<boolean>(`(() => {
       const text = ${JSON.stringify(text)}
       const all = [...document.querySelectorAll('button, a, label')].filter((el) => el.offsetParent !== null && !el.disabled)
@@ -219,8 +236,8 @@ export class Device {
     if (!done) throw new Error(`${this.name}: нет кнопки «${text}»`)
   }
 
-  // Нажать, когда кнопка откроется: после перехода экран сначала показывает копию, а действия
-  // закрыты до первого ответа сервера — повторять нажатие до TIMEOUT
+  // Нажать, когда кнопка откроется: после перехода и после действия, которое идёт на сервер, экран
+  // сначала показывает копию, а действия закрыты до ответа сервера — повторять нажатие до TIMEOUT
   async press(text: string, timeout = TIMEOUT): Promise<void> {
     const started = Date.now()
     for (;;) {

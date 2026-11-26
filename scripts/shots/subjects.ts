@@ -28,7 +28,7 @@ export async function subjects(cdp: Cdp, size: Size, startServer: ServerModule['
       const device = await Device.open(cdp, size, name)
       await device.goto(`${SITE}#/device/${room.roomId}/${token}?server=${encodeURIComponent(server.url)}`)
       await device.waitText('Открыть комнату здесь')
-      await device.click('Открыть комнату здесь')
+      await device.press('Открыть комнату здесь')
       await device.waitText('Участники')
       return device
     }
@@ -67,7 +67,7 @@ export async function subjects(cdp: Cdp, size: Size, startServer: ServerModule['
     await noScroll(anya, 'Событие о себе')
     await anya.shot('91-predmet-stavka-tolko-da')
     await anya.fill('Сумма, ₽', '300')
-    await anya.click('Поставить')
+    await anya.press('Поставить')
     await anya.waitIn('.modal', 'Поставить 300 ₽ на „Да“?')
     await confirmBet(anya)
     await anya.waitIn('.subject-flag', '⚑ Аня (вы) — предмет спора — ставит на себя: 300 ₽ на „Да“')
@@ -97,7 +97,7 @@ export async function subjects(cdp: Cdp, size: Size, startServer: ServerModule['
     if (sides.includes('Не сбудется')) throw new Error('Предмету спора в форме пари видно «Не сбудется»')
     await noScroll(boryaPhone, 'Форма пари с «О ком спор»')
     await boryaPhone.shot('94-o-kom-spor-forma')
-    await boryaPhone.click('Предложить')
+    await boryaPhone.press('Предложить')
     await boryaPhone.waitIn('.modal', 'о ком спор — Боря')
     await confirmTwice(boryaPhone, 'открыто — приём до')
     await boryaPhone.waitIn('.subject-flag', '⚑ Боря (вы) — предмет спора — на стороне „сбудется“')

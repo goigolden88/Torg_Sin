@@ -81,7 +81,7 @@ export async function settle(cdp: Cdp, size: Size, startServer: ServerModule['st
       const { token } = await api<{ token: string }>(server, `/rooms/${roomId}/device`, key, {})
       await host.goto(`${SITE}#/device/${roomId}/${token}?server=${encodeURIComponent(server.url)}`)
       await host.waitText('Открыть комнату здесь')
-      await host.click('Открыть комнату здесь')
+      await host.press('Открыть комнату здесь')
       await host.waitText('Участники')
     }
     const settleHref = (roomId: string) => `${SITE}#/room/${roomId}/settle`
@@ -125,7 +125,7 @@ export async function settle(cdp: Cdp, size: Size, startServer: ServerModule['st
     await noScroll('Комната с расчётом')
     await host.shot('111-komnata-blok-raschyot')
 
-    await host.click('Ваш итог')
+    await host.press('Ваш итог')
     await host.waitIn(MAIN, 'Вы должны:')
     for (const text of [
       'Итог',
@@ -191,7 +191,7 @@ export async function settle(cdp: Cdp, size: Size, startServer: ServerModule['st
     if (chosen !== 'stakes') throw new Error('Создание комнаты: выбран режим ' + chosen)
     await noScroll('Создание комнаты')
     await host.shot('117-sozdanie-rezhim')
-    await host.click('очки')
+    await host.press('очки')
     const modes = await host.eval<number>(`document.querySelectorAll('input[name="settle-mode"]').length`)
     if (modes > 0) throw new Error('Создание комнаты на очки: выбор режима остался')
 
@@ -205,7 +205,7 @@ export async function settle(cdp: Cdp, size: Size, startServer: ServerModule['st
     await mark(pts.rooms, game, borya.key, 'author')
     await claim(pts.room.roomId, pts.room.key)
     await host.waitIn('section[aria-label="Таблица очков"]', 'Ваш итог: +30 очков по 1 пари')
-    await host.click('Ваш итог')
+    await host.press('Ваш итог')
     await host.waitIn(MAIN, 'Таблица очков')
     await host.waitIn(MAIN, 'Все участники')
     const first = await host.eval<string>(`document.querySelector('.settle-table tbody th').innerText`)

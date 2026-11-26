@@ -33,7 +33,7 @@ export async function offerOutcomes(cdp: Cdp, size: Size, startServer: ServerMod
       const device = await Device.open(cdp, size, name)
       await device.goto(`${SITE}#/device/${room.roomId}/${token}?server=${encodeURIComponent(server.url)}`)
       await device.waitText('Открыть комнату здесь')
-      await device.click('Открыть комнату здесь')
+      await device.press('Открыть комнату здесь')
       await device.waitText('Участники')
       return device
     }
@@ -116,7 +116,7 @@ export async function offerOutcomes(cdp: Cdp, size: Size, startServer: ServerMod
 
     // Пари 1. Аня отмечает «прав автор» — с подтверждением и итогом
     await host.waitText('Ждём отметок сторон')
-    await host.click('Прав автор')
+    await host.press('Прав автор')
     await host.waitIn('.modal', 'Вы отмечаете: прав автор — Аня получает банк 400 ₽: Аня +100 ₽, Боря −100 ₽.')
     await host.waitIn('.modal', 'Если соперник отметит так же, исход окончательный сразу и не обжалуется.')
     await host.shot('55-otmetka-podtverzhdenie')
@@ -134,7 +134,7 @@ export async function offerOutcomes(cdp: Cdp, size: Size, startServer: ServerMod
     // Боря отмечает так же — утверждено согласием, окончательно сразу
     await boryaPhone.goto(offerHref(agree))
     await boryaPhone.waitIn(OUTCOME, 'Аня, автор: прав автор')
-    await boryaPhone.click('Прав автор')
+    await boryaPhone.press('Прав автор')
     await boryaPhone.waitIn('.modal', 'Автор уже отметил так же — исход станет окончательным сразу и не обжалуется.')
     await confirmTwice(boryaPhone, 'Утверждено согласием сторон, окончательно')
     await boryaPhone.waitIn('section[aria-label="Итог пари"]', 'Боря (вы) — −100 ₽')
@@ -156,7 +156,7 @@ export async function offerOutcomes(cdp: Cdp, size: Size, startServer: ServerMod
     await veraPhone.waitText('Решает гарант Аня до')
     await veraPhone.waitText('Ваша отметка: прав соперник. Поменять можно, пока гарант не решил.')
     await veraPhone.shot('59a-reshaet-garant-storona')
-    await host.click('Прав соперник')
+    await host.press('Прав соперник')
     await host.waitIn('.modal', 'Утвердить: прав соперник — Вера получает банк 1 000 ₽: Боря −500 ₽, Вера +500 ₽.')
     await host.shot('59b-reshenie-podtverzhdenie')
     await confirmTwice(host, 'Утверждено гарантом Аня (вы), окончательно')
@@ -172,7 +172,7 @@ export async function offerOutcomes(cdp: Cdp, size: Size, startServer: ServerMod
     await boryaPhone.goto(offerHref(lapse))
     await boryaPhone.waitText('Решает гарант Боря (вы) до')
     await boryaPhone.waitText('Одна сторона не отметила исход за 3 дня')
-    await boryaPhone.click('Отказаться')
+    await boryaPhone.press('Отказаться')
     await boryaPhone.waitText('Отказаться быть гарантом?')
     await confirmTwice(boryaPhone, 'Нужен новый гарант')
     await boryaPhone.waitText('Гарант Боря (вы) отказался')
@@ -181,8 +181,8 @@ export async function offerOutcomes(cdp: Cdp, size: Size, startServer: ServerMod
     // Аня называет Гену; Вера видит, кого назвала Аня, и называет того же — Гена гарант
     await host.goto(offerHref(lapse))
     await host.waitText('Назовите нового гаранта')
-    await host.click('Гена')
-    await host.click('Назвать гарантом')
+    await host.press('Гена')
+    await host.press('Назвать гарантом')
     await host.waitText('Назвать гарантом: Гена?')
     await confirmTwice(host, 'Аня (вы) — называет: Гена')
     await host.waitIn(OUTCOME, 'Вера — ещё не назвал(а)')
@@ -192,7 +192,7 @@ export async function offerOutcomes(cdp: Cdp, size: Size, startServer: ServerMod
     await host.shot('61-nuzhen-garant')
     await veraPhone.goto(offerHref(lapse))
     await veraPhone.waitText('Аня — называет: Гена')
-    await veraPhone.click('Назвать гарантом') // выбран тот, кого назвала Аня
+    await veraPhone.press('Назвать гарантом') // выбран тот, кого назвала Аня
     await veraPhone.waitText('Аня назвал(а) того же — Гена сразу станет гарантом, на решение — 3 дня.')
     await confirmTwice(veraPhone, 'Решает гарант Гена до')
     await veraPhone.shot('61a-novyi-garant')
