@@ -11,7 +11,7 @@ import {
   UNKNOWN_FORMAT,
   type Backup,
 } from './backup'
-import type { LogEntry } from './room'
+import { foldLog, type LogEntry } from './room'
 
 const created: LogEntry = { id: 'E1', at: 100, memberId: 'M1', type: 'room.created', roomId: 'R1', name: 'Дача', currency: 'RUB' }
 const host: LogEntry = { id: 'E2', at: 100, memberId: 'M1', type: 'member.added', member: 'M1', name: 'Аня' }
@@ -70,6 +70,17 @@ describe('checkBackup', () => {
       { id: 'C4', at: 4000, memberId: 'M1', type: 'choice.drawn', choice: 'C1', seed: 'ab', options: ['1', 'C2'] },
     ]
     expect(checkBackup({ ...full, log })).toEqual({ ok: true, backup: { ...full, log } })
+  })
+
+  it('ведение (Р-42): записи host.passed и host.taken — годные, как есть; ведущий после загрузки — нынешний', () => {
+    const borya: LogEntry = { id: 'E4', at: 400, memberId: 'M1', type: 'member.added', member: 'M2', name: 'Боря' }
+    const vera: LogEntry = { id: 'E5', at: 400, memberId: 'M1', type: 'member.added', member: 'M3', name: 'Вера' }
+    const passed: LogEntry = { id: 'E6', at: 500, memberId: 'M1', type: 'host.passed', member: 'M2', requestId: 'Q2' }
+    const taken: LogEntry = { id: 'E7', at: 900_000_000, memberId: 'M3', type: 'host.taken', from: 'M2', seenAt: 500, requestId: 'Q3' }
+    const log = [created, host, bet, borya, vera, passed, taken]
+    const r = checkBackup({ ...full, log }, 'full')
+    expect(r).toEqual({ ok: true, backup: { ...full, log } })
+    expect(r.ok && foldLog(r.backup.log)?.hostId).toBe('M3')
   })
 
   it('лишние поля сверху (версия протокола ответа) в копию не попадают', () => {
