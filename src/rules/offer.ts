@@ -9,7 +9,7 @@ import { checkAmount, FINAL_TIME, MAX_EVENT_TEXT, NEED_CHECK, NEED_CONDITION, LO
 import { appealView, courtVerdict, courtView, type CourtCase } from './court'
 import { NORMAL_TIMES, recordTimes, timesOf, type Times } from './pace'
 import type { AppealView, BiddingView, CourtView, OfferInfo, OfferView } from './protocol'
-import { applyEntry, foldLog, type LogEntry, type RoomState } from './room'
+import { applyEntry, foldLog, hostAt, type HostTerm, type LogEntry, type RoomState } from './room'
 
 // Сроки пари — обычного темпа (Р-35): все три — срок молчания (silence), окончательность — срок
 // апелляции (FINAL_TIME). Правила берут сроки пари (times — закреплённые при создании, timesOf);
@@ -291,7 +291,8 @@ export function checkOfferTimes(input: { closesAt: number; expectedAt: number; a
   return null
 }
 
-export type RoomRoles = { hostId: string; members: readonly string[] }
+// hosts — сроки ведения (Р-42; room.ts): ведущий на миг записи — hostAt; нет — всё время hostId
+export type RoomRoles = { hostId: string; members: readonly string[]; hosts?: readonly HostTerm[] }
 
 // Гарант пари: выбран — участник, не автор и не адресат; не выбран — ведущий, а ведущий сам автор
 // или адресат — отказ (гаранта надо выбрать). Заодно проверяет адресата: другой участник. Предмет
@@ -715,7 +716,9 @@ export function roomOffers(records: readonly OfferRecord[], room: RoomRoles): Of
         if (!original || r.to !== original.authorId || checkCounter(original, r.memberId, room, r.at)) continue
       }
       if (r.auction !== undefined && !auctionRecordOk(r, r.auction)) continue
-      const g = offerGuarantor({ to: r.to, guarantor: r.guarantor, noGuarantor: r.guarantor === null, subject: r.subject }, r.memberId, room)
+      // Гарант по умолчанию — ведущий на миг создания (Р-42): в записи он уже назван и со сменой ведения не меняется
+      const roles = { ...room, hostId: hostAt(room, r.at) }
+      const g = offerGuarantor({ to: r.to, guarantor: r.guarantor, noGuarantor: r.guarantor === null, subject: r.subject }, r.memberId, roles)
       if (!g.ok || g.value !== r.guarantor || checkOfferTimes(r, r.at) || checkOfferSubject(r, r.memberId, room)) continue
       const times = recordTimes(r.times)
       offers.set(r.id, {
@@ -972,7 +975,7 @@ export function offerRecord(e: OfferEntry): OfferRecord {
 
 // Ведущий и участники комнаты — для правил пари
 export function roomRoles(state: RoomState): RoomRoles {
-  return { hostId: state.hostId, members: state.members.map((m) => m.id) }
+  return { hostId: state.hostId, members: state.members.map((m) => m.id), ...(state.hosts && { hosts: state.hosts }) }
 }
 
 // Пари комнаты из журнала по порядку создания (roomOffers); комнаты нет — пусто. Суд по «ждёт суда»

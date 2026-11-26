@@ -1,29 +1,45 @@
 import { describe, expect, it } from 'vitest'
-import { courtCandidates, courtRoom } from './appeal'
-import { roomEvents } from './event'
+import { checkReplace, courtCandidates, courtRoom, ONLY_HOST } from './appeal'
+import { formatCountdown } from './date'
+import { hostDecides, hostMayDecide, mayPropose, roomEvents } from './event'
 import {
   ALREADY_DROPPED,
+  ALREADY_HOST,
   checkActive,
   checkDrop,
   checkLeave,
+  checkPassHost,
+  checkTakeHost,
   DROPPED,
   guarantorIn,
+  HOST_AWAY,
   HOST_LEAVES,
   HOST_NOT_DROPPED,
+  hostPassedTo,
+  hostSeen,
+  hostSeenAt,
+  hostTakenBy,
   leaveRevocations,
   MEMBER_LEFT,
   NO_MEMBER,
   NOT_DROPPED,
   ONLY_HOST_DROP,
+  ONLY_HOST_PASS,
   openBet,
   openOffer,
+  PASS_DROPPED,
+  PASS_LEFT,
+  PASS_SELF,
   playingMembers,
   roomMembers,
+  TAKE_DROPPED,
+  takeHostFrom,
   UNSETTLED,
   type LeaveRoom,
 } from './member'
-import { logOffers, offerOutcome, SIDE_SILENCE } from './offer'
-import { absentAt, foldLog, joinRequests, keyMember, nameTaken, returningMember, type LogEntry } from './room'
+import { logOffers, offerOutcome, roomRoles, SIDE_SILENCE } from './offer'
+import { logPace } from './pace'
+import { absentAt, foldLog, hostAt, hostSince, joinRequests, keyMember, nameTaken, returningMember, type LogEntry } from './room'
 import type { TransferRecord } from './settle'
 
 // Записи о переводах из журнала — как у сервера
@@ -249,5 +265,196 @@ describe('выйти: что мешает', () => {
     expect(leaveRevocations(logOffers([...base, open, accepted]), 'M2', 3000)).toEqual([])
     // Отзываемое не мешает выйти
     expect(checkLeave(room([...base, open, expired]), 'M2', 3000)).toBeNull()
+  })
+})
+
+// Ведение (Р-42)
+const pass = (to: string, at: number, by = 'M1'): LogEntry => ({ id: 'H' + to + at, at, memberId: by, type: 'host.passed', member: to, requestId: 'H' + to + at })
+const take = (who: string, at: number, from = 'M1', seenAt = 0): LogEntry => ({ id: 'T' + who + at, at, memberId: who, type: 'host.taken', from, seenAt, requestId: 'T' + who + at })
+
+describe('ведение: свёртка и ведущий на миг записи', () => {
+  it('старая комната без новых записей — ведущий создатель всё время', () => {
+    const state = foldLog(base)!
+    expect(state.hostId).toBe('M1')
+    expect(state.hosts).toEqual([{ member: 'M1', from: 100, how: 'created', by: 'M1', id: 'E1' }])
+    expect([0, 100, 10_000].map((at) => hostAt(state, at))).toEqual(['M1', 'M1', 'M1'])
+    // Состояние не из журнала (без сроков) — ведущий hostId
+    expect(hostAt({ hostId: 'M9' }, 5)).toBe('M9')
+  })
+
+  it('передал и взяли — нынешний ведущий; сроки ведения по порядку; смена действует с её мига', () => {
+    const state = foldLog([...base, pass('M2', 1000), take('M3', 9000, 'M2', 1000)])!
+    expect(state.hostId).toBe('M3')
+    expect(state.hosts?.map((h) => [h.member, h.from, h.how, h.by])).toEqual([
+      ['M1', 100, 'created', 'M1'],
+      ['M2', 1000, 'passed', 'M1'],
+      ['M3', 9000, 'taken', 'M3'],
+    ])
+    expect([999, 1000, 8999, 9000].map((at) => hostAt(state, at))).toEqual(['M1', 'M2', 'M2', 'M3'])
+    expect(hostSince(state)).toBe(9000)
+  })
+
+  it('свёртка держит порядок: передаёт только ведущий, кому — участник в игре; берут у нынешнего', () => {
+    const log: LogEntry[] = [
+      ...base,
+      left('M4', 500),
+      drop('M3', 600),
+      pass('M2', 1000, 'M2'), // не ведущий
+      pass('M1', 1100), // себе
+      pass('M4', 1200), // вышедшему
+      pass('M3', 1300), // выбывшему
+      pass('M9', 1400), // не участнику
+      take('M3', 1500), // выбывший берёт
+      take('M2', 1600, 'M3'), // берут не у нынешнего
+    ]
+    const state = foldLog(log)!
+    expect(state.hostId).toBe('M1')
+    expect(state.hosts).toHaveLength(1)
+  })
+
+  it('прежний ведущий — обычный участник: выходит и «выбыл», не помечает; новый — помечает', () => {
+    const log = [...base, pass('M2', 1000)]
+    const state = foldLog(log)!
+    expect(checkDrop(state, 'M1', 'M3', true)).toBe(ONLY_HOST_DROP)
+    expect(checkDrop(state, 'M2', 'M1', true)).toBeNull()
+    expect(checkLeave({ state, events: [], offers: [], lots: [], choices: [], cases: [], transfers: [] }, 'M1', 2000)).toBeNull()
+    expect(checkLeave({ state, events: [], offers: [], lots: [], choices: [], cases: [], transfers: [] }, 'M2', 2000)).toBe(HOST_LEAVES)
+    // Свёртка: прежний вышел, новый пометил
+    const after = foldLog([...log, left('M1', 2000), drop('M3', 2100, 'M2')])!
+    expect(after.members.map((m) => [m.leftAt, m.droppedAt])).toEqual([
+      [2000, undefined],
+      [undefined, undefined],
+      [undefined, 2100],
+      [undefined, undefined],
+    ])
+  })
+})
+
+describe('передать ведение', () => {
+  it('только ведущий; кому — участник в комнате, не «выбыл», не сам', () => {
+    const state = foldLog([...base, left('M4', 500), drop('M3', 600)])!
+    expect(checkPassHost(state, 'M2', 'M3')).toBe(ONLY_HOST_PASS)
+    expect(checkPassHost(state, 'M1', 'M1')).toBe(PASS_SELF)
+    expect(checkPassHost(state, 'M1', 'M4')).toBe(PASS_LEFT)
+    expect(checkPassHost(state, 'M1', 'M3')).toBe(PASS_DROPPED)
+    expect(checkPassHost(state, 'M1', 'M9')).toBe(NO_MEMBER)
+    expect(checkPassHost(state, 'M1', 7)).toBe(NO_MEMBER)
+    expect(checkPassHost(state, 'M1', 'M2')).toBeNull()
+  })
+})
+
+describe('взять ведение', () => {
+  const DAY = 24 * 60 * 60 * 1000
+  const HOUR = 60 * 60 * 1000
+  const SEEN = 10_000
+
+  it('когда ведущий заходил: запись сервера, его записи в журнале (кроме жребия сервера), не раньше, чем стал ведущим', () => {
+    const state = foldLog(base)!
+    expect(hostSeenAt(base, state, undefined)).toBe(400)
+    expect(hostSeenAt(base, state, SEEN)).toBe(SEEN)
+    const drawn: LogEntry = { id: 'C1', at: 50_000, memberId: 'M1', type: 'court.drawn', target: 'V1', seed: 'ab', candidates: ['M2'] }
+    const own: LogEntry = { id: 'I1', at: 40_000, memberId: 'M1', type: 'invite.changed' }
+    expect(hostSeenAt([...base, own, drawn], state, SEEN)).toBe(40_000)
+    // Ведение передано — считается с мига передачи, хоть новый ещё и не заходил
+    const log = [...base, pass('M2', 30_000)]
+    expect(hostSeenAt(log, foldLog(log)!, SEEN)).toBe(30_000)
+    expect(takeHostFrom(SEEN)).toBe(SEEN + 7 * DAY)
+    expect(HOST_AWAY).toBe(7 * DAY)
+  })
+
+  it('рано, рано на час — отказ с основанием; вовремя — можно; срок один при любом темпе', () => {
+    const fast: LogEntry = { ...base[0], pace: 'fast' } as LogEntry
+    for (const log of [base, [fast, ...base.slice(1)]]) {
+      const state = foldLog(log)!
+      expect(checkTakeHost(state, 'M2', SEEN, SEEN + DAY)).toBe(hostSeen(formatCountdown(DAY), formatCountdown(6 * DAY)))
+      expect(checkTakeHost(state, 'M2', SEEN, SEEN + 7 * DAY - HOUR)).toBe(hostSeen(formatCountdown(7 * DAY - HOUR), formatCountdown(HOUR)))
+      expect(checkTakeHost(state, 'M2', SEEN, SEEN + 7 * DAY)).toBeNull()
+    }
+  })
+
+  it('кто берёт: участник в комнате, не «выбыл», не сам ведущий', () => {
+    const state = foldLog([...base, left('M4', 500), drop('M3', 600)])!
+    const late = SEEN + 8 * DAY
+    expect(checkTakeHost(state, 'M1', SEEN, late)).toBe(ALREADY_HOST)
+    expect(checkTakeHost(state, 'M3', SEEN, late)).toBe(TAKE_DROPPED)
+    expect(checkTakeHost(state, 'M4', SEEN, late)).toBe(NO_MEMBER)
+    expect(checkTakeHost(state, 'M9', SEEN, late)).toBe(NO_MEMBER)
+    expect(checkTakeHost(state, 'M2', SEEN, late)).toBeNull()
+  })
+
+  it('двое подряд: взял первый — второму «Ведение уже взял …»; передано недавно — «уже передано»', () => {
+    const at = SEEN + 7 * DAY
+    const log = [...base, take('M2', at, 'M1', SEEN)]
+    const state = foldLog(log)!
+    expect(state.hostId).toBe('M2')
+    expect(checkTakeHost(state, 'M3', hostSeenAt(log, state, undefined), at)).toBe(hostTakenBy('Боря'))
+    const passed = [...base, pass('M3', at)]
+    expect(checkTakeHost(foldLog(passed)!, 'M2', at, at + HOUR)).toBe(hostPassedTo('Вера'))
+    // Через 7 дней без запросов нового ведущего — берут и у него
+    expect(checkTakeHost(state, 'M3', at, at + 7 * DAY)).toBeNull()
+  })
+})
+
+describe('ведущий на миг записи в событиях, пари, суде и темпе', () => {
+  const created = (id: string, at: number, by: string): LogEntry => ({
+    id,
+    at,
+    memberId: by,
+    type: 'event.created',
+    condition: 'Вася пробежит 10 км',
+    check: 'Скрин',
+    outcomes: [
+      { id: '1', title: 'Да' },
+      { id: '2', title: 'Нет' },
+    ],
+    closesAt: 50_000,
+    expectedAt: 60_000,
+    subject: null,
+    requestId: id,
+  })
+  const bet = (event: string, who: string, at: number): LogEntry => ({ id: 'B' + event + who, at, memberId: who, type: 'bet.placed', event, outcome: '1', amount: 100, requestId: 'B' + event + who })
+
+  it('событие: способ спора — по ведущему на миг создания; решает нынешний, если сам не ставил', () => {
+    const log = [...base, created('V1', 500, 'M2'), bet('V1', 'M3', 600), pass('M3', 1000), created('V2', 1100, 'M2'), bet('V2', 'M1', 1200)]
+    const [v1, v2] = roomEvents(log)
+    expect([v1.hostId, v2.hostId]).toEqual(['M1', 'M3'])
+    // V1: при Ане решает ведущий; нынешняя Вера ставила — не решает, Аня — уже не ведущая
+    expect(hostDecides(v1)).toBe(true)
+    expect(hostMayDecide(v1, 'M3')).toBe(false)
+    expect(hostMayDecide(v1, 'M4')).toBe(true)
+    // V2: при Вере, она не ставила — решает ведущий; ставившая Аня ведущей не была
+    expect(hostDecides(v2)).toBe(true)
+    expect(hostMayDecide(v2, 'M3')).toBe(true)
+  })
+
+  it('событие: за молчащего автора предлагает нынешний ведущий; «ведущий о себе» — ведущий на миг создания', () => {
+    const silent = { ...roomEvents([...base, created('V1', 500, 'M2')])[0] }
+    const later = 60_000 + 3 * 24 * 60 * 60 * 1000
+    expect(mayPropose(silent, 'M3', later, 'M3')).toBe(true)
+    expect(mayPropose(silent, 'M1', later, 'M3')).toBe(false)
+    // Без нынешнего ведущего — ведущий события, как раньше
+    expect(mayPropose(silent, 'M1', later)).toBe(true)
+  })
+
+  it('пари: гарант закреплён в записи — после смены ведения тот же; гарант по умолчанию — ведущий на миг создания', () => {
+    const own = offer({ guarantor: 'M1', to: 'M3' })
+    const log = [...base, own, pass('M4', 1500)]
+    expect(logOffers(log)[0].guarantorId).toBe('M1')
+    expect(roomRoles(foldLog(log)!).hosts).toHaveLength(2)
+  })
+
+  it('суд: досрочно заменяет нынешний ведущий; по умолчанию — ведущий на миг жребия', () => {
+    const c = { target: 'V1', appeal: null, seed: 'ab', candidates: ['M2', 'M3', 'M4'], drawnAt: 0, hostId: 'M1', acts: [] }
+    expect(checkReplace(c, 'M2', 'M3', 'Не отвечает', 1)).toBe(ONLY_HOST)
+    expect(checkReplace(c, 'M2', 'M3', 'Не отвечает', 1, 'M2')).toBeNull()
+    expect(checkReplace(c, 'M1', 'M3', 'Не отвечает', 1, 'M2')).toBe(ONLY_HOST)
+    expect(courtRoom(foldLog([...base, pass('M2', 1000)])!).hosts).toHaveLength(2)
+  })
+
+  it('темп: меняет нынешний ведущий; прежний после передачи — нет', () => {
+    const paced = (by: string, at: number): LogEntry => ({ id: 'S' + by + at, at, memberId: by, type: 'room.pace', pace: 'fast', requestId: 'S' + by + at })
+    expect(logPace([...base, pass('M2', 1000), paced('M1', 2000)]).pace).toBe('normal')
+    expect(logPace([...base, pass('M2', 1000), paced('M2', 2000)]).pace).toBe('fast')
+    expect(logPace([...base, paced('M1', 900), pass('M2', 1000)]).pace).toBe('fast')
   })
 })

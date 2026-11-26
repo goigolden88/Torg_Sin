@@ -173,6 +173,9 @@ import {
 import * as T from '../../src/rules/settle'
 import * as M from '../../src/rules/member'
 import { isDropResponse, isLeaveResponse, type AdmitResponse, type DropResponse, type LeaveResponse } from '../../src/rules/protocol'
+import { HOST_AWAY } from '../../src/rules/member'
+import { formatCountdown } from '../../src/rules/date'
+import { isHostResponse, type HostResponse } from '../../src/rules/protocol'
 import * as P from '../../src/rules/pace'
 import { NORMAL_TIMES } from '../../src/rules/pace'
 import { isPaceResponse, type PaceResponse } from '../../src/rules/protocol'
@@ -226,6 +229,7 @@ import {
   EVENT_CANCELLED,
   EVENT_TAKEN,
   HOST_INTERESTED,
+  HOST_NOW_INTERESTED,
   HOST_ONLY,
   JOIN_TAKEN,
   NO_EVENT,
@@ -465,7 +469,19 @@ export function roomsSuite(
         expect(await r.json()).toEqual({
           v: PROTOCOL_VERSION,
           // Темп не выбран — обычный (Р-35)
-          room: { id: created.roomId, name: 'Дача', currency: 'RUB', hostId: created.memberId, createdAt: s.clock.now, pace: 'normal', times: NORMAL_TIMES },
+          // Ведение (Р-42): создатель — ведущий с мига создания; заходил сейчас — взять можно через 7 дней
+          room: {
+            id: created.roomId,
+            name: 'Дача',
+            currency: 'RUB',
+            hostId: created.memberId,
+            createdAt: s.clock.now,
+            pace: 'normal',
+            times: NORMAL_TIMES,
+            hosts: [{ id: expect.any(String), member: created.memberId, from: s.clock.now, how: 'created', by: created.memberId }],
+            hostSeenAt: s.clock.now,
+            hostTakeFrom: s.clock.now + HOST_AWAY,
+          },
           // Вышел и «выбыл» (Р-40, Р-41) — у каждого участника
           members: [{ id: created.memberId, name: 'Аня', left: false, dropped: false }],
           me: created.memberId,
@@ -874,7 +890,8 @@ export function roomsSuite(
           subjectRule: true,
         })
         // Сроки события (Р-35) — в ответе комнаты и в записи; в обычной комнате — обычный набор
-        const expected = { ...event, times: NORMAL_TIMES, status: 'open', clarifications: [], bets: [], cancelled: null, refunds: [], outcome: null }
+        // hostId — ведущий на миг создания события (Р-42)
+        const expected = { ...event, hostId: room.memberId, times: NORMAL_TIMES, status: 'open', clarifications: [], bets: [], cancelled: null, refunds: [], outcome: null }
         for (const key of [room.key, borya.key, vera.key]) expect(await eventsOf(s, room.roomId, key)).toEqual([expected])
         expect(await eventEntries(s, room.roomId)).toEqual(['event.created'])
         expect((await readLog(s.storage(room.roomId))).at(-1)).toMatchObject({ type: 'event.created', times: NORMAL_TIMES })
@@ -5355,6 +5372,148 @@ export function roomsSuite(
         expect(await outcomeOf(s, id, borya.key, offer.id)).toMatchObject({ phase: 'court' })
         expect(await drawn(s, id)).toEqual([[vera.memberId]])
       })
+
+      // Ведение (Р-42): …/members/<участник>/host — передать, …/host — взять
+      function host(s: TestServer, roomId: string, key: string, memberId?: string, requestId?: string) {
+        return act(s, roomId, key, memberId === undefined ? 'host' : `members/${memberId}/host`, { requestId })
+      }
+
+      it('передать ведение: только ведущий, кому — участник в игре; прежний — обычный участник, новый — ведущий во всём; повтор — тот же ответ', async () => {
+        const s = await server()
+        const { room, borya, vera, gosha, dasha } = await room5(s)
+        const id = room.roomId
+        await ok(flag(s, id, room.key, dasha.memberId, 'drop'))
+        await ok(leave(s, id, gosha.key))
+        await refused(host(s, id, borya.key, vera.memberId), 403, M.ONLY_HOST_PASS)
+        await refused(host(s, id, room.key, room.memberId), 409, M.PASS_SELF)
+        await refused(host(s, id, room.key, gosha.memberId), 409, M.PASS_LEFT)
+        await refused(host(s, id, room.key, dasha.memberId), 409, M.PASS_DROPPED)
+        await refused(host(s, id, room.key, ulid(s.clock.now)), 404, M.NO_MEMBER)
+        s.clock.now += 1000
+        const requestId = ulid(s.clock.now)
+        const passed = await ok<HostResponse>(host(s, id, room.key, borya.memberId, requestId))
+        expect(isHostResponse(passed)).toBe(true)
+        expect(passed.host).toEqual({ id: expect.any(String), member: borya.memberId, from: s.clock.now, how: 'passed', by: room.memberId, previous: room.memberId })
+        // Ответ потерялся — повтор: тот же ответ, второй записи нет
+        s.clock.now += 1000
+        expect(await ok(host(s, id, room.key, borya.memberId, requestId))).toEqual(passed)
+        expect((await readLog(s.storage(id))).filter((e) => e.type === 'host.passed')).toHaveLength(1)
+        // У всех — новый ведущий и история ведения
+        const state = await stateOf(s, id, vera.key)
+        expect(state.room.hostId).toBe(borya.memberId)
+        expect(state.room.hosts?.map((h) => [h.member, h.how])).toEqual([
+          [room.memberId, 'created'],
+          [borya.memberId, 'passed'],
+        ])
+        // Прежний ведущий — обычный участник: не передаёт, не снимает «выбыл», не впускает
+        await refused(host(s, id, room.key, vera.memberId), 403, M.ONLY_HOST_PASS)
+        await refused(flag(s, id, room.key, dasha.memberId, 'restore'), 403, M.ONLY_HOST_DROP)
+        const vova = await join(s, room, 'Вова')
+        await refused(act(s, id, room.key, 'admit', { request: vova.memberId }), 403, HOST_ONLY)
+        // Новый — может; сам выйти — только передав ведение, прежний выходит
+        await ok(act(s, id, borya.key, 'admit', { request: vova.memberId }))
+        await ok(flag(s, id, borya.key, dasha.memberId, 'restore'))
+        await refused(leave(s, id, borya.key), 403, M.HOST_LEAVES)
+        await ok(leave(s, id, room.key))
+        expect((await stateOf(s, id, vera.key)).members.find((m) => m.id === room.memberId)?.left).toBe(true)
+      })
+
+      it('взять ведение: ведущий 7 дней не заходил ни с одного устройства — берёт первый успевший в игре; рано и рано на час — отказ с основанием; второй — «уже взял»', async () => {
+        const s = await server()
+        const { room, borya, vera, gosha } = await room5(s)
+        const id = room.roomId
+        const first = s.clock.now
+        // Когда заходил — не чаще раза в час: через полчаса запись та же, через два часа — новая
+        s.clock.now += HOUR / 2
+        await stateOf(s, id, room.key)
+        expect(await s.storage(id).get(`seen:${room.memberId}`)).toEqual({ at: first })
+        s.clock.now = first + 2 * HOUR
+        await ok(flag(s, id, room.key, gosha.memberId, 'drop'))
+        const last = s.clock.now
+        expect(await s.storage(id).get(`seen:${room.memberId}`)).toEqual({ at: last })
+        // В ответе у всех: когда ведущий заходил и с какого мига можно взять
+        expect((await stateOf(s, id, borya.key)).room).toMatchObject({ hostId: room.memberId, hostSeenAt: last, hostTakeFrom: last + HOST_AWAY })
+        await refused(host(s, id, room.key), 409, M.ALREADY_HOST)
+        // Рано: прошли сутки
+        s.clock.now = last + DAY
+        await refused(host(s, id, borya.key), 409, M.hostSeen(formatCountdown(DAY), formatCountdown(HOST_AWAY - DAY)))
+        // Рано на час; «выбыл» не берёт
+        s.clock.now = last + HOST_AWAY - HOUR
+        await refused(host(s, id, borya.key), 409, M.hostSeen(formatCountdown(HOST_AWAY - HOUR), formatCountdown(HOUR)))
+        s.clock.now = last + HOST_AWAY
+        await refused(host(s, id, gosha.key), 403, M.TAKE_DROPPED)
+        // Вовремя: берёт Боря; повтор — тот же ответ
+        const requestId = ulid(s.clock.now)
+        const taken = await ok<HostResponse>(host(s, id, borya.key, undefined, requestId))
+        expect(isHostResponse(taken)).toBe(true)
+        expect(taken.host).toEqual({ id: expect.any(String), member: borya.memberId, from: s.clock.now, how: 'taken', by: borya.memberId, previous: room.memberId, seenAt: last })
+        expect(await ok(host(s, id, borya.key, undefined, requestId))).toEqual(taken)
+        // Двое подряд: второй — «Ведение уже взял Боря»
+        await refused(host(s, id, vera.key), 409, M.hostTakenBy('Боря'))
+        // В журнале — у кого взято и когда тот заходил; у всех — новый ведущий
+        const takes = (await readLog(s.storage(id))).filter((e) => e.type === 'host.taken')
+        expect(takes).toEqual([expect.objectContaining({ memberId: borya.memberId, from: room.memberId, seenAt: last })])
+        const state = await stateOf(s, id, vera.key)
+        expect(state.room).toMatchObject({ hostId: borya.memberId, hostSeenAt: s.clock.now })
+        expect(state.room.hosts?.map((h) => h.how)).toEqual(['created', 'taken'])
+      })
+
+      it('решения ведущего до и после смены: прежний решает до, после — нынешний, если сам не ставил; способ спора, гарант старых пари не меняются; суд собирает нынешний', async () => {
+        const s = await server()
+        const { room, borya, vera, gosha, dasha } = await room5(s)
+        const id = room.roomId
+        const newEvent = async (key: string) => (await ok<CreateEventResponse>(act(s, id, key, 'events', eventForm(s)))).event
+        // Три события Бори: на первые два Аня не ставила — решает ведущий; на третье ставила — голосование
+        const first = await newEvent(borya.key)
+        const second = await newEvent(borya.key)
+        const third = await newEvent(borya.key)
+        for (const e of [first, second, third]) {
+          await ok(act(s, id, vera.key, `events/${e.id}/bets`, { outcome: '1', amount: 100 }))
+          await ok(act(s, id, gosha.key, `events/${e.id}/bets`, { outcome: '2', amount: 100 }))
+        }
+        await ok(act(s, id, dasha.key, `events/${second.id}/bets`, { outcome: '1', amount: 100 }))
+        await ok(act(s, id, room.key, `events/${third.id}/bets`, { outcome: '1', amount: 100 }))
+        // Пари Бори Вере без выбранного гаранта — гарант по умолчанию Аня, закреплён в записи
+        const offer = await newOffer(s, id, borya.key, { to: vera.memberId })
+        expect(offer.guarantorId).toBe(room.memberId)
+        await ok(act(s, id, vera.key, `offers/${offer.id}/accept`))
+        s.clock.now = first.closesAt
+        for (const e of [first, second, third]) {
+          await ok(act(s, id, borya.key, `events/${e.id}/propose`, { outcome: '1' }))
+          await ok(act(s, id, gosha.key, `events/${e.id}/object`, { reason: 'Не пробежал' }))
+        }
+        const objectedAt = s.clock.now
+        // До передачи решает Аня; ведение — Даше
+        await ok(act(s, id, room.key, `events/${first.id}/decide`, { outcome: '1' }))
+        await ok(host(s, id, room.key, dasha.memberId))
+        // Прежняя ведущая не решает; Даша ставила на второе — тоже нет
+        await refused(act(s, id, room.key, `events/${second.id}/decide`, { outcome: '1' }), 403, HOST_ONLY)
+        await refused(act(s, id, dasha.key, `events/${second.id}/decide`, { outcome: '1' }), 403, HOST_NOW_INTERESTED)
+        // Третье — голосование, как было при Ане: Даша не ставила, но не решает
+        await refused(act(s, id, dasha.key, `events/${third.id}/decide`, { outcome: '1' }), 403, HOST_INTERESTED)
+        // Ведение — Боре (автор, не ставил): второе решает он
+        await ok(host(s, id, dasha.key, borya.memberId))
+        await ok(act(s, id, borya.key, `events/${second.id}/decide`, { outcome: '2' }))
+        const state = await stateOf(s, id, vera.key)
+        const approved = (e: { id: string }) => state.events.find((x) => x.id === e.id)?.outcome?.approved
+        expect(approved(first)).toMatchObject({ outcome: '1', how: 'host', by: room.memberId })
+        expect(approved(second)).toMatchObject({ outcome: '2', how: 'host', by: borya.memberId })
+        // Способ спора — по ведущему на миг создания: у всех трёх событий — Аня
+        expect(state.events.map((e) => e.hostId)).toEqual([room.memberId, room.memberId, room.memberId])
+        // Гарант старого пари — Аня: решает она; новое пари — гарант нынешний ведущий
+        expect(state.offers?.find((o) => o.id === offer.id)?.guarantorId).toBe(room.memberId)
+        s.clock.now = offer.expectedAt
+        await ok(act(s, id, borya.key, `offers/${offer.id}/mark`, { winner: 'author' }))
+        await ok(act(s, id, vera.key, `offers/${offer.id}/mark`, { winner: 'taker' }))
+        await ok(act(s, id, room.key, `offers/${offer.id}/decide`, { winner: 'author' }))
+        expect((await newOffer(s, id, vera.key, { to: gosha.memberId })).guarantorId).toBe(borya.memberId)
+        // Третье: голосовать некому успеть — «ждёт суда», суд собирает сервер от имени нынешнего ведущего
+        s.clock.now = objectedAt + NORMAL_TIMES.court
+        const court = (await stateOf(s, id, vera.key)).events.find((e) => e.id === third.id)?.outcome?.court
+        expect(court).toMatchObject({ hostId: borya.memberId, candidates: [dasha.memberId] })
+        const draws = (await readLog(s.storage(id))).filter((e) => e.type === 'court.drawn')
+        expect(draws).toEqual([expect.objectContaining({ memberId: borya.memberId, target: third.id })])
+      })
     })
 
     describe('копия комнаты: выгрузка и загрузка (этап 6)', () => {
@@ -5588,6 +5747,34 @@ export function roomsSuite(
         // Действие после загрузки работает: журнал дописывается дальше
         await ok(send(t, id, 'transfers', { v: PROTOCOL_VERSION, to: borya.memberId, amount: 10 }, vera.key))
         expect((await readLog(t.storage(id))).length).toBe((copy.log as unknown[]).length + 1)
+      })
+
+      it('ведение (Р-42) — в копии: передача и взятие на месте после загрузки на другой обёртке; «заходил» — без записей seen:', async () => {
+        const s = await server()
+        const room = await create(s)
+        const borya = await member(s, room, 'Боря')
+        const vera = await member(s, room, 'Вера')
+        const id = room.roomId
+        await ok(send(s, id, `members/${borya.memberId}/host`, { v: PROTOCOL_VERSION }, room.key))
+        const passedAt = s.clock.now
+        // Боря-ведущий не заходит 7 дней — Вера берёт ведение
+        s.clock.now += 7 * DAY
+        await ok(send(s, id, 'host', { v: PROTOCOL_VERSION }, vera.key))
+        const before = await ok<RoomStateResponse>(get(s, id, vera.key))
+        expect(before.room.hosts?.map((h) => [h.member, h.how])).toEqual([
+          [room.memberId, 'created'],
+          [borya.memberId, 'passed'],
+          [vera.memberId, 'taken'],
+        ])
+        const copy = await fullCopy(s, id)
+        expect(checkBackup(copy, 'full').ok).toBe(true)
+        expect(Object.keys(copy.store as object).some((k) => k.startsWith('seen:'))).toBe(false)
+        expect((copy.log as { type: string; seenAt?: number }[]).find((e) => e.type === 'host.taken')?.seenAt).toBe(passedAt)
+        const t = await other(s)
+        await ok(importOne(t, id, copy))
+        expect(await ok<RoomStateResponse>(get(t, id, vera.key))).toEqual(before)
+        // Прежний ведущий и после загрузки — обычный участник
+        await refused(send(t, id, `members/${room.memberId}/host`, { v: PROTOCOL_VERSION }, borya.key), 403, M.ONLY_HOST_PASS)
       })
     })
 

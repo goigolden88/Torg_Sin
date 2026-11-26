@@ -57,6 +57,8 @@ const LOG_TYPES: Record<LogEntry['type'], true> = {
   'member.returned': true,
   'member.dropped': true,
   'member.reinstated': true,
+  'host.passed': true,
+  'host.taken': true,
   'invite.changed': true,
   'device.issued': true,
   'device.linked': true,

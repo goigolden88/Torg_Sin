@@ -166,7 +166,7 @@ export function courtVerdict(c: CourtCase, now: number): CourtDecision | null {
 // Суд для ответа: зерно, порядок жребия, места на now, решение
 export function courtView(c: CourtCase, now: number): CourtView {
   const { order, seats } = courtState(c, now)
-  return { seed: c.seed, drawnAt: c.drawnAt, candidates: order, seats, decision: courtVerdict(c, now) }
+  return { hostId: c.hostId, seed: c.seed, drawnAt: c.drawnAt, candidates: order, seats, decision: courtVerdict(c, now) }
 }
 
 // Апелляция для ответа

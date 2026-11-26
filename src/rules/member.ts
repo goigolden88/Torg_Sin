@@ -7,7 +7,8 @@ import { choiceOutcome, type ChoiceState } from './choice'
 import { eventOutcome, type EventState } from './event'
 import { bestLotBid, lotOutcome, type LotState } from './lot'
 import { checkWithdraw, offerAt, offerOutcome, offerStatus, sideOf, type OfferState } from './offer'
-import { inPlay, inRoom, type Member, type RoomState } from './room'
+import { formatCountdown } from './date'
+import { hostSince, inPlay, inRoom, type LogEntry, type Member, type RoomState } from './room'
 import { roomSettlement, roomTransfers, type TransferRecord } from './settle'
 
 // Выйти (Р-40): отказ называет, что мешает, — первое по порядку
@@ -33,6 +34,19 @@ export const ALREADY_DROPPED = 'Участник уже помечен «выб�
 export const NOT_DROPPED = 'Участник не помечен «выбыл»'
 // Выбывший не начинает нового; своё доигрывает и отмечает переводы
 export const DROPPED = 'Вы помечены «выбыл»: новых ставок, пари, встречных, вкладов, событий и апелляций нельзя — можно доигрывать своё и отмечать переводы'
+
+// Ведение (Р-42): передаёт ведущий участнику в игре; берёт участник в игре, если ведущий 7 дней не делал
+// запросов ни с одного устройства — срок один при любом темпе (Р-35)
+export const HOST_AWAY = 7 * 24 * 60 * 60 * 1000
+export const ONLY_HOST_PASS = 'Передать ведение может только ведущий'
+export const PASS_SELF = 'Вы уже ведущий — выберите другого участника'
+export const PASS_LEFT = 'Участник вышел из комнаты — ведение ему не передать'
+export const PASS_DROPPED = 'Участник помечен «выбыл» — ведение ему не передать'
+export const ALREADY_HOST = 'Вы уже ведущий'
+export const TAKE_DROPPED = 'Вы помечены «выбыл» — ведение не взять'
+export const hostTakenBy = (name: string) => `Ведение уже взял ${name}`
+export const hostPassedTo = (name: string) => `Ведение уже передано: ведущий — ${name}`
+export const hostSeen = (ago: string, wait: string) => `Ведущий заходил ${ago} назад: взять ведение можно через ${wait}`
 
 // Комната на очки — переводов нет (Р-32): «все переводы отмечены» там не проверяется
 const POINTS = 'PTS'
@@ -151,6 +165,49 @@ export function checkDrop(state: RoomState, memberId: string, member: unknown, d
   if (!inRoom(m)) return MEMBER_LEFT
   if (dropped) return m.droppedAt === undefined ? null : ALREADY_DROPPED
   return m.droppedAt === undefined ? NOT_DROPPED : null
+}
+
+// Передать ведение (Р-42): только ведущий; кому — участник в комнате, не «выбыл», не сам ведущий. Можно — null
+export function checkPassHost(state: RoomState, memberId: string, to: unknown): string | null {
+  if (memberId !== state.hostId) return ONLY_HOST_PASS
+  const m = typeof to === 'string' ? memberOf(state, to) : null
+  if (!m) return NO_MEMBER
+  if (m.id === state.hostId) return PASS_SELF
+  if (!inRoom(m)) return PASS_LEFT
+  return m.droppedAt === undefined ? null : PASS_DROPPED
+}
+
+// Когда ведущий заходил (Р-42): seen — время его последнего запроса, которое помнит сервер (обновляется
+// не чаще раза в час; нет — не помнит); не раньше, чем он стал ведущим, и не раньше его последней записи в
+// журнале (у старых комнат и после восстановления из копии сервер его запросов не помнит). Жребий суда и
+// выбора дописывает сам сервер от имени ведущего — не его запрос
+export function hostSeenAt(log: readonly LogEntry[], state: RoomState, seen: number | undefined): number {
+  let at = Math.max(seen ?? 0, hostSince(state) ?? state.createdAt)
+  for (const e of log) {
+    if (e.memberId === state.hostId && e.type !== 'court.drawn' && e.type !== 'choice.drawn' && e.at > at) at = e.at
+  }
+  return at
+}
+
+// С какого мига можно взять ведение: через 7 дней после того, как ведущий заходил
+export function takeHostFrom(seenAt: number): number {
+  return seenAt + HOST_AWAY
+}
+
+// Взять ведение (Р-42) на now: участник в комнате, не «выбыл», не сам ведущий; ведущий не заходил 7 дней
+// (seenAt — hostSeenAt). Ведущий сменился за эти 7 дней — «уже взял» / «уже передано» с именем нового (взял
+// первый успевший), иначе — «заходил … назад: можно через …». Можно — null
+export function checkTakeHost(state: RoomState, memberId: string, seenAt: number, now: number): string | null {
+  const me = memberOf(state, memberId)
+  if (!me || !inRoom(me)) return NO_MEMBER
+  if (memberId === state.hostId) return ALREADY_HOST
+  if (me.droppedAt !== undefined) return TAKE_DROPPED
+  const from = takeHostFrom(seenAt)
+  if (now >= from) return null
+  const last = state.hosts?.at(-1)
+  const name = memberOf(state, state.hostId)?.name ?? ''
+  if (last && last.how !== 'created' && now < last.from + HOST_AWAY) return last.how === 'taken' ? hostTakenBy(name) : hostPassedTo(name)
+  return hostSeen(formatCountdown(now - seenAt), formatCountdown(from - now))
 }
 
 // Новое действие (ставка, пари, встречное, вклад, событие, лот, выбор, апелляция): выбывшему — отказ (Р-41)

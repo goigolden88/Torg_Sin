@@ -17,7 +17,7 @@ import type {
   OutcomeView,
 } from './protocol'
 import { durationText, NORMAL_TIMES, recordTimes, timesOf, type Times } from './pace'
-import type { LogEntry } from './room'
+import { applyEntry, type LogEntry, type RoomState } from './room'
 
 // Сроки исхода (Архитектура, «Правила» — «Исход пула», «Окончательность»; Р-17) — обычного темпа
 // (Р-35). Правила берут сроки события (times — закреплённые при создании, timesOf); константы — для
@@ -212,7 +212,8 @@ type Round = {
 }
 
 // Событие из журнала. requestId — только для сервера (узнать повтор), наружу не идёт.
-// hostId — ведущий комнаты. Поля хода исхода — нынешнего предложения; withdrawn — снятые
+// hostId — ведущий на миг создания события (Р-42): по нему способ спора — решает ведущий или голосование
+// (hostDecides) — не меняется со сменой ведения; решает нынешний ведущий (hostMayDecide). Поля хода исхода — нынешнего предложения; withdrawn — снятые
 // «ещё не известно» (Р-27), по порядку. closedAt — миг досрочного закрытия приёма: первое
 // предложение раньше «приём до» (Р-27); нет — null. times — сроки, закреплённые при создании (Р-35);
 // нет — обычный набор (timesOf)
@@ -252,9 +253,11 @@ function markOf(e: OutcomeEntry): Requested<OutcomeMark> {
 export function roomEvents(log: readonly LogEntry[]): EventState[] {
   const events = new Map<string, EventState>()
   const members: string[] = []
-  let hostId = ''
+  // Ведущий — нынешний на миг записи (Р-42): свёртка комнаты по тому же журналу, смена ведения — её записью
+  let room: RoomState | null = null
   for (const e of log) {
-    if (e.type === 'room.created' && !hostId) hostId = e.memberId
+    room = applyEntry(room, e)
+    const hostId = room?.hostId ?? ''
     if (e.type === 'member.added' && !members.includes(e.member)) members.push(e.member)
     if (e.type === 'event.created') {
       if (!events.has(e.id)) {
@@ -318,7 +321,6 @@ export function roomEvents(log: readonly LogEntry[]): EventState[] {
         break
     }
   }
-  for (const ev of events.values()) ev.hostId = hostId
   return [...events.values()]
 }
 
@@ -449,6 +451,13 @@ export function hostDecides(e: Pick<EventRoles, 'bets' | 'hostId' | 'subjectId'>
   return !betOn(e, e.hostId) && e.subjectId !== e.hostId
 }
 
+// Может ли нынешний ведущий host решить возражение (Р-42): способ — «решает ведущий» (hostDecides, по
+// ведущему на миг создания), и сам host не ставил и не предмет спора. Ведение сменилось на ставившего — он
+// не решает: передать ведение тому, кто не ставил
+export function hostMayDecide(e: Pick<EventRoles, 'bets' | 'hostId' | 'subjectId'>, host: string): boolean {
+  return hostDecides(e) && !betOn(e, host) && e.subjectId !== host
+}
+
 // Есть ли на событии ставки других участников — кроме memberId (свои не в счёт)
 export function othersBet(e: WithBets, memberId: string): boolean {
   return e.bets.some((b) => b.memberId !== memberId)
@@ -501,11 +510,13 @@ export function eventVoters(e: EventState): string[] {
 // ожидается к» срок молчания (3 дня у обычного темпа; Р-35 — срок события); предмет спора — никогда. Ведущий завёл событие о себе (он и автор, и
 // предмет) — любой участник, кроме предмета спора: первое предложение — единственное (Р-19;
 // снятое «ещё не известно» — не в счёт, Р-27)
-export function mayPropose(e: Omit<EventRoles, 'bets'>, memberId: string, now: number): boolean {
+// «Ведущий о себе» — ведущий на миг создания (e.hostId); предлагает за автора нынешний ведущий host (Р-42;
+// не задан — тот же)
+export function mayPropose(e: Omit<EventRoles, 'bets'>, memberId: string, now: number, host: string = e.hostId): boolean {
   if (memberId === e.subjectId) return false
   if (e.authorId === e.hostId && e.subjectId === e.hostId) return true
   if (memberId === e.authorId) return true
-  return memberId === e.hostId && (e.authorId === e.subjectId || now >= e.expectedAt + timesOf(e).silence)
+  return memberId === host && (e.authorId === e.subjectId || now >= e.expectedAt + timesOf(e).silence)
 }
 
 export function markOut(m: OutcomeMark): OutcomeMark {
@@ -658,11 +669,13 @@ export function betOf(b: BetInfo): BetInfo {
 }
 
 // Событие для ответа GET /rooms/<номер>: без номеров запросов, со статусом на now; court — дело суда
-// по событию (Р-24), нет — null. closedAt — только у закрытых досрочно (Р-27): у прочих ответ прежний
+// по событию (Р-24), нет — null. closedAt — только у закрытых досрочно (Р-27): у прочих ответ прежний.
+// hostId — ведущий на миг создания (Р-42)
 export function eventView(e: EventState, now: number, court: CourtCase | null = null): EventView {
   const outcome = eventOutcome(e, now, court)
   return {
     ...infoOf(e),
+    hostId: e.hostId,
     ...(e.closedAt !== null && { closedAt: e.closedAt }),
     status: eventStatus(e, now),
     clarifications: e.clarifications,

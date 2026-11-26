@@ -10,6 +10,8 @@
 //   device:<хеш>   — ссылка для другого устройства: чья, до когда, отвязать ли прежние,
 //                    использована ли; токена в открытом виде нет
 //   registry       — комната отмечена в реестре комнат (только Cloudflare, index.ts); в копию не идёт
+//   seen:<участник> — когда участник последний раз делал запрос к комнате (Р-42; не чаще раза в час);
+//                    в копию не идёт: без него «заходил» — по записям ведущего в журнале
 //
 // Копия комнаты (этап 6, src/rules/backup.ts) — журнал и записи key:, device:, invite, secret как есть
 import {
@@ -55,6 +57,7 @@ import {
   eventStatus,
   eventVoters,
   hostDecides,
+  hostMayDecide,
   infoOf,
   markOut,
   mayPropose,
@@ -139,6 +142,7 @@ import type {
   Clarification,
   CourtAct,
   DropResponse,
+  HostResponse,
   LeaveResponse,
   CourtVerdict,
   EventInfo,
@@ -212,6 +216,8 @@ export const OBJECTION_OVER = objectionOver({})
 export const ALREADY_APPROVED = 'Исход уже утверждён'
 export const NO_OBJECTION = 'Возражений нет — решать нечего'
 export const HOST_INTERESTED = 'Ведущий ставил или он предмет спора — исход решает голосование'
+// Ведение сменилось (Р-42): событие заведено при прежнем ведущем, нынешний на него ставил или он предмет спора
+export const HOST_NOW_INTERESTED = 'Вы ставили на это событие или вы его предмет — решить не можете: передайте ведение тому, кто не ставил'
 export const ALREADY_DECIDED = 'Ведущий уже решил'
 export const NO_VOTING = 'Голосования нет: возражение решает ведущий'
 export const VOTERS_ONLY = 'Голосуют только те, кто не ставил и не предмет спора'
@@ -238,6 +244,11 @@ const INVITE = STORE_INVITE
 const SECRET = STORE_SECRET
 const DEVICE = STORE_DEVICE
 const REGISTERED = 'registry'
+const SEEN = 'seen:'
+
+// Когда участник последний раз делал запрос к комнате (Р-42): время сервера, обновляется не чаще раза в час
+type SeenRecord = { at: number }
+export const SEEN_STEP = 60 * 60 * 1000
 
 // Номер записи — по порядку: 8 цифр, ключи сортируются как числа
 function logKey(n: number): string {
@@ -289,12 +300,14 @@ export async function createRoom(storage: RoomStorage, input: CreateInput, now: 
   const existing = foldLog(log)
   if (existing) {
     const owner = await storage.get<KeyRecord>(KEY + input.keyHash)
-    const host = existing.members.find((m) => m.id === existing.hostId)
     const invite = await storage.get<InviteRecord>(INVITE)
     const created = log.find((e) => e.type === 'room.created')
     const createdMode = created?.type === 'room.created' ? created.settleMode : undefined
+    // Повтор создания — от создателя (автор room.created), даже если ведение уже передано (Р-42)
+    const creatorId = created?.memberId ?? existing.hostId
+    const host = existing.members.find((m) => m.id === creatorId)
     const same =
-      owner?.memberId === existing.hostId &&
+      owner?.memberId === creatorId &&
       existing.name === input.name &&
       existing.currency === input.currency &&
       host?.name === input.hostName &&
@@ -303,7 +316,7 @@ export async function createRoom(storage: RoomStorage, input: CreateInput, now: 
       !!created &&
       samePace(pace.logPace([created]), roomPaceOf(input.pace))
     if (!same || !invite) return { ok: false, status: 409, error: REQUEST_TAKEN }
-    return { ok: true, roomId: existing.id, memberId: existing.hostId, invite: invite.token }
+    return { ok: true, roomId: existing.id, memberId: creatorId, invite: invite.token }
   }
   const hostId = ulid(now)
   // Ключ и приглашение — до журнала: журнал есть — значит, комната создана целиком
@@ -348,6 +361,7 @@ export type StateResult =
       transfers: settle.TransferRecord[]
       settleMode: settle.SettleMode
       pace: pace.RoomPace
+      hostSeenAt: number // когда ведущий заходил (Р-42, hostSeenAt)
     }
   | Failure
 
@@ -388,6 +402,7 @@ async function hostCaller(storage: RoomStorage, keyHash: string): Promise<Caller
 // выбор. seed — источник зёрен жребия (тесты подставляют своё)
 export async function roomState(storage: RoomStorage, keyHash: string, now: number, seed: () => string = randomSeed): Promise<StateResult> {
   await drawDue(storage, now, seed)
+  await noteSeen(storage, keyHash, now)
   const c = await caller(storage, keyHash)
   if (!c.ok) return c
   const events = roomEvents(c.log)
@@ -405,6 +420,7 @@ export async function roomState(storage: RoomStorage, keyHash: string, now: numb
     transfers: logTransfers(c.log),
     settleMode: logSettleMode(c.log),
     pace: pace.logPace(c.log),
+    hostSeenAt: await hostSeen(storage, c.log, c.state),
   }
 }
 
@@ -531,6 +547,9 @@ export type RoomAction =
   // Жизнь комнаты (Р-40, Р-41; правила — member.ts): выйти самому; ведущий ставит (dropped) и снимает «выбыл»
   | { type: 'leave'; keyHash: string; requestId: string }
   | { type: 'dropMember'; keyHash: string; member: string; dropped: boolean; requestId: string }
+  // Ведение (Р-42; правила — member.ts): ведущий передаёт участнику; участник берёт, если ведущий 7 дней не заходил
+  | { type: 'passHost'; keyHash: string; member: string; requestId: string }
+  | { type: 'takeHost'; keyHash: string; requestId: string }
   // События-пул: форма уже проверена (event.ts, checkEventInput); сроки — здесь, по времени сервера
   | { type: 'createEvent'; keyHash: string; input: EventInput; requestId: string }
   | { type: 'placeBet'; keyHash: string; event: string; outcome: string; amount: number; requestId: string }
@@ -611,6 +630,8 @@ export type ActionValues = {
   claimDevice: { memberId: string }
   leave: { left: LeaveResponse['left'] }
   dropMember: { dropped: DropResponse['dropped'] }
+  passHost: { host: HostResponse['host'] }
+  takeHost: { host: HostResponse['host'] }
   createEvent: { event: EventInfo }
   placeBet: { bet: BetInfo }
   clarifyEvent: { clarification: Clarification }
@@ -664,6 +685,7 @@ export async function act<K extends ActionType>(
 ): Promise<ActionResult<K>> {
   const a = action as RoomAction
   await drawDue(storage, now, seed)
+  if ('keyHash' in a) await noteSeen(storage, a.keyHash, now)
   let r: ActionResult
   switch (a.type) {
     case 'preview':
@@ -695,6 +717,12 @@ export async function act<K extends ActionType>(
       break
     case 'dropMember':
       r = await dropMember(storage, a, now)
+      break
+    case 'passHost':
+      r = await passHost(storage, a, now)
+      break
+    case 'takeHost':
+      r = await takeHost(storage, a, now)
       break
     case 'createEvent':
       r = await createEvent(storage, a, now)
@@ -1058,6 +1086,73 @@ async function dropMember(
   return ok({ dropped: dropOut(entry) })
 }
 
+// --- Ведение (Р-42). Правила — checkPassHost / checkTakeHost / hostSeenAt (member.ts); смену держит свёртка
+// комнаты. Когда участник заходил — запись seen:<участник> (не журнал)
+
+type HostEntry = Extract<LogEntry, { type: 'host.passed' | 'host.taken' }>
+
+function hostOut(e: HostEntry): HostResponse['host'] {
+  const term = { id: e.id, from: e.at, by: e.memberId }
+  return e.type === 'host.passed'
+    ? { ...term, member: e.member, how: 'passed', previous: e.memberId }
+    : { ...term, member: e.memberId, how: 'taken', previous: e.from, seenAt: e.seenAt }
+}
+
+// Участник сделал запрос к комнате своим ключом — запомнить когда, не чаще раза в час (SEEN_STEP). Ключ
+// заявки, отвязанный, чужой и вышедшего — не участник в комнате: ничего не пишется
+async function noteSeen(storage: RoomStorage, keyHash: string, now: number): Promise<void> {
+  const owner = await storage.get<KeyRecord>(KEY + keyHash)
+  if (!owner || owner.unlinkedAt !== undefined) return
+  const log = await readLog(storage)
+  const state = foldLog(log)
+  const id = keyMember(joinRequests(log), owner.memberId)
+  if (!state || !state.members.some((m) => m.id === id && inRoom(m))) return
+  const seen = await storage.get<SeenRecord>(SEEN + id)
+  if (seen && now - seen.at < SEEN_STEP) return
+  await storage.put<SeenRecord>(SEEN + id, { at: now })
+}
+
+// Когда нынешний ведущий заходил (hostSeenAt): запись seen: и его записи в журнале
+async function hostSeen(storage: RoomStorage, log: readonly LogEntry[], state: RoomState): Promise<number> {
+  return member.hostSeenAt(log, state, (await storage.get<SeenRecord>(SEEN + state.hostId))?.at)
+}
+
+// Отказ ведения: не ведущий передаёт и «выбыл» берёт — 403, нет участника — 404, прочее — 409
+function hostRefusal(error: string): Failure {
+  if (error === member.ONLY_HOST_PASS || error === member.TAKE_DROPPED) return fail(403, error)
+  return fail(error === member.NO_MEMBER ? 404 : 409, error)
+}
+
+// Передать ведение (checkPassHost): ведущий — участнику в игре; прежний — обычный участник. Повтор с тем
+// же номером запроса — тот же ответ
+async function passHost(storage: RoomStorage, a: { keyHash: string; member: string; requestId: string }, now: number): Promise<ActionResult<'passHost'>> {
+  const c = await caller(storage, a.keyHash)
+  if (!c.ok) return c
+  const again = byRequest(c.log, a.requestId)
+  if (again) return again.type === 'host.passed' && again.memberId === c.me && again.member === a.member ? ok({ host: hostOut(again) }) : fail(409, REQUEST_USED)
+  const refused = member.checkPassHost(c.state, c.me, a.member)
+  if (refused) return hostRefusal(refused)
+  const entry: HostEntry = { id: ulid(now), at: now, memberId: c.me, type: 'host.passed', member: a.member, requestId: a.requestId }
+  await append(storage, [entry])
+  return ok({ host: hostOut(entry) })
+}
+
+// Взять ведение (checkTakeHost): участник в игре, если ведущий 7 дней не делал запросов; берёт первый
+// успевший — второму «Ведение уже взял …». В записи — у кого взято и когда тот заходил. Повтор с тем же
+// номером запроса — тот же ответ
+async function takeHost(storage: RoomStorage, a: { keyHash: string; requestId: string }, now: number): Promise<ActionResult<'takeHost'>> {
+  const c = await caller(storage, a.keyHash)
+  if (!c.ok) return c
+  const again = byRequest(c.log, a.requestId)
+  if (again) return again.type === 'host.taken' && again.memberId === c.me ? ok({ host: hostOut(again) }) : fail(409, REQUEST_USED)
+  const seenAt = await hostSeen(storage, c.log, c.state)
+  const refused = member.checkTakeHost(c.state, c.me, seenAt, now)
+  if (refused) return hostRefusal(refused)
+  const entry: HostEntry = { id: ulid(now), at: now, memberId: c.me, type: 'host.taken', from: c.state.hostId, seenAt, requestId: a.requestId }
+  await append(storage, [entry])
+  return ok({ host: hostOut(entry) })
+}
+
 // Выбывший (Р-41) не начинает нового: отказ 403; в игре — null
 function droppedRefusal(c: Caller): Failure | null {
   const refused = member.checkActive(c.state, c.me)
@@ -1251,7 +1346,7 @@ async function proposeOutcome(storage: RoomStorage, a: OutcomeAction, now: numbe
   const { event } = live
   if (event.proposal && withdrawnAt(event, now) === null) return fail(409, ALREADY_PROPOSED)
   if (c.me === event.subjectId) return fail(403, SUBJECT_SILENT)
-  if (!mayPropose(event, c.me, now)) return fail(403, proposerOnly(event))
+  if (!mayPropose(event, c.me, now, c.state.hostId)) return fail(403, proposerOnly(event))
   if (!event.outcomes.some((o) => o.id === a.outcome)) return fail(400, NO_OUTCOME)
   const proposal: OutcomeMark = { id: ulid(now), at: now, by: c.me, outcome: a.outcome }
   await append(storage, [{ id: proposal.id, at: now, memberId: c.me, type: 'outcome.proposed', event: event.id, outcome: a.outcome, requestId: a.requestId }])
@@ -1337,6 +1432,8 @@ async function decideOutcome(storage: RoomStorage, a: OutcomeAction, now: number
   if (c.me !== c.state.hostId) return fail(403, HOST_ONLY)
   if (event.objections.length === 0) return fail(409, NO_OBJECTION)
   if (!hostDecides(event)) return fail(403, HOST_INTERESTED)
+  // Способ — по ведущему на миг создания; решает нынешний, если сам не ставил и не предмет спора (Р-42)
+  if (!hostMayDecide(event, c.me)) return fail(403, HOST_NOW_INTERESTED)
   if (event.decision) return fail(409, ALREADY_DECIDED)
   if (!decisionChoice(event, a.outcome)) return fail(400, NO_OUTCOME)
   const decision: OutcomeMark = { id: ulid(now), at: now, by: c.me, outcome: a.outcome }
@@ -2295,7 +2392,7 @@ async function replaceJuror(
   }
   const d: CourtCaller = c
   if (!d.court) return fail(409, NO_COURT)
-  const refused = appeal.checkReplace(d.court, c.me, a.member, a.reason, now)
+  const refused = appeal.checkReplace(d.court, c.me, a.member, a.reason, now, c.state.hostId)
   if (refused) return courtRefusal(refused)
   const entry: ReplacedEntry = {
     id: ulid(now),

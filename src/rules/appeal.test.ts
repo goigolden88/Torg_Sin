@@ -998,7 +998,8 @@ describe('журнал комнаты (logAppeals, Р-25)', () => {
     const withCourt = [...tie, toLog(drawn(at, ['C', 'D', 'E', 'F']), '')]
     expect(caseOf(logAppeals(withCourt), 'E1')).toMatchObject({ appeal: null, drawnAt: at, candidates: ['C', 'D', 'E', 'F'] })
     expect(logAppeals(withCourt.slice(1))).toEqual([])
-    expect(courtRoomOf(foldLog(withCourt) as RoomState)).toEqual(courtRoom(MEMBERS))
+    // Сроки ведения (Р-42) — из журнала: создатель с мига создания
+    expect(courtRoomOf(foldLog(withCourt) as RoomState)).toEqual({ ...courtRoom(MEMBERS), hosts: [{ member: 'H', from: 0, how: 'created', by: 'H', id: 'R' }] })
   })
 })
 

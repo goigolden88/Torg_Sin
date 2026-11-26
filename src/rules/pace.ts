@@ -2,7 +2,7 @@
 // комнаты, а из темпа: «обычный», «быстрый» или «свой» (каждый срок — из списка). Сроки закрепляются
 // в событии и пари при создании (поле times записи): смена темпа задним числом ничего не сокращает.
 // Нет поля — обычный набор (все старые записи). Ни DOM, ни Cloudflare
-import type { LogEntry } from './room'
+import { applyEntry, type LogEntry, type RoomState } from './room'
 
 const HOUR = 60 * 60 * 1000
 const DAY = 24 * HOUR
@@ -149,14 +149,15 @@ function entryPace(x: { pace?: unknown; times?: unknown }): RoomPace {
 
 // Нынешний темп комнаты из журнала: при создании (room.created; нет поля — обычный), затем последняя
 // смена room.pace, которую разрешает checkPaceChange (автор — ведущий, темп годный): сервер и свёртка
-// не расходятся
+// не расходятся. Ведущий — нынешний на миг записи (Р-42): свёртка комнаты по тому же журналу
 export function logPace(log: readonly LogEntry[]): RoomPace {
   const created = log.find((e) => e.type === 'room.created')
   if (!created || created.type !== 'room.created') return { pace: DEFAULT_PACE, times: NORMAL_TIMES }
   let current = entryPace(created)
-  const room = { hostId: created.memberId }
+  let room: RoomState | null = null
   for (const e of log) {
-    if (e.type !== 'room.pace') continue
+    room = applyEntry(room, e)
+    if (e.type !== 'room.pace' || !room) continue
     if (!checkPaceChange(current, room, e.memberId, e)) current = entryPace(e)
   }
   return current

@@ -35,6 +35,7 @@ import {
   isRejectResponse,
   isPaceResponse,
   isRoomStateResponse,
+  isHostResponse,
   isSettlementView,
   isSettleModeResponse,
   isTransferResponse,
@@ -117,6 +118,21 @@ describe('ответы комнат', () => {
     expect(isRoomStateResponse({ ...state, members: [{ id: 'M' }] })).toBe(false)
     expect(isRoomStateResponse({ ...state, room: { ...state.room, createdAt: '1' } })).toBe(false)
     expect(isRoomStateResponse({ ...state, me: undefined })).toBe(false)
+  })
+  it('ведение (Р-42): сроки ведения, «заходил», «взять можно с», ведущий события и суда; ответ на смену', () => {
+    const term = { id: 'H', member: 'M', from: 1, how: 'created', by: 'M' }
+    const room = { ...state.room, hosts: [term, { ...term, how: 'taken' }], hostSeenAt: 5, hostTakeFrom: 9 }
+    expect(isRoomStateResponse({ ...state, room })).toBe(true)
+    expect(isRoomStateResponse({ ...state, events: [{ ...view, hostId: 'M' }] })).toBe(true)
+    for (const bad of [{ ...room, hosts: [{ ...term, how: 'отдал' }] }, { ...room, hosts: [{ ...term, from: '1' }] }, { ...room, hostSeenAt: '5' }, { ...room, hostTakeFrom: null }]) {
+      expect(isRoomStateResponse({ ...state, room: bad })).toBe(false)
+    }
+    expect(isRoomStateResponse({ ...state, events: [{ ...view, hostId: 1 }] })).toBe(false)
+    const v = PROTOCOL_VERSION
+    expect(isHostResponse({ v, host: { ...term, how: 'passed', previous: 'A' } })).toBe(true)
+    expect(isHostResponse({ v, host: { ...term, how: 'taken', previous: 'A', seenAt: 3 } })).toBe(true)
+    expect(isHostResponse({ v, host: { ...term, how: 'taken' } })).toBe(false)
+    expect(isHostResponse({ v, host: { ...term, previous: 'A', seenAt: '3' } })).toBe(false)
   })
   it('состояние комнаты: события и время сервера', () => {
     expect(isRoomStateResponse({ ...state, events: [view] })).toBe(true)
