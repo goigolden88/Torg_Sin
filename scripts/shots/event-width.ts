@@ -39,7 +39,7 @@ export async function eventWidth(cdp: Cdp, startServer: ServerModule['startServe
     const host = await Device.open(cdp, SIZES[0], 'Аня')
     await host.goto(`${SITE}#/device/${room.roomId}/${token}?server=${encodeURIComponent(server.url)}`)
     await host.waitText('Открыть комнату здесь')
-    await host.click('Открыть комнату здесь')
+    await host.press('Открыть комнату здесь')
     await host.waitText('Участники')
     const eventHref = `${SITE}#/room/${room.roomId}/event/${event.id}`
     const newHref = `${SITE}#/room/${room.roomId}/event/new`

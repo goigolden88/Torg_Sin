@@ -33,7 +33,7 @@ export async function choices(cdp: Cdp, size: Size, startServer: ServerModule['s
       const device = await Device.open(cdp, size, name)
       await device.goto(`${SITE}#/device/${room.roomId}/${token}?server=${encodeURIComponent(server.url)}`)
       await device.waitText('Открыть комнату здесь')
-      await device.click('Открыть комнату здесь')
+      await device.press('Открыть комнату здесь')
       await device.waitText('Участники')
       return device
     }
@@ -72,7 +72,7 @@ export async function choices(cdp: Cdp, size: Size, startServer: ServerModule['s
     await anyaPhone.waitIn(LIST, 'Выборов пока нет')
 
     // Выбор 1 — из формы: вопрос, два варианта, получатель — ведущая, сроки; «как это работает»
-    await anyaPhone.click('Начать выбор')
+    await anyaPhone.press('Начать выбор')
     await anyaPhone.waitText('Новый выбор')
     await anyaPhone.fill('Вопрос', 'Куда едем на майские?')
     await anyaPhone.fill('Вариант 1', 'Ладога')
@@ -85,7 +85,7 @@ export async function choices(cdp: Cdp, size: Size, startServer: ServerModule['s
     await anyaPhone.waitIn(HOW, 'Проигравшие не платят')
     await noScroll(anyaPhone, '«Новый выбор»')
     await anyaPhone.shot('170-vybor-novyi')
-    await anyaPhone.click('Начать')
+    await anyaPhone.press('Начать')
     await anyaPhone.waitIn(MODAL, 'Начать выбор?')
     await anyaPhone.waitIn(MODAL, 'Варианты: „Ладога“, „Карелия“.')
     await confirmTwice(anyaPhone, 'Добавить вариант')
@@ -120,7 +120,7 @@ export async function choices(cdp: Cdp, size: Size, startServer: ServerModule['s
     await veraPhone.goto(choiceHref(trip))
     await veraPhone.waitIn(STAKE_FORM, 'Вкладывают только в один вариант')
     if (await has(veraPhone, OPTION_FORM)) throw new Error('В фазе вкладов есть «Добавить вариант»')
-    await veraPhone.click('„Ладога“')
+    await veraPhone.press('„Ладога“')
     await veraPhone.fill('Вклад, ₽', '500')
     await veraPhone.waitIn(STAKE_FORM, 'Вы вкладываете 500 ₽ в „Ладога“ — если он победит, заплатите получателю — Аня — 500 ₽')
     await veraPhone.press('Вложить')

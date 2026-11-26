@@ -34,7 +34,7 @@ export async function lots(cdp: Cdp, size: Size, startServer: ServerModule['star
       const device = await Device.open(cdp, size, name)
       await device.goto(`${SITE}#/device/${room.roomId}/${token}?server=${encodeURIComponent(server.url)}`)
       await device.waitText('Открыть комнату здесь')
-      await device.click('Открыть комнату здесь')
+      await device.press('Открыть комнату здесь')
       await device.waitText('Участники')
       return device
     }
@@ -73,7 +73,7 @@ export async function lots(cdp: Cdp, size: Size, startServer: ServerModule['star
     await boryaPhone.waitIn(LIST, 'Лотов пока нет')
 
     // Лот 1 — из формы: шаг подставлен, «торг закончится не позже …»
-    await boryaPhone.click('Выставить лот')
+    await boryaPhone.press('Выставить лот')
     await boryaPhone.waitText('Новый лот')
     await boryaPhone.fill('Название', 'Велосипед «Кама»')
     await boryaPhone.fill('Описание', 'Синий, 2015 год, звонок в подарок. Забрать на даче')
@@ -86,7 +86,7 @@ export async function lots(cdp: Cdp, size: Size, startServer: ServerModule['star
     await boryaPhone.waitIn('.offer-summary', 'Старт — 1 000 ₽, шаг — 100 ₽')
     await noScroll(boryaPhone, '«Новый лот»')
     await boryaPhone.shot('160-lot-novyi')
-    await boryaPhone.click('Выставить')
+    await boryaPhone.press('Выставить')
     await boryaPhone.waitIn(MODAL, 'Выставить лот?')
     await boryaPhone.waitIn(MODAL, 'Снять лот можно, пока ставок нет')
     await boryaPhone.shot('160a-lot-podtverzhdenie')
@@ -176,7 +176,7 @@ export async function lots(cdp: Cdp, size: Size, startServer: ServerModule['star
     if (votes.some((v) => v.startsWith('Оставить') || v.startsWith('Отменить') || v === 'Подать апелляцию')) throw new Error('У лота голоса чужого спора: ' + votes.join(', '))
     await noScroll(veraPhone, 'Суд по лоту')
     await veraPhone.shot('165-lot-sud')
-    await veraPhone.click('Передано')
+    await veraPhone.press('Передано')
     await veraPhone.waitIn(MODAL, 'лот получен, победитель должен продавцу свою ставку')
     await confirmTwice(veraPhone, 'голос: передано')
     await veraPhone.goto(roomHref)

@@ -54,7 +54,7 @@ export async function history(cdp: Cdp, size: Size, startServer: ServerModule['s
     const { token } = await api<{ token: string }>(server, `${rooms}/device`, room.key, {})
     await host.goto(`${SITE}#/device/${room.roomId}/${token}?server=${encodeURIComponent(server.url)}`)
     await host.waitText('Открыть комнату здесь')
-    await host.click('Открыть комнату здесь')
+    await host.press('Открыть комнату здесь')
     await host.waitText('Участники')
 
     // Пусто: строки «История» нет, экран — «пока нет»
@@ -119,7 +119,7 @@ export async function history(cdp: Cdp, size: Size, startServer: ServerModule['s
     await host.shot('121-komnata-istoriya')
 
     // «История»: итоги по убыванию, прошедшее новое сверху с исходом и моим результатом
-    await host.click('История · 4')
+    await host.press('История · 4')
     await host.waitIn(MAIN, 'Итоги')
     for (const text of [
       'Аня',
@@ -145,7 +145,7 @@ export async function history(cdp: Cdp, size: Size, startServer: ServerModule['s
     await host.shot('122-istoriya')
 
     // «С моим участием» — только свои
-    await host.click('С моим участием')
+    await host.press('С моим участием')
     await host.waitCount('.history-list .event-item', 2)
     await absent(MAIN, 'Боря первым увидит нерпу', 'История: с моим участием')
     await absent(MAIN, 'Палатки поставим до темноты', 'История: с моим участием')
@@ -153,9 +153,9 @@ export async function history(cdp: Cdp, size: Size, startServer: ServerModule['s
     await host.shot('123-istoriya-moi')
 
     // Из «Истории» — тот же экран пари; «Назад» — снова «История»
-    await host.click('Дойдём до маяка за день')
+    await host.press('Дойдём до маяка за день')
     await host.waitText('Утверждено согласием сторон, окончательно')
-    await host.click('← Назад')
+    await host.press('← Назад')
     await host.waitIn(MAIN, 'Прошедшие события, пари, лоты и выборы')
     const hash = await host.eval<string>('location.hash')
     if (!hash.endsWith('/history')) throw new Error('«Назад» с прошедшего пари привёл не в «Историю»: ' + hash)

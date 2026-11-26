@@ -33,7 +33,7 @@ export async function auction(cdp: Cdp, size: Size, startServer: ServerModule['s
       const device = await Device.open(cdp, size, name)
       await device.goto(`${SITE}#/device/${room.roomId}/${token}?server=${encodeURIComponent(server.url)}`)
       await device.waitText('Открыть комнату здесь')
-      await device.click('Открыть комнату здесь')
+      await device.press('Открыть комнату здесь')
       await device.waitText('Участники')
       return device
     }
@@ -62,11 +62,11 @@ export async function auction(cdp: Cdp, size: Size, startServer: ServerModule['s
 
     // Торг 1: Боря заводит торг из формы — режим, старт, шаг подставлен, «торг закончится не позже …»
     await boryaPhone.goto(roomHref)
-    await boryaPhone.click('Предложить пари')
+    await boryaPhone.press('Предложить пари')
     await boryaPhone.waitText('Как примут')
     await boryaPhone.fill('Условие', 'Наша лодка первой обогнёт буёк')
     await boryaPhone.fill('Как проверяем', 'Фото с финиша у буйка')
-    await boryaPhone.click('Торг до …')
+    await boryaPhone.press('Торг до …')
     await boryaPhone.waitText('Старт, ₽')
     await boryaPhone.fill('Ваша сумма, ₽', '300')
     await boryaPhone.fill('Старт, ₽', '1000')
@@ -80,7 +80,7 @@ export async function auction(cdp: Cdp, size: Size, startServer: ServerModule['s
     if (await boryaPhone.eval<boolean>(`!!document.querySelector('input[name="offer-to"]')`)) throw new Error('У торга есть выбор адресата')
     await noScroll(boryaPhone, 'Форма торга')
     await boryaPhone.shot('142-torg-forma')
-    await boryaPhone.click('Предложить')
+    await boryaPhone.press('Предложить')
     await boryaPhone.waitIn(MODAL, 'Начать торг?')
     await boryaPhone.waitIn(MODAL, 'Лучшее встречное к концу торга примется само')
     await boryaPhone.shot('142a-torg-podtverzhdenie')
@@ -115,13 +115,13 @@ export async function auction(cdp: Cdp, size: Size, startServer: ServerModule['s
     // Вера — 10 000 ₽: вдвое больше лучшего — второе подтверждение
     await veraPhone.fill('Ваше встречное, ₽', '10000')
     await veraPhone.waitIn(BID_FORM, 'Вы ставите 10 000 ₽ против 300 ₽ автора (Боря) — кэф 1 к 33')
-    await veraPhone.click('Отправить встречное')
+    await veraPhone.press('Отправить встречное')
     await veraPhone.waitIn(MODAL, 'Отправить встречное?')
     await veraPhone.eval(`document.querySelector('.modal .button').click()`)
     await veraPhone.waitIn(MODAL, 'Точно столько?')
     await veraPhone.waitIn(MODAL, '10 000 ₽ — вдвое больше лучшего встречного (4 000 ₽)')
     await veraPhone.shot('145-torg-vdvoe-bolshe')
-    await veraPhone.click('Да, отправить встречное')
+    await veraPhone.press('Да, отправить встречное')
     await veraPhone.waitIn(BIDDING, 'Лучшее встречное — Вера (вы): 10 000 ₽')
 
     // Гена — участник: перебили, все встречные; в списке комнаты — значок
@@ -140,13 +140,13 @@ export async function auction(cdp: Cdp, size: Size, startServer: ServerModule['s
     await boryaPhone.goto(offerHref(first))
     await boryaPhone.waitIn(BIDDING, 'Лучшее встречное — Вера: 10 000 ₽ против 300 ₽ автора, кэф 1 к 33.')
     await boryaPhone.press('Принять сейчас')
-    await boryaPhone.click('Отмена')
+    await boryaPhone.press('Отмена')
     const acts = await visible(boryaPhone)
     if (acts.includes('Отозвать')) throw new Error('Автору торга со встречными есть «Отозвать»')
     if (await boryaPhone.eval<boolean>(`!!document.querySelector(${JSON.stringify(BID_FORM)})`)) throw new Error('Автору торга есть поле встречного')
     await noScroll(boryaPhone, 'Торг у автора')
     await boryaPhone.shot('148-torg-avtor')
-    await boryaPhone.click('Принять сейчас')
+    await boryaPhone.press('Принять сейчас')
     await boryaPhone.waitIn(MODAL, 'Вера ставит 10 000 ₽ против ваших 300 ₽ — кэф 1 к 33, банк 10 300 ₽.')
     await boryaPhone.shot('148a-prinyat-seychas')
     await confirmTwice(boryaPhone, 'Торг закончен (автор принял сейчас) — соперник Вера')
@@ -173,7 +173,7 @@ export async function auction(cdp: Cdp, size: Size, startServer: ServerModule['s
     if ((await visible(boryaPhone)).includes('Отозвать')) throw new Error('У несостоявшегося торга есть «Отозвать»')
     await noScroll(boryaPhone, 'Торг не состоялся')
     await boryaPhone.shot('150-torg-ne-sostoyalsya')
-    await boryaPhone.click('Повторить')
+    await boryaPhone.press('Повторить')
     await boryaPhone.waitText('Повтор торга, который не состоялся')
     const again = [await fieldValue(boryaPhone, 'Ваша сумма, ₽'), await fieldValue(boryaPhone, 'Старт, ₽'), await fieldValue(boryaPhone, 'Шаг, ₽')]
     if (again.join(' ') !== '200 500 50') throw new Error('«Повторить»: не те суммы — ' + again.join(' '))

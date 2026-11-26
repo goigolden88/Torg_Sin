@@ -7,13 +7,21 @@
 // DevTools-протоколу — обычный --screenshot не умеет нажимать кнопки. PNG — в shots/ (не в репо).
 // Сбой — код выхода 1.
 //
+// Сценарии идут в несколько потоков (THREADS, #149): у каждого потока свой Chrome со своим профилем
+// и свой общий сервер снимков на своём порту; сайт (vite preview) — один на всех. Поток берёт
+// следующий сценарий (на одной ширине) из общей очереди; вывод сценария печатается целиком, когда
+// он закончился. Упавший сценарий не останавливает другие: их снимки снимаются, сбои — в конце.
+// В конце — время каждой части, медленные — сверху.
+//
 // npm run shots — все сценарии, shots/ сначала очищается.
-// npm run shots -- outcomes courts — только названные (порядок и ширины — как во всём прогоне),
+// npm run shots -- outcomes courts — только названные (ширины — как во всём прогоне),
 // shots/ не очищается: снимки других сценариев остаются. Имена — в списке SCENARIOS в конце файла.
+import { AsyncLocalStorage } from 'node:async_hooks'
 import type { ChildProcess } from 'node:child_process'
 import { mkdir, mkdtemp, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { availableParallelism, tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { format } from 'node:util'
 import { build, preview, runnerImport } from 'vite'
 import { Cdp, launchChrome, OUT, PASSWORD, PORT, SIZES, WIDE, type RoomsServer, type ServerModule, type Size } from './shots/common.ts'
 import { auction } from './shots/auction.ts'
@@ -56,7 +64,84 @@ function choose(names: string[]): Scenario[] {
   return names.length ? SCENARIOS.filter((s) => names.includes(s.name)) : SCENARIOS
 }
 
+// Потоков — три, но не больше ядер: иначе Chrome'ы мешают друг другу и экраны не успевают за TIMEOUT
+const THREADS = Math.max(1, Math.min(3, availableParallelism()))
+
+// Шаг очереди: сценарий на одной ширине (perSize) или целиком (once)
+type Job = { name: string; label: string; run: (ctx: Context) => Promise<void> }
+type Done = { job: Job; seconds: number; error: string | null }
+
+// Вывод шага — в его буфер и целиком по окончании: потоки идут вперемешку, читать — по сценарию
+const output = new AsyncLocalStorage<string[]>()
+const print = console.log
+console.log = (...args: unknown[]) => {
+  const lines = output.getStore()
+  if (lines) lines.push(format(...args))
+  else print(...args)
+}
+
+function jobs(chosen: Scenario[]): Job[] {
+  const list: Job[] = []
+  for (const size of SIZES)
+    for (const s of chosen) if ('perSize' in s) list.push({ name: s.name, label: `${s.name}, ${size.name} px`, run: (c) => s.perSize(c, size) })
+  for (const s of chosen) if ('once' in s) list.push({ name: s.name, label: s.name, run: s.once })
+  return list
+}
+
+async function runJob(ctx: Context, job: Job): Promise<Done> {
+  const lines: string[] = []
+  const started = Date.now()
+  let error: string | null = null
+  try {
+    await output.run(lines, () => job.run(ctx))
+  } catch (e) {
+    error = e instanceof Error ? e.message : String(e)
+  }
+  await ctx.cdp.closeContexts()
+  const seconds = Math.round((Date.now() - started) / 1000)
+  for (const line of lines) print(line)
+  print(error ? `  СБОЙ: ${job.label} — ${error}` : `  ${job.label} — ${seconds} с`)
+  return { job, seconds, error }
+}
+
+// Поток: свой Chrome (свой профиль) и свой общий сервер снимков; берёт шаги из общей очереди
+async function thread(queue: Job[], startServer: ServerModule['startServer'], done: Done[]): Promise<void> {
+  const server = await startServer({ file: ':memory:', password: PASSWORD, port: 0 })
+  const profile = await mkdtemp(join(tmpdir(), 'torgsin-shots-'))
+  let chrome: ChildProcess | null = null
+  let cdp: Cdp | null = null
+  try {
+    const launched = await launchChrome(profile)
+    chrome = launched.process
+    cdp = await Cdp.connect(launched.url)
+    const ctx: Context = { cdp, server, startServer }
+    for (let job = queue.shift(); job; job = queue.shift()) done.push(await runJob(ctx, job))
+  } finally {
+    if (cdp) {
+      await cdp.send('Browser.close').catch(() => undefined)
+      cdp.close()
+    }
+    chrome?.kill('SIGKILL')
+    await server.close()
+    await rm(profile, { recursive: true, force: true }).catch(() => undefined)
+  }
+}
+
+// Время частей: сумма по ширинам, медленные — сверху
+function timings(done: Done[]): void {
+  const parts = new Map<string, Done[]>()
+  for (const d of done) parts.set(d.job.name, [...(parts.get(d.job.name) ?? []), d])
+  const rows = [...parts].map(([name, list]) => ({ name, list, total: list.reduce((sum, d) => sum + d.seconds, 0) }))
+  rows.sort((a, b) => b.total - a.total)
+  print('Время частей:')
+  for (const { name, list, total } of rows) {
+    const sizes = list.length > 1 ? ` (${list.map((d) => `${d.job.label.slice(name.length + 2)}: ${d.seconds} с`).join(', ')})` : ''
+    print(`  ${name} — ${total} с${sizes}`)
+  }
+}
+
 async function main(): Promise<void> {
+  const started = Date.now()
   const names = process.argv.slice(2)
   const chosen = choose(names)
   if (!names.length) await rm(OUT, { recursive: true, force: true })
@@ -67,29 +152,24 @@ async function main(): Promise<void> {
 
   // Запасной сервер (server/node): тот же код, что у Worker'а; комнаты — в памяти
   const { module } = await runnerImport<ServerModule>('./server/node/app.ts', { configFile: false, logLevel: 'warn' })
-  const server = await module.startServer({ file: ':memory:', password: PASSWORD, port: 0 })
   const site = await preview({ preview: { port: PORT, strictPort: true }, logLevel: 'warn' })
-  const profile = await mkdtemp(join(tmpdir(), 'torgsin-shots-'))
-  let chrome: ChildProcess | null = null
-  let cdp: Cdp | null = null
+  const queue = jobs(chosen)
+  const threads = Math.min(THREADS, queue.length)
+  const done: Done[] = []
+  console.log(`Потоков: ${threads}, шагов: ${queue.length}`)
   try {
-    const launched = await launchChrome(profile)
-    chrome = launched.process
-    cdp = await Cdp.connect(launched.url)
-    const ctx: Context = { cdp, server, startServer: module.startServer }
-    for (const size of SIZES) for (const s of chosen) if ('perSize' in s) await s.perSize(ctx, size)
-    for (const s of chosen) if ('once' in s) await s.once(ctx)
-    console.log('Готово: снимки в', OUT)
+    const results = await Promise.allSettled(Array.from({ length: threads }, () => thread(queue, module.startServer, done)))
+    const broken = results.find((r) => r.status === 'rejected')
+    if (broken) throw broken.reason
   } finally {
-    if (cdp) {
-      await cdp.send('Browser.close').catch(() => undefined)
-      cdp.close()
-    }
-    chrome?.kill('SIGKILL')
     await site.close()
-    await server.close()
-    await rm(profile, { recursive: true, force: true }).catch(() => undefined)
   }
+  timings(done)
+  const total = Math.round((Date.now() - started) / 1000)
+  print(`Всего: ${Math.floor(total / 60)} мин ${total % 60} с`)
+  const failed = done.filter((d) => d.error)
+  if (failed.length) throw new Error(`Сбои (${failed.length}):\n` + failed.map((d) => `  ${d.job.label} — ${d.error}`).join('\n'))
+  console.log('Готово: снимки в', OUT)
 }
 
 // Сценарии в порядке прогона: имя (для npm run shots -- <имя>) и что снимает. Код — в scripts/shots/<имя>.ts

@@ -30,7 +30,7 @@ export async function points(cdp: Cdp, startServer: ServerModule['startServer'])
     const host = await Device.open(cdp, SIZES[0], 'Олег')
     await host.goto(`${SITE}#/device/${room.roomId}/${token}?server=${encodeURIComponent(server.url)}`)
     await host.waitText('Открыть комнату здесь')
-    await host.click('Открыть комнату здесь')
+    await host.press('Открыть комнату здесь')
     await host.waitText('Участники')
     const N = ' ' // неразрывный пробел между числом и словом
     for (const size of SIZES) {

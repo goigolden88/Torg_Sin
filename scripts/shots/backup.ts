@@ -34,7 +34,7 @@ export async function backup(cdp: Cdp, size: Size, startServer: ServerModule['st
     const host = await Device.open(cdp, size, 'ведущий')
     await host.goto(`${SITE}#/device/${room.roomId}/${token}?server=${encodeURIComponent(server.url)}`)
     await host.waitText('Открыть комнату здесь')
-    await host.click('Открыть комнату здесь')
+    await host.press('Открыть комнату здесь')
     await host.waitText('Участники')
     await host.waitText('Шашлык будет готов к шести')
     await host.waitText('Скачать копию комнаты')
@@ -51,7 +51,7 @@ export async function backup(cdp: Cdp, size: Size, startServer: ServerModule['st
         fetch(this.href).then((r) => r.text()).then((text) => { window.__saved = { name, text } })
       }
     })()`)
-    await host.click('Скачать копию комнаты')
+    await host.press('Скачать копию комнаты')
     await host.waitText('Копия готова: «ТоргСин — Дача- лето 2026 — ')
     let saved: { name: string; text: string } | null = null
     for (let i = 0; i < 50 && !saved; i++) {
@@ -74,7 +74,7 @@ export async function backup(cdp: Cdp, size: Size, startServer: ServerModule['st
     // Сервер пропал — копии нет, строка отказа; комната на месте
     await server.close()
     closed = true
-    await host.click('Скачать копию комнаты')
+    await host.press('Скачать копию комнаты')
     await host.waitText('Сервер не отдал копию — попробуйте позже')
     await host.waitText('Шашлык будет готов к шести')
     await host.shot('126-kopiya-net-servera')

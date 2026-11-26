@@ -29,7 +29,7 @@ export async function noGuarantor(cdp: Cdp, size: Size, startServer: ServerModul
       const device = await Device.open(cdp, size, name)
       await device.goto(`${SITE}#/device/${roomId}/${token}?server=${encodeURIComponent(server.url)}`)
       await device.waitText('Открыть комнату здесь')
-      await device.click('Открыть комнату здесь')
+      await device.press('Открыть комнату здесь')
       await device.waitText('Участники')
       return device
     }
@@ -59,7 +59,7 @@ export async function noGuarantor(cdp: Cdp, size: Size, startServer: ServerModul
 
     // Пари 1: Боря предлагает Вере «без гаранта» из формы — с пояснением и подтверждением
     await boryaPhone.goto(roomHref)
-    await boryaPhone.click('Предложить пари')
+    await boryaPhone.press('Предложить пари')
     await boryaPhone.waitText('Ваша сторона')
     await boryaPhone.fill('Условие', 'Пройдём порог без переворота')
     await boryaPhone.fill('Как проверяем', 'Видео с берега, смотрим вместе')
@@ -70,7 +70,7 @@ export async function noGuarantor(cdp: Cdp, size: Size, startServer: ServerModul
     await boryaPhone.waitText('Отметите одинаково — исход окончательный сразу. Разойдётесь или соперник промолчит 3 дня — суд жребием из участников.')
     await noScroll(boryaPhone, 'Форма пари без гаранта')
     await boryaPhone.shot('133-novoe-pari-bez-garanta')
-    await boryaPhone.click('Предложить')
+    await boryaPhone.press('Предложить')
     await boryaPhone.waitIn('.modal', 'Кому: Вера · без гаранта: разойдётесь — решит суд')
     await boryaPhone.shot('133a-podtverzhdenie-bez-garanta')
     await confirmTwice(boryaPhone, 'нет — спор решит суд')
