@@ -90,7 +90,7 @@ function Life({ room }: { room: SavedRoom }) {
   const items = lifeItems(room, log)
   if (items.length === 0) return null
   return (
-    <section className="history-list" aria-label="Участники">
+    <section className="history-list history-life" aria-label="Участники">
       <h3>Участники: вышел, «выбыл»</h3>
       <ul className="members">
         {items.map((x) => (
