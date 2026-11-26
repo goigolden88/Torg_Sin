@@ -29,9 +29,6 @@ import type { TransferRecord } from './settle'
 // Записи о переводах из журнала — как у сервера
 const logTransfers = (log: readonly LogEntry[]): TransferRecord[] => log.filter((e): e is TransferRecord & LogEntry => e.type.startsWith('transfer.'))
 
-const HOUR = 60 * 60 * 1000
-const DAY = 24 * HOUR
-
 const base: LogEntry[] = [
   { id: 'E1', at: 100, memberId: 'M1', type: 'room.created', roomId: 'R1', name: 'Дача', currency: 'RUB' },
   { id: 'E2', at: 100, memberId: 'M1', type: 'member.added', member: 'M1', name: 'Аня' },
