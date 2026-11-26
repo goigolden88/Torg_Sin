@@ -111,6 +111,12 @@ import {
   type ChoiceStakeRequest,
   type ChoiceStakeResponse,
   type CreateChoiceRequest,
+  isDropResponse,
+  isLeaveResponse,
+  type DropRequest,
+  type DropResponse,
+  type LeaveRequest,
+  type LeaveResponse,
 } from './rules/protocol'
 import { checkBackup, type Backup } from './rules/backup'
 
@@ -199,6 +205,24 @@ export function admitRequest(server: string, roomId: string, key: string, reques
 // POST /rooms/<номер>/reject — отклонить
 export function rejectRequest(server: string, roomId: string, key: string, request: string): Promise<Result<RejectResponse>> {
   return call(roomUrl(server, roomId, 'reject'), post({ request }, key), isRejectResponse)
+}
+
+// POST /rooms/<номер>/leave — выйти самому (Р-40); отказ — что мешает, текстом сервера
+export function leaveRoom(server: string, roomId: string, key: string, request: Omit<LeaveRequest, 'v'>): Promise<Result<LeaveResponse>> {
+  return call(roomUrl(server, roomId, 'leave'), post(request, key), isLeaveResponse)
+}
+
+// POST /rooms/<номер>/members/<участник>/drop | restore — ведущий ставит и снимает «выбыл» (Р-41)
+export function dropMember(
+  server: string,
+  roomId: string,
+  key: string,
+  member: string,
+  dropped: boolean,
+  request: Omit<DropRequest, 'v'>,
+): Promise<Result<DropResponse>> {
+  const action = 'members/' + encodeURIComponent(member) + (dropped ? '/drop' : '/restore')
+  return call(roomUrl(server, roomId, action), post(request, key), isDropResponse)
 }
 
 // POST /rooms/<номер>/invite — новая ссылка-приглашение; старая перестаёт работать

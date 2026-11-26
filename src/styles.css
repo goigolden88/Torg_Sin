@@ -1349,6 +1349,21 @@ h3 {
   margin-top: 1.5rem;
 }
 
+/* Жизнь комнаты (Р-40, Р-41): кнопка ведущего — справа в строке участника, подтверждение и отказ — на всю
+   строку под именем; «Выйти из комнаты» — под копией */
+.member .member-action {
+  margin-left: auto;
+}
+
+.member .member-confirm {
+  flex-basis: 100%;
+  margin: 0 0 0.5rem;
+}
+
+.leave {
+  margin-top: 1rem;
+}
+
 .history .win {
   color: var(--ok);
   font-weight: 600;

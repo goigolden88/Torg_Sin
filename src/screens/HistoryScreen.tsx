@@ -2,15 +2,19 @@
 // событиям и пари (свод расчёта из ответа комнаты; свода нет — блока нет); ниже — прошедшие события, пари,
 // лоты и выборы, новое сверху: условие, исход, мой результат, дата. Переключатель «Все / С моим участием».
 // Нажатие — тот же экран события, пари, лота или выбора; «Назад» с него ведёт сюда. Что прошедшее — historyParts (с тестами).
-// Состояние — с сервера раз в 5 с (useRoom); нет связи — последнее известное
-import { useCallback, useState } from 'react'
-import { formatDate } from '../rules/date'
+// Состояние — с сервера раз в 5 с (useRoom); нет связи — последнее известное. В самом низу — «Участники:
+// вышел, «выбыл»» (Life, Р-40, Р-41): строки «вышел», «пометил „выбыл“», «снял „выбыл“» по журналу комнаты
+import { useCallback, useEffect, useState } from 'react'
+import { fetchBackup } from '../api'
+import { formatDate, formatDateTime } from '../rules/date'
+import type { LogEntry } from '../rules/room'
 import { savedChoices, savedEvents, savedLots, savedOffers, savedSettlement, type SavedRoom } from '../store/db'
 import { BackLink, useEscape } from './BackLink'
 import { choiceHref } from './choiceParts'
 import { eventHref, nameOf } from './eventParts'
 import { historyItems, myResultText, onlyMine, type HistoryItem } from './historyParts'
 import { lotHref } from './lotParts'
+import { lifeItems } from './memberParts'
 import { offerHref } from './offerParts'
 import { byTotal, memberNumbers } from './settleParts'
 import { useRoom, useServerNow } from './useRoom'
@@ -64,7 +68,39 @@ export function HistoryScreen({ room, onUpdate }: { room: SavedRoom; onUpdate: (
           </>
         )}
       </section>
+      <Life room={room} />
     </div>
+  )
+}
+
+// «Участники»: кто вышел, кого ведущий пометил «выбыл» и с кого снял (Р-40, Р-41) — по журналу комнаты (копия
+// участника, один раз при открытии: в ответе комнаты времени нет). Строк нет или журнал не пришёл — блока нет
+function Life({ room }: { room: SavedRoom }) {
+  const [log, setLog] = useState<LogEntry[]>([])
+  const { server, id, key } = room
+  useEffect(() => {
+    let live = true
+    void fetchBackup(server, id, key).then((res) => {
+      if (live && res.ok) setLog(res.value.log)
+    })
+    return () => {
+      live = false
+    }
+  }, [server, id, key])
+  const items = lifeItems(room, log)
+  if (items.length === 0) return null
+  return (
+    <section className="history-list" aria-label="Участники">
+      <h3>Участники: вышел, «выбыл»</h3>
+      <ul className="members">
+        {items.map((x) => (
+          <li key={x.id} className="member">
+            <span>{x.text}</span>
+            <span className="hint">{formatDateTime(x.at)}</span>
+          </li>
+        ))}
+      </ul>
+    </section>
   )
 }
 

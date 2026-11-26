@@ -34,6 +34,7 @@ import {
 } from './choiceParts'
 import { money, nameOf } from './eventParts'
 import { historyHref } from './historyParts'
+import { iAmDropped } from './memberParts'
 import { who } from './offerParts'
 import { serverTime, useRoom, useServerNow, type Clock } from './useRoom'
 
@@ -84,8 +85,10 @@ export function ChoiceScreen({ room, choiceId, onUpdate }: { room: SavedRoom; ch
   const out = choiceOutcomeOf(c, now)
   const croom = choiceRoomOf(room)
   // Правила: с пустым названием отказ — «нужно название», значит, остальное разрешено
-  const mayAdd = checkChoiceOption(state, me, null, croom, now) === NEED_OPTION && c.options.length < MAX_CHOICE_OPTIONS
-  const stakeable = c.options.filter((o) => checkChoiceStake(state, me, o.id, 1, croom, now) === null)
+  // Помеченный «выбыл» (Р-41) вариантов не добавляет и не вкладывает
+  const dropped = iAmDropped(room)
+  const mayAdd = !dropped && checkChoiceOption(state, me, null, croom, now) === NEED_OPTION && c.options.length < MAX_CHOICE_OPTIONS
+  const stakeable = dropped ? [] : c.options.filter((o) => checkChoiceStake(state, me, o.id, 1, croom, now) === null)
   const mine = myOption(c, me)
   const showTotals = out.status !== 'options'
   const winner = winnerLine(room, c, out)

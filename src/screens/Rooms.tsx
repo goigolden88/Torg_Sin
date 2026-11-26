@@ -60,6 +60,11 @@ export function Rooms({ view }: { view: RoomsView }) {
     })
   }, [])
 
+  // Вышел из комнаты (Р-40): её больше нет в списке — запись на устройстве уже убрана
+  const remove = useCallback((id: string) => {
+    setRooms((prev) => (prev ?? []).filter((r) => r.id !== id))
+  }, [])
+
   useEffect(() => {
     store()
       .listRooms()
@@ -173,7 +178,7 @@ export function Rooms({ view }: { view: RoomsView }) {
             ) : view.kind === 'history' ? (
               <HistoryScreen key={open.id} room={open} onUpdate={upsert} />
             ) : (
-              <RoomView key={open.id} room={open} onUpdate={upsert} />
+              <RoomView key={open.id} room={open} onUpdate={upsert} onLeft={remove} />
             )
           ) : (
             <div className="card">

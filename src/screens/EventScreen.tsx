@@ -4,7 +4,8 @@
 // Автору — «Уточнить»; «Отменить событие» — кому правило отмены разрешает сейчас (cancelError, Р-29),
 // с причиной, когда есть чужие ставки. Состояние — с сервера раз в 5 с (useRoom); нет связи — последнее известное, ставить
 // нельзя. Деньги считает pool.ts — здесь не считаем заново. Исход (EventView.outcome) — EventOutcome.
-// Предмет спора (Р-26): ему — только доступные исходы (betOutcomes); его ставка — пометкой для всех
+// Предмет спора (Р-26): ему — только доступные исходы (betOutcomes); его ставка — пометкой для всех.
+// Помеченному «выбыл» (Р-41) — вместо формы ставки строка «Ведущий пометил вас „выбыл“…»; исход — как раньше
 import { useCallback, useEffect, useRef, useState, type FormEvent, type MutableRefObject } from 'react'
 import { cancelEvent, clarifyEvent, placeBet } from '../api'
 import { currency as currencyOf, isCurrencyCode, parseAmount } from '../rules/currency'
@@ -31,6 +32,7 @@ import { ChanceChart } from './ChanceChart'
 import { money, nameOf, StatusLine, SubjectFlag } from './eventParts'
 import { EventOutcome } from './EventOutcome'
 import { eventPastAt, historyHref } from './historyParts'
+import { DROPPED_NOTE, iAmDropped } from './memberParts'
 import { useRoom, useServerNow, type Sync } from './useRoom'
 
 type Ask = { outcome: string; units: number }
@@ -123,7 +125,8 @@ export function EventScreen({ room, eventId, onUpdate }: { room: SavedRoom; even
 
         <Bars room={room} event={event} />
 
-        {status === 'open' && <BetForm room={room} event={event} sync={sync} onAsk={setAsk} placed={placed} />}
+        {status === 'open' &&
+          (iAmDropped(room) ? <p className="hint">{DROPPED_NOTE}</p> : <BetForm room={room} event={event} sync={sync} onAsk={setAsk} placed={placed} />)}
 
         {mayClarify || mayCancel ? (
           <div className="row">

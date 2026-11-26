@@ -9,7 +9,8 @@
 // сроками — сроки комнаты (темп, Р-35). «Как примут» (Р-37): «Принимает первый» или «Торг до …» — вместо
 // кэфа старт (наименьшая сумма соперника) и шаг (подставлен 10 % старта), «Приём до» — «Конец торга» со
 // строкой «Торг закончится не позже …», адресата нет. repeat — «Повторить» не состоявшийся торг: те же
-// условия, сроки — та же длительность от нового «сейчас» (repeatForm)
+// условия, сроки — та же длительность от нового «сейчас» (repeatForm). В «Кому» и «Гарант» — только кто в
+// игре: вышедших и помеченных «выбыл» нет (Р-40, Р-41)
 import { useCallback, useRef, useState, type FormEvent } from 'react'
 import { createOffer } from '../api'
 import { currency as currencyOf, isCurrencyCode, parseAmount, type CurrencyCode } from '../rules/currency'
@@ -48,6 +49,7 @@ import {
   unitsText,
   validOdds,
 } from './offerParts'
+import { inPlayMember } from './memberParts'
 import { roomTimesLine, spanText } from './paceParts'
 import { NORMAL_TIMES } from '../rules/pace'
 import { serverTime, useRoom } from './useRoom'
@@ -119,10 +121,12 @@ export function NewOffer({ room, repeat, onUpdate }: { room: SavedRoom; repeat?:
   const stepText = step ?? (startUnits !== null && code ? unitsText(auctionStep(startUnits), code) : '')
   const endAt = fromLocalInput(closes) // конец торга — для строки «Торг закончится не позже …»
   const others = room.members.filter((m) => m.id !== room.memberId)
+  // Адресат и гарант — только из тех, кто в игре: вышедших и помеченных «выбыл» в выборе нет (Р-40, Р-41)
+  const players = others.filter(inPlayMember)
   // Ведущий — автор, адресат или предмет спора: гаранта по умолчанию нет, выбрать обязательно
   const hostIsSide = room.hostId === room.memberId || room.hostId === to
   const hostNoDefault = hostIsSide || room.hostId === subject
-  const candidates = others.filter((m) => m.id !== to && m.id !== room.hostId && m.id !== subject)
+  const candidates = players.filter((m) => m.id !== to && m.id !== room.hostId && m.id !== subject)
   // Предмет спора (Р-26) — только на «сбудется»: предмет — вы — ваша сторона «сбудется»; предмет —
   // адресат — ваша «не сбудется». Иначе сторону выбираете сами
   const fixedSide: 'yes' | 'no' | null = subject === '' ? null : subject === room.memberId ? 'yes' : subject === to ? 'no' : null
@@ -374,7 +378,7 @@ export function NewOffer({ room, repeat, onUpdate }: { room: SavedRoom; repeat?:
                 <input type="radio" name="offer-to" value="" checked={to === ''} onChange={() => chooseTo('')} />
                 <span>Открытое — любой</span>
               </label>
-              {others.map((m) => (
+              {players.map((m) => (
                 <label key={m.id} className="chip">
                   <input type="radio" name="offer-to" value={m.id} checked={to === m.id} onChange={() => chooseTo(m.id)} />
                   <span>{m.name}</span>

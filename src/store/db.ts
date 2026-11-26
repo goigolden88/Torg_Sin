@@ -32,7 +32,9 @@ export type SavedRoom = {
   currency: string
   hostId: string
   createdAt: number // время сервера, UTC, мс
-  members: { id: string; name: string }[]
+  // Вышел (left) и «выбыл» (dropped) — как прислал сервер (Р-40, Р-41): поля только добавлены, версия базы та
+  // же; у записей до них и у сервера до выкатки полей нет — участник в комнате и в игре
+  members: { id: string; name: string; left?: boolean; dropped?: boolean }[]
   savedAt: number // когда записано на устройстве — порядок в «Моих комнатах»
   syncedAt: number | null // последний ответ сервера о комнате; null — ещё не было
   // События-пул — последнее известное с сервера (Р-18). Поле только добавлено, версия базы та же:
@@ -143,6 +145,8 @@ export type Store = {
   listRooms(): Promise<SavedRoom[]>
   getRoom(id: string): Promise<SavedRoom | undefined>
   saveRoom(room: SavedRoom): Promise<void>
+  // Вышел из комнаты (Р-40): комната уходит из «Моих комнат»; вернуться — по ссылке-приглашению
+  removeRoom(id: string): Promise<void>
   getJoin(roomId: string): Promise<SavedJoin | undefined>
   saveJoin(join: SavedJoin): Promise<void>
   // Впустили: комната записана, заявка убрана — одной транзакцией
@@ -184,6 +188,9 @@ export function createStore(factory: IDBFactory): Store {
     // По номеру комнаты: повтор той же комнаты не заводит вторую
     async saveRoom(room) {
       await write([ROOMS], (tx) => tx.objectStore(ROOMS).put(room))
+    },
+    async removeRoom(id) {
+      await write([ROOMS], (tx) => tx.objectStore(ROOMS).delete(id))
     },
     async getJoin(roomId) {
       return (await done((await db()).transaction(JOINS, 'readonly').objectStore(JOINS).get(roomId))) as SavedJoin | undefined
