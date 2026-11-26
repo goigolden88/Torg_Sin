@@ -889,7 +889,10 @@ async function admit(storage: RoomStorage, keyHash: string, requestId: string, n
   if (!found.ok) return found
   const { me, request } = found
   if (request.status === 'rejected') return fail(409, ALREADY_REJECTED)
-  if (request.status === 'admitted') return ok({ member: { id: request.member ?? request.id, name: request.name } })
+  if (request.status === 'admitted') {
+    const id = request.member ?? request.id
+    return ok({ member: { id, name: found.state.members.find((m) => m.id === id)?.name ?? request.name } })
+  }
   const back = returningMember(found.state, request.name)
   await append(storage, [
     back
