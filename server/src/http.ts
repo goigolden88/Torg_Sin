@@ -28,6 +28,7 @@ import type { LotMark } from '../../src/rules/protocol'
 import { checkBackup, type Backup } from '../../src/rules/backup'
 import { checkPace, timesOf, type PaceInput } from '../../src/rules/pace'
 import { checkMemberName, checkRoomInput } from '../../src/rules/room'
+import { takeHostFrom } from '../../src/rules/member'
 import {
   BAD_MODE,
   NO_TRANSFER,
@@ -156,10 +157,11 @@ export async function handle(request: Request, deps: RoomsDeps): Promise<Respons
     const r = await roomAction(sub[1], sub[2], request, deps)
     if (r) return json(r.status, r.body)
   }
-  // Жизнь комнаты (Р-40, Р-41): /rooms/<номер>/leave и /rooms/<номер>/members/<участник>/drop | restore
-  const life = /^\/rooms\/([^/]+)\/(?:(leave)|members\/([^/]+)\/(drop|restore))$/.exec(path)
+  // Жизнь комнаты (Р-40, Р-41, Р-42): /rooms/<номер>/leave | host и /rooms/<номер>/members/<участник>/drop |
+  // restore | host
+  const life = /^\/rooms\/([^/]+)\/(?:(leave|host)|members\/([^/]+)\/(drop|restore|host))$/.exec(path)
   if (life && request.method === 'POST') {
-    const r = await memberAction(life[1], life[3], life[4] as 'drop' | 'restore' | undefined, request, deps)
+    const r = await memberAction(life[1], life[3], (life[4] ?? life[2]) as MemberVerb, request, deps)
     return json(r.status, r.body)
   }
   // События-пул: /rooms/<номер>/events и /rooms/<номер>/events/<событие>/<действие>; апелляция и суд —
@@ -207,12 +209,15 @@ export async function handle(request: Request, deps: RoomsDeps): Promise<Respons
   return notFound()
 }
 
+type MemberVerb = 'leave' | 'drop' | 'restore' | 'host'
+
 // POST /rooms/<номер>/leave { requestId? } — выйти самому (Р-40); …/members/<участник>/drop | restore
-// { requestId? } — ведущий ставит и снимает «выбыл» (Р-41). Отказы — тексты правил (member.ts)
+// { requestId? } — ведущий ставит и снимает «выбыл» (Р-41); …/host { requestId? } — взять ведение,
+// …/members/<участник>/host { requestId? } — передать ведение (Р-42). Отказы — тексты правил (member.ts)
 async function memberAction(
   roomId: string,
   memberId: string | undefined,
-  action: 'drop' | 'restore' | undefined,
+  action: MemberVerb,
   request: Request,
   deps: RoomsDeps,
 ): Promise<Reply<unknown>> {
@@ -224,7 +229,11 @@ async function memberAction(
     if (!read.ok) return read.reply
     const requestId = requestIdOf(read.body, deps)
     if (!requestId) return failure(400, BAD_REQUEST_ID)
-    if (memberId === undefined || action === undefined) return reply(await deps.act(roomId, { type: 'leave', keyHash, requestId }))
+    if (memberId === undefined) {
+      if (action === 'host') return reply(await deps.act(roomId, { type: 'takeHost', keyHash, requestId }))
+      return reply(await deps.act(roomId, { type: 'leave', keyHash, requestId }))
+    }
+    if (action === 'host') return reply(await deps.act(roomId, { type: 'passHost', keyHash, member: memberId, requestId }))
     return reply(await deps.act(roomId, { type: 'dropMember', keyHash, member: memberId, dropped: action === 'drop', requestId }))
   })
 }
@@ -902,6 +911,10 @@ export async function getRoom(roomId: string, authorization: string | null, deps
         createdAt: state.createdAt,
         pace: r.pace.pace,
         times: { ...r.pace.times },
+        // Ведение (Р-42): кто был ведущим, когда нынешний заходил и с какого мига его ведение можно взять
+        hosts: (state.hosts ?? []).map((h) => ({ id: h.id, member: h.member, from: h.from, how: h.how, by: h.by })),
+        hostSeenAt: r.hostSeenAt,
+        hostTakeFrom: takeHostFrom(r.hostSeenAt),
       },
       // Вышел и «выбыл» (Р-40, Р-41) — у каждого участника
       members: state.members.map((m) => ({ id: m.id, name: m.name, left: m.leftAt !== undefined, dropped: m.droppedAt !== undefined })),

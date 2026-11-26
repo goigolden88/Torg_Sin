@@ -52,6 +52,12 @@ export type LogEntry =
   // Ведущий (автор) пометил участника member «выбыл» и снял пометку; requestId — номер запроса
   | (EntryBase & { type: 'member.dropped'; member: string; requestId: string })
   | (EntryBase & { type: 'member.reinstated'; member: string; requestId: string })
+  // Ведение (Р-42; правила — checkPassHost, checkTakeHost в member.ts). Ведущий (автор) передал ведение
+  // участнику member; requestId — номер запроса
+  | (EntryBase & { type: 'host.passed'; member: string; requestId: string })
+  // Участник (автор) взял ведение у ведущего from, который не заходил с seenAt (время сервера: 7 дней без
+  // запросов — проверяет сервер, в журнале — основание для всех); requestId — номер запроса
+  | (EntryBase & { type: 'host.taken'; from: string; seenAt: number; requestId: string })
   // Ведущий сменил ссылку-приглашение; токена в журнале нет
   | (EntryBase & { type: 'invite.changed' })
   // Выдана «ссылка для другого устройства» участнику member; автор — он сам или ведущий;
@@ -262,9 +268,30 @@ export type RoomState = {
   id: string
   name: string
   currency: CurrencyCode
-  hostId: string // ведущий
+  hostId: string // ведущий — нынешний (Р-42)
   createdAt: number
   members: Member[] // по порядку входа
+  // Кто был ведущим (Р-42): создатель с мига создания, затем каждая смена — с её мига, по порядку журнала.
+  // Нет поля — ведущий всё время hostId (состояние, собранное не из журнала)
+  hosts?: HostTerm[]
+}
+
+// Срок ведения: кто ведущий с мига from; how — как стал: создал комнату, ему передали, взял сам; by — автор
+// записи, id — её номер (у создателя — номер room.created)
+export type HostTerm = { member: string; from: number; how: 'created' | 'passed' | 'taken'; by: string; id: string }
+
+// Ведущий на миг at (Р-42): смена действует с её мига — запись того же мига уже при новом ведущем (сервер
+// пишет смену последней в своём запросе). Раньше создания — создатель
+export function hostAt(room: { hostId: string; hosts?: readonly HostTerm[] }, at: number): string {
+  const hosts = room.hosts ?? []
+  let host = hosts[0]?.member ?? room.hostId
+  for (const h of hosts) if (h.from <= at) host = h.member
+  return host
+}
+
+// Ведущий стал ведущим — с какого мига (последний срок); нет сроков — null
+export function hostSince(room: { hosts?: readonly HostTerm[] }): number | null {
+  return room.hosts?.at(-1)?.from ?? null
 }
 
 // Одна запись поверх состояния; прежнее состояние не меняется
@@ -272,7 +299,15 @@ export function applyEntry(state: RoomState | null, e: LogEntry): RoomState | nu
   switch (e.type) {
     case 'room.created':
       if (state) return state
-      return { id: e.roomId, name: e.name, currency: e.currency, hostId: e.memberId, createdAt: e.at, members: [] }
+      return {
+        id: e.roomId,
+        name: e.name,
+        currency: e.currency,
+        hostId: e.memberId,
+        createdAt: e.at,
+        members: [],
+        hosts: [{ member: e.memberId, from: e.at, how: 'created', by: e.memberId, id: e.id }],
+      }
     case 'member.added':
       if (!state || state.members.some((m) => m.id === e.member)) return state
       return { ...state, members: [...state.members, { id: e.member, name: e.name, addedBy: e.memberId, addedAt: e.at }] }
@@ -305,6 +340,18 @@ export function applyEntry(state: RoomState | null, e: LogEntry): RoomState | nu
         delete next.droppedAt
         return next
       })
+    }
+    // Ведение (Р-42): проверки — на сервере (member.ts); свёртка держит порядок — передаёт нынешний ведущий,
+    // берут у нынешнего; новый — участник в игре (не вышел и не «выбыл»), не сам ведущий. Семь дней без
+    // запросов свёртка не проверяет: время запросов — вне журнала
+    case 'host.passed':
+    case 'host.taken': {
+      const to = e.type === 'host.passed' ? e.member : e.memberId
+      const m = state?.members.find((x) => x.id === to)
+      if (!state || !m || !inPlay(m) || m.id === state.hostId) return state
+      if (e.type === 'host.passed' ? e.memberId !== state.hostId : e.from !== state.hostId) return state
+      const term: HostTerm = { member: m.id, from: e.at, how: e.type === 'host.passed' ? 'passed' : 'taken', by: e.memberId, id: e.id }
+      return { ...state, hostId: m.id, hosts: [...(state.hosts ?? []), term] }
     }
     // Заявки, ссылка и устройства участников не меняют: заявки считает joinRequests
     case 'join.requested':

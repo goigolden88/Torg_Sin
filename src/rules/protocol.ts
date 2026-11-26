@@ -13,7 +13,9 @@
 // 10 — «Выбор» (Р-39): choices в состоянии комнаты, счётчик choices в числах «Расчёта», адреса …/choices
 // 11 — выйти и «выбыл» (Р-40, Р-41): left и dropped у участника, member у заявки-возврата, адреса …/leave
 // и …/members/<участник>/drop | restore
-export const PROTOCOL_VERSION = 11
+// 12 — ведение (Р-42): room.hosts, room.hostSeenAt, room.hostTakeFrom в состоянии комнаты, hostId у события и
+// суда, адреса …/host (взять) и …/members/<участник>/host (передать)
+export const PROTOCOL_VERSION = 12
 
 // Ответ GET /health: сервер жив, его протокол и время (UTC, мс) — по нему закрываются сроки
 export type Health = { v: number; ok: true; time: number }
@@ -59,10 +61,24 @@ export type CreateRoomResponse = { v: number; roomId: string; invite: string; me
 // room.times — нынешний темп комнаты и его сроки (Р-35; сервер до темпа полей не шлёт); lots — лоты по
 // порядку создания (Р-38; все лоты комнаты со ставками — тайных нет; сервер до лотов поля не шлёт);
 // choices — выборы по порядку создания (Р-39; вклады видны всем; сервер до выбора поля не шлёт); у
-// участника left — вышел, dropped — помечен «выбыл» (Р-40, Р-41; сервер до выкатки полей не шлёт)
+// участника left — вышел, dropped — помечен «выбыл» (Р-40, Р-41; сервер до выкатки полей не шлёт).
+// Ведение (Р-42; сервер до выкатки полей не шлёт): room.hostId — нынешний ведущий; hosts — кто был ведущим
+// по порядку (создатель и каждая смена — для истории); hostSeenAt — когда ведущий заходил (с точностью до
+// часа), hostTakeFrom — с какого мига любой участник в игре может взять ведение
 export type RoomStateResponse = {
   v: number
-  room: { id: string; name: string; currency: string; hostId: string; createdAt: number; pace?: PaceView; times?: TimesView }
+  room: {
+    id: string
+    name: string
+    currency: string
+    hostId: string
+    createdAt: number
+    pace?: PaceView
+    times?: TimesView
+    hosts?: HostTermView[]
+    hostSeenAt?: number
+    hostTakeFrom?: number
+  }
   members: MemberView[]
   me: string
   events: EventView[]
@@ -85,6 +101,15 @@ export type LeaveResponse = { v: number; left: { id: string; at: number; by: str
 // POST /rooms/<номер>/members/<участник>/drop | restore { requestId? } — ведущий ставит и снимает «выбыл» (Р-41)
 export type DropRequest = { v?: number; requestId?: string }
 export type DropResponse = { v: number; dropped: { id: string; at: number; by: string; member: string; dropped: boolean } }
+
+// Ведение (Р-42). Срок ведения: кто ведущий (member) с мига from; how — создал комнату, ему передали, взял
+// сам; by — автор записи, id — её номер
+export type HostTermView = { id: string; member: string; from: number; how: 'created' | 'passed' | 'taken'; by: string }
+// POST /rooms/<номер>/members/<участник>/host { requestId? } — ведущий передаёт ведение участнику в игре;
+// POST /rooms/<номер>/host { requestId? } — участник в игре берёт ведение, если ведущий 7 дней не заходил.
+// Ответ — смена: previous — прежний ведущий; у «взял» ещё seenAt — когда тот заходил
+export type HostRequest = { v?: number; requestId?: string }
+export type HostResponse = { v: number; host: HostTermView & { previous: string; seenAt?: number } }
 
 // Расчёт (этап 5, Р-32; правила — settle.ts, roomSettlement). Режим «кто кому»: «по ставкам» /
 // «меньше переводов»
@@ -218,7 +243,9 @@ export type CourtSeat = {
 // Суд: зерно жребия, когда собран, кандидаты по порядку жребия (первые три — суд, дальше — запасные),
 // места, решение и когда (majority: false — большинства нет: у апелляции исход остаётся, у «ждёт
 // суда» — отмена)
+// hostId — ведущий на миг жребия (Р-42): он, если кандидат, — первый в порядке; нет поля — ведущий комнаты
 export type CourtView = {
+  hostId?: string
   seed: string
   drawnAt: number
   candidates: string[]
@@ -541,8 +568,10 @@ export type OutcomeView = {
 // refunds: каждому участнику — его сумма; outcome — исход (не предложен — null). closedAt — миг,
 // когда приём закрылся досрочно предложением исхода (Р-27); закрыт в срок или ещё идёт — поля нет.
 // times — сроки события, закреплённые при создании (Р-35; у старых — обычный набор; сервер до темпа
-// поля не шлёт)
+// поля не шлёт). hostId — ведущий на миг создания события (Р-42): по нему способ спора (решает ведущий
+// или голосование); решает нынешний ведущий; нет поля — ведущий комнаты
 export type EventView = EventInfo & {
+  hostId?: string
   times?: TimesView
   closedAt?: number
   status: EventStatus
@@ -720,6 +749,9 @@ export function isRoomStateResponse(x: unknown): x is RoomStateResponse {
   if (!strings(room, 'id', 'name', 'currency', 'hostId') || typeof room.createdAt !== 'number') return false
   // Темп комнаты (Р-35): сервер без него (до выкатки) не ломает сайт
   if ((room.pace !== undefined && !PACE_VIEWS.includes(room.pace)) || !optionalTimes(room.times)) return false
+  // Ведение (Р-42): сервер без него (до выкатки) не ломает сайт
+  if (room.hosts !== undefined && !list(room.hosts, isHostTerm)) return false
+  if ((room.hostSeenAt !== undefined && typeof room.hostSeenAt !== 'number') || (room.hostTakeFrom !== undefined && typeof room.hostTakeFrom !== 'number')) return false
   if (typeof r.now !== 'number' || !Array.isArray(r.events) || !r.events.every(isEventView)) return false
   // Пари — с этапа 3: сервер без них (до выкатки) не ломает сайт
   if (r.offers !== undefined && !list(r.offers, isOfferView)) return false
@@ -741,6 +773,18 @@ export function isLeaveResponse(x: unknown): x is LeaveResponse {
   const r = versioned(x)
   const left = r && record(r.left)
   return !!left && strings(left, 'id', 'by') && typeof left.at === 'number' && Array.isArray(left.revoked) && left.revoked.every((s) => typeof s === 'string')
+}
+
+const HOST_HOWS: readonly unknown[] = ['created', 'passed', 'taken']
+
+function isHostTerm(r: Record<string, unknown>): boolean {
+  return strings(r, 'id', 'member', 'by') && typeof r.from === 'number' && HOST_HOWS.includes(r.how)
+}
+
+export function isHostResponse(x: unknown): x is HostResponse {
+  const r = versioned(x)
+  const h = r && record(r.host)
+  return !!h && isHostTerm(h) && strings(h, 'previous') && (h.seenAt === undefined || typeof h.seenAt === 'number')
 }
 
 export function isDropResponse(x: unknown): x is DropResponse {
@@ -823,8 +867,13 @@ function isCourtSeat(r: Record<string, unknown>): boolean {
   )
 }
 
+function optionalString(x: unknown): boolean {
+  return x === undefined || typeof x === 'string'
+}
+
 function isCourtView(r: Record<string, unknown>): boolean {
   return (
+    optionalString(r.hostId) &&
     strings(r, 'seed') &&
     numbers(r, 'drawnAt') &&
     Array.isArray(r.candidates) &&
@@ -887,7 +936,7 @@ export function isEventView(x: unknown): x is EventView {
   if (!r || !isEventInfo(r)) return false
   if (r.status !== 'open' && r.status !== 'closed' && r.status !== 'cancelled') return false
   if (r.closedAt !== undefined && typeof r.closedAt !== 'number') return false
-  if (!optionalTimes(r.times)) return false
+  if (!optionalTimes(r.times) || !optionalString(r.hostId)) return false
   return (
     nullable(r.cancelled, isCancellation) &&
     list(r.clarifications, isClarification) &&

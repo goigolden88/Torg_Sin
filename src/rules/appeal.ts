@@ -8,7 +8,7 @@ import { eventBettors, eventOutcome, MAX_EVENT_TEXT, roomEvents, type EventState
 import { bestLotBid, logLots, lotCourtDue, type LotState } from './lot'
 import { courtDue, logOffers, offerAt, offerOutcome, type OfferSide, type OfferState } from './offer'
 import type { CourtVerdict } from './protocol'
-import { absentAt, foldLog, type Absence, type LogEntry, type RoomState } from './room'
+import { absentAt, foldLog, hostAt, type Absence, type HostTerm, type LogEntry, type RoomState } from './room'
 
 export { COURT_SIZE, SEAT_TIME, courtHash, courtState, courtVerdict, courtView, drawCourt, type CourtCase } from './court'
 
@@ -65,7 +65,12 @@ export type CourtTarget = AppealTarget | { kind: 'lot'; lot: LotState }
 
 // Ведущий и участники комнаты с мигом, когда впущены, и промежутками «вне игры» (вышел, выбыл — Р-40, Р-41;
 // нет — всегда в игре): кандидаты в суд — участники в игре на миг жребия
-export type CourtRoom = { hostId: string; members: readonly { id: string; addedAt: number; absent?: readonly Absence[] }[] }
+// hosts — сроки ведения (Р-42): ведущий на миг жребия сидит в суде первым (drawCourt), заменяет нынешний
+export type CourtRoom = {
+  hostId: string
+  members: readonly { id: string; addedAt: number; absent?: readonly Absence[] }[]
+  hosts?: readonly HostTerm[]
+}
 
 // Записи апелляции и суда — как будут в журнале комнаты: memberId — автор записи, at — время сервера,
 // target — событие или пари. Зерно — случайные байты сервера (hex); candidates — кандидаты на миг жребия
@@ -274,10 +279,11 @@ export function checkCourtVote(t: CourtTarget, c: CourtCase, memberId: string, v
 }
 
 // Досрочная замена: только ведущий, если он сам не заинтересован (его нет среди кандидатов);
-// только не проголосовавшего на своём месте, не себя; одна замена на место; с причиной; до решения
-export function checkReplace(c: CourtCase, memberId: string, member: unknown, reason: unknown, now: number): string | null {
-  if (memberId !== c.hostId) return ONLY_HOST
-  if (!c.candidates.includes(c.hostId)) return HOST_INTERESTED
+// только не проголосовавшего на своём месте, не себя; одна замена на место; с причиной; до решения.
+// host — нынешний ведущий на миг замены (Р-42; не задан — ведущий на миг жребия)
+export function checkReplace(c: CourtCase, memberId: string, member: unknown, reason: unknown, now: number, host: string = c.hostId): string | null {
+  if (memberId !== host) return ONLY_HOST
+  if (!c.candidates.includes(host)) return HOST_INTERESTED
   if (courtVerdict(c, now)) return COURT_DECIDED
   if (member === memberId) return OWN_SEAT
   const seat = courtState(c, now).seats.find((s) => s.member !== null && s.member === member)
@@ -342,7 +348,7 @@ export function roomAppeals(
           seed: r.seed,
           candidates: [...r.candidates],
           drawnAt: r.at,
-          hostId: room.hostId,
+          hostId: hostAt(room, r.at),
           acts: [],
         })
         break
@@ -356,7 +362,7 @@ export function roomAppeals(
           seed: r.seed,
           candidates: [...r.candidates],
           drawnAt: r.at,
-          hostId: room.hostId,
+          hostId: hostAt(room, r.at),
           acts: [],
         })
         break
@@ -369,7 +375,7 @@ export function roomAppeals(
         c.acts.push({ type: 'vote', id: r.id, at: r.at, by: r.memberId, ...verdictOf(r) })
         break
       case 'court.replaced': {
-        if (!c || checkReplace(c, r.memberId, r.member, r.reason, r.at)) break
+        if (!c || checkReplace(c, r.memberId, r.member, r.reason, r.at, hostAt(room, r.at))) break
         const reason = replaceReason(r.reason) as { ok: true; value: string }
         c.acts.push({ type: 'replace', id: r.id, at: r.at, by: r.memberId, member: r.member, reason: reason.value })
         break
@@ -414,6 +420,7 @@ export function courtRoom(state: RoomState): CourtRoom {
   return {
     hostId: state.hostId,
     members: state.members.map((m) => ({ id: m.id, addedAt: m.addedAt, ...(m.absent && { absent: m.absent }) })),
+    ...(state.hosts && { hosts: state.hosts }),
   }
 }
 
