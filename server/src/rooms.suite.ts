@@ -171,6 +171,8 @@ import {
   type ChoiceView,
 } from '../../src/rules/protocol'
 import * as T from '../../src/rules/settle'
+import * as O from '../../src/rules/offer'
+import { isPromiseResponse, type PromiseResponse, type PromiseView } from '../../src/rules/protocol'
 import * as M from '../../src/rules/member'
 import { isDropResponse, isLeaveResponse, type AdmitResponse, type DropResponse, type LeaveResponse } from '../../src/rules/protocol'
 import { HOST_AWAY } from '../../src/rules/member'
@@ -3840,6 +3842,259 @@ export function roomsSuite(
         expect(settlement.transfers).toEqual([])
         expect(settlement.suggestions).toEqual([])
         expect(await settleEntries(s, id)).toEqual([])
+      })
+    })
+
+    describe('пари «на обещание» (Р-44)', () => {
+      const HOUR = 60 * 60 * 1000
+      const DAY = 24 * HOUR
+      const SEED = 'ab'.repeat(16)
+      const SHASHLIK = 'Везу шашлык на дачу'
+      const DISHES = 'Мою посуду неделю'
+
+      async function room5(s: TestServer, form: unknown = FORM) {
+        const room = await create(s, form)
+        const borya = await member(s, room, 'Боря')
+        const vera = await member(s, room, 'Вера')
+        const gosha = await member(s, room, 'Гоша')
+        const dasha = await member(s, room, 'Даша')
+        return { room, borya, vera, gosha, dasha }
+      }
+
+      function promiseForm(s: TestServer, change: Record<string, unknown> = {}): Record<string, unknown> {
+        return {
+          v: PROTOCOL_VERSION,
+          condition: 'Вася подтянется 20 раз',
+          check: 'Видео в чате',
+          promise: SHASHLIK,
+          closesAt: s.clock.now + HOUR,
+          expectedAt: s.clock.now + DAY,
+          ...change,
+        }
+      }
+
+      function offerAct(s: TestServer, roomId: string, key: string, offerId: string, action: string, body: Record<string, unknown> = {}) {
+        return send(s, roomId, `offers/${offerId}/${action}`, { v: PROTOCOL_VERSION, ...body }, key)
+      }
+
+      function promiseAct(s: TestServer, roomId: string, key: string, offerId: string, mark: string, body: Record<string, unknown> = {}) {
+        return send(s, roomId, `promises/${offerId}/${mark}`, { v: PROTOCOL_VERSION, ...body }, key)
+      }
+
+      async function marked(r: Promise<Response>): Promise<PromiseView> {
+        const body = await ok<PromiseResponse>(r)
+        expect(isPromiseResponse(body)).toBe(true)
+        return body.promise
+      }
+
+      async function stateOf(s: TestServer, roomId: string, key: string): Promise<RoomStateResponse> {
+        const state = await ok<RoomStateResponse>(get(s, roomId, key))
+        expect(isRoomStateResponse(state)).toBe(true)
+        expect(isSettlementView(state.settlement)).toBe(true)
+        return state
+      }
+
+      async function promiseEntries(s: TestServer, roomId: string): Promise<string[]> {
+        return (await readLog(s.storage(roomId))).map((e) => e.type).filter((t) => t.startsWith('promise.'))
+      }
+
+      // Пари Бори на обещание, Вера приняла, обе стороны отметили winner — окончательно сразу
+      async function agreedPromise(s: TestServer, roomId: string, author: JoinRoomResponse, taker: JoinRoomResponse, winner: 'author' | 'taker', change: Record<string, unknown> = {}) {
+        const { offer } = await ok<CreateOfferResponse>(send(s, roomId, 'offers', promiseForm(s, change), author.key))
+        await ok(offerAct(s, roomId, taker.key, offer.id, 'accept'))
+        for (const side of [author, taker]) await ok(offerAct(s, roomId, side.key, offer.id, 'mark', { winner }))
+        return offer
+      }
+
+      it('создание и принятие: обещания сторон, без кэфа и суммы; в журнале — поле promise; отказы формы — без записи', async () => {
+        const s = await server()
+        const { room, borya, vera, gosha } = await room5(s)
+        const id = room.roomId
+        const requestId = ulid(s.clock.now)
+        const form = promiseForm(s, { requestId })
+        const created = await ok<CreateOfferResponse>(send(s, id, 'offers', form, borya.key))
+        expect(isCreateOfferResponse(created)).toBe(true)
+        expect(created.offer).toMatchObject({
+          authorId: borya.memberId,
+          odds: { a: 1, b: 1 },
+          amount: 0,
+          takerAmount: 0,
+          to: null,
+          guarantorId: room.memberId,
+          promise: { author: SHASHLIK, taker: SHASHLIK },
+        })
+        expect((await readLog(s.storage(id))).at(-1)).toMatchObject({
+          type: 'offer.created',
+          odds: { a: 1, b: 1 },
+          amount: 0,
+          promise: { author: SHASHLIK, taker: SHASHLIK },
+          requestId,
+        })
+        // Повтор того же запроса — то же пари; другое обещание с тем же номером — 409
+        expect(await ok(send(s, id, 'offers', form, borya.key))).toEqual(created)
+        await refused(send(s, id, 'offers', { ...form, promise: DISHES }, borya.key), 409, REQUEST_USED)
+        // Адресное — обещание соперника своё
+        const addressed = await ok<CreateOfferResponse>(send(s, id, 'offers', promiseForm(s, { to: gosha.memberId, takerPromise: DISHES }), vera.key))
+        expect(addressed.offer).toMatchObject({ to: gosha.memberId, promise: { author: SHASHLIK, taker: DISHES } })
+        const before = await logSnapshot(s.storage(id))
+        await refused(send(s, id, 'offers', promiseForm(s, { promise: '  ' }), borya.key), 400, O.NEED_PROMISE)
+        await refused(send(s, id, 'offers', promiseForm(s, { takerPromise: '' }), borya.key), 400, O.NEED_TAKER_PROMISE)
+        await refused(send(s, id, 'offers', promiseForm(s, { promise: 'я'.repeat(301) }), borya.key), 400, O.LONG_PROMISE)
+        await refused(send(s, id, 'offers', promiseForm(s, { auction: { start: 100 } }), borya.key), 400, O.PROMISE_AUCTION)
+        expect(await logSnapshot(s.storage(id))).toEqual(before)
+        // Принятие — как у пари; в ответе комнаты — с обещаниями, у всех
+        await ok(offerAct(s, id, vera.key, created.offer.id, 'accept'))
+        for (const key of [room.key, borya.key, gosha.key]) {
+          const view = (await stateOf(s, id, key)).offers?.find((o) => o.id === created.offer.id)
+          expect(view).toMatchObject({ status: 'accepted', accepted: { by: vera.memberId }, promise: { author: SHASHLIK, taker: SHASHLIK }, amount: 0 })
+        }
+      })
+
+      it('встречное — своё обещание: к пари на обещание суммы нет, к пари на сумму обещаний нет; автор принял — исходное закрыто', async () => {
+        const s = await server()
+        const { room, borya, vera } = await room5(s)
+        const id = room.roomId
+        const { offer } = await ok<CreateOfferResponse>(send(s, id, 'offers', promiseForm(s, { takerPromise: DISHES }), borya.key))
+        await refused(offerAct(s, id, vera.key, offer.id, 'counter', { closesAt: s.clock.now + HOUR, amount: 100 }), 400, O.PROMISE_COUNTER)
+        await refused(offerAct(s, id, vera.key, offer.id, 'counter', { closesAt: s.clock.now + HOUR, promise: 7 }), 400, O.NEED_PROMISE)
+        await refused(offerAct(s, id, vera.key, offer.id, 'counter', { closesAt: s.clock.now + HOUR, promise: ' ' }), 400, O.NEED_PROMISE)
+        const money = await ok<CreateOfferResponse>(send(s, id, 'offers', { ...promiseForm(s), promise: undefined, odds: { a: 1, b: 1 }, amount: 100 }, borya.key))
+        expect('promise' in money.offer).toBe(false)
+        await refused(offerAct(s, id, vera.key, money.offer.id, 'counter', { closesAt: s.clock.now + HOUR, promise: 'Везу пиво' }), 400, O.MONEY_COUNTER)
+        // Своё обещание Веры; обещание Бори — прежнее
+        const requestId = ulid(s.clock.now)
+        const body = { closesAt: s.clock.now + HOUR, promise: 'Везу пиво', requestId }
+        const counter = await ok<CreateOfferResponse>(offerAct(s, id, vera.key, offer.id, 'counter', body))
+        expect(counter.offer).toMatchObject({ authorId: vera.memberId, to: borya.memberId, counterTo: offer.id, side: 'no', amount: 0, promise: { author: 'Везу пиво', taker: SHASHLIK } })
+        expect(await ok(offerAct(s, id, vera.key, offer.id, 'counter', body))).toEqual(counter)
+        // Не задано ничего — своё — что просили от Веры, Бори — его прежнее
+        const plain = await ok<CreateOfferResponse>(offerAct(s, id, vera.key, offer.id, 'counter', { closesAt: s.clock.now + HOUR }))
+        expect(plain.offer.promise).toEqual({ author: DISHES, taker: SHASHLIK })
+        await ok(offerAct(s, id, borya.key, counter.offer.id, 'accept'))
+        const offers = (await stateOf(s, id, room.key)).offers ?? []
+        expect(offers.find((o) => o.id === counter.offer.id)).toMatchObject({ status: 'accepted', accepted: { by: borya.memberId } })
+        expect(offers.find((o) => o.id === offer.id)).toMatchObject({ status: 'countered', closedBy: { offer: counter.offer.id } })
+      })
+
+      it('без гаранта: разошлись — суд; решение суда — проигравший должен обещание; до окончательности блока нет', async () => {
+        const s = await server()
+        const { room, borya, vera, gosha, dasha } = await room5(s)
+        const id = room.roomId
+        const keyOf = (m: string) => [room, borya, vera, gosha, dasha].find((p) => p.memberId === m)?.key ?? 'нет-ключа'
+        const { offer } = await ok<CreateOfferResponse>(send(s, id, 'offers', promiseForm(s, { noGuarantor: true, takerPromise: DISHES }), borya.key))
+        await ok(offerAct(s, id, vera.key, offer.id, 'accept'))
+        s.clock.now = offer.expectedAt
+        await ok(offerAct(s, id, borya.key, offer.id, 'mark', { winner: 'author' }))
+        s.seeds.push(SEED)
+        await ok(offerAct(s, id, vera.key, offer.id, 'mark', { winner: 'taker' }))
+        const order = A.drawCourt(SEED, [room.memberId, gosha.memberId, dasha.memberId], room.memberId)
+        const inCourt = await stateOf(s, id, gosha.key)
+        expect(inCourt.offers?.find((o) => o.id === offer.id)?.outcome).toMatchObject({ phase: 'court', court: { candidates: order } })
+        expect('promises' in (inCourt.settlement as SettlementView)).toBe(false)
+        await refused(promiseAct(s, id, borya.key, offer.id, 'kept'), 404, T.NO_PROMISE)
+        await ok(offerAct(s, id, keyOf(order[0]), offer.id, 'judge', { verdict: 'change', winner: 'taker' }))
+        await ok(offerAct(s, id, keyOf(order[1]), offer.id, 'judge', { verdict: 'change', winner: 'taker' }))
+        await ok(offerAct(s, id, keyOf(order[2]), offer.id, 'judge', { verdict: 'cancel' }))
+        const decided = await stateOf(s, id, dasha.key)
+        expect(decided.offers?.find((o) => o.id === offer.id)?.outcome).toMatchObject({ phase: 'final', approved: { winner: 'taker', how: 'court' } })
+        expect(decided.settlement?.promises).toEqual([
+          { offer: offer.id, at: s.clock.now, from: borya.memberId, to: vera.memberId, text: SHASHLIK, status: 'waiting', changedAt: s.clock.now },
+        ])
+        // Денег нет ни у кого
+        expect(decided.settlement?.members.every((m) => m.total.amount === 0 && m.total.offers === 0 && m.inPlay.offers === 0)).toBe(true)
+      })
+
+      it('«Расчёт»: «Исполнил» → «Не получил» → «Исполнил» → «Получил»; итоги и «кто кому» — без пари на обещание; повтор — без записи; отказы', async () => {
+        const s = await server()
+        const { room, borya, vera, gosha } = await room5(s)
+        const id = room.roomId
+        // Пари на сумму: Вера права — Боря должен ей 100
+        const money = { v: PROTOCOL_VERSION, condition: 'Пари на сумму', check: 'Скажет сам', odds: { a: 1, b: 1 }, amount: 100, closesAt: s.clock.now + HOUR, expectedAt: s.clock.now + DAY }
+        const { offer: cash } = await ok<CreateOfferResponse>(send(s, id, 'offers', money, borya.key))
+        await ok(offerAct(s, id, vera.key, cash.id, 'accept'))
+        for (const side of [borya, vera]) await ok(offerAct(s, id, side.key, cash.id, 'mark', { winner: 'taker' }))
+        const plain = (await stateOf(s, id, gosha.key)).settlement as SettlementView
+        expect('promises' in plain).toBe(false)
+        // Пари на обещание: Боря прав — Вера должна ему своё обещание
+        const offer = await agreedPromise(s, id, borya, vera, 'author', { takerPromise: DISHES })
+        const settlement = (await stateOf(s, id, gosha.key)).settlement as SettlementView
+        expect(settlement.members).toEqual(plain.members)
+        expect(settlement.suggestions).toEqual([{ from: borya.memberId, to: vera.memberId, amount: 100 }])
+        const waiting = { offer: offer.id, at: s.clock.now, from: vera.memberId, to: borya.memberId, text: DISHES, status: 'waiting', changedAt: s.clock.now }
+        expect(settlement.promises).toEqual([waiting])
+        // Отказы: не та сторона, не то состояние, нет обещания — без записи
+        const before = await logSnapshot(s.storage(id))
+        await refused(promiseAct(s, id, borya.key, offer.id, 'kept'), 403, T.ONLY_LOSER)
+        await refused(promiseAct(s, id, gosha.key, offer.id, 'kept'), 403, T.ONLY_LOSER)
+        await refused(promiseAct(s, id, vera.key, offer.id, 'received'), 403, T.ONLY_WINNER)
+        await refused(promiseAct(s, id, borya.key, offer.id, 'rejected'), 409, T.NOT_KEPT)
+        await refused(promiseAct(s, id, vera.key, cash.id, 'kept'), 404, T.NO_PROMISE)
+        await refused(promiseAct(s, id, vera.key, ulid(s.clock.now), 'kept'), 404, T.NO_PROMISE)
+        await refused(promiseAct(s, id, vera.key, 'кривой', 'kept'), 404, T.NO_PROMISE)
+        expect(await logSnapshot(s.storage(id))).toEqual(before)
+        // «Исполнил» — запись promise.kept; повтор с тем же номером — тот же ответ без записи
+        s.clock.now += 1000
+        const requestId = ulid(s.clock.now)
+        const kept = await marked(promiseAct(s, id, vera.key, offer.id, 'kept', { requestId }))
+        expect(kept).toEqual({ ...waiting, status: 'kept', changedAt: s.clock.now })
+        expect((await readLog(s.storage(id))).at(-1)).toEqual({ id: expect.any(String), at: s.clock.now, memberId: vera.memberId, type: 'promise.kept', offer: offer.id, requestId })
+        s.clock.now += 1000
+        expect(await marked(promiseAct(s, id, vera.key, offer.id, 'kept', { requestId }))).toEqual(kept)
+        await refused(promiseAct(s, id, borya.key, offer.id, 'received', { requestId }), 409, REQUEST_USED)
+        await refused(promiseAct(s, id, vera.key, offer.id, 'kept'), 409, T.ALREADY_KEPT)
+        // «Не получил» — снова «Исполнил» — «Получил»
+        expect(await marked(promiseAct(s, id, borya.key, offer.id, 'rejected'))).toMatchObject({ status: 'rejected', changedAt: s.clock.now })
+        await refused(promiseAct(s, id, borya.key, offer.id, 'rejected'), 409, T.PROMISE_REJECTED)
+        s.clock.now += 1000
+        expect(await marked(promiseAct(s, id, vera.key, offer.id, 'kept'))).toMatchObject({ status: 'kept' })
+        s.clock.now += 1000
+        const received = await marked(promiseAct(s, id, borya.key, offer.id, 'received'))
+        expect(received).toEqual({ ...waiting, status: 'received', changedAt: s.clock.now })
+        await refused(promiseAct(s, id, borya.key, offer.id, 'received'), 409, T.PROMISE_RECEIVED)
+        await refused(promiseAct(s, id, vera.key, offer.id, 'kept'), 409, T.PROMISE_RECEIVED)
+        for (const key of [room.key, borya.key, vera.key, gosha.key]) expect((await stateOf(s, id, key)).settlement?.promises).toEqual([received])
+        expect(await promiseEntries(s, id)).toEqual(['promise.kept', 'promise.rejected', 'promise.kept', 'promise.received'])
+        // «Получил» сам, без «Исполнил»
+        const second = await agreedPromise(s, id, borya, vera, 'taker')
+        expect(await marked(promiseAct(s, id, vera.key, second.id, 'received'))).toMatchObject({ from: borya.memberId, to: vera.memberId, text: SHASHLIK, status: 'received' })
+      })
+
+      it('комната на очки: выйти с неполученным обещанием — отказ; «выбывший» и закрытая комната — отмечают; после «Получил» — выйти можно', async () => {
+        const s = await server()
+        const { room, borya, vera } = await room5(s, { ...FORM, currency: 'PTS' })
+        const id = room.roomId
+        const offer = await agreedPromise(s, id, borya, vera, 'taker')
+        expect((await stateOf(s, id, room.key)).settlement?.promises).toMatchObject([{ from: borya.memberId, to: vera.memberId, status: 'waiting' }])
+        await refused(send(s, id, 'leave', { v: PROTOCOL_VERSION }, borya.key), 409, M.UNKEPT_PROMISE)
+        await refused(send(s, id, 'leave', { v: PROTOCOL_VERSION }, vera.key), 409, M.UNKEPT_PROMISE)
+        // Ведущая пометила Борю «выбыл» и закрыла комнату: открытого нет — можно
+        await ok(send(s, id, `members/${borya.memberId}/drop`, { v: PROTOCOL_VERSION }, room.key))
+        await ok(send(s, id, 'close', { v: PROTOCOL_VERSION }, room.key))
+        await refused(send(s, id, 'offers', promiseForm(s), vera.key), 409, M.ROOM_CLOSED)
+        expect(await marked(promiseAct(s, id, borya.key, offer.id, 'kept'))).toMatchObject({ status: 'kept' })
+        expect(await marked(promiseAct(s, id, vera.key, offer.id, 'received'))).toMatchObject({ status: 'received' })
+        await ok(send(s, id, 'reopen', { v: PROTOCOL_VERSION }, room.key))
+        await ok(send(s, id, 'leave', { v: PROTOCOL_VERSION }, vera.key))
+      })
+
+      it('копия комнаты — с обещаниями: после загрузки «Расчёт» тот же', async () => {
+        const s = await server()
+        const { room, borya, vera } = await room5(s)
+        const id = room.roomId
+        const offer = await agreedPromise(s, id, borya, vera, 'author', { takerPromise: DISHES })
+        await marked(promiseAct(s, id, vera.key, offer.id, 'kept'))
+        const auth = { Authorization: 'Password ' + btoa(String.fromCharCode(...new TextEncoder().encode(PASSWORD))) }
+        const copy = await ok<Record<string, unknown>>(s.send(`/rooms/${id}/export`, { headers: auth }))
+        expect(checkBackup(copy, 'full').ok).toBe(true)
+        expect((copy.log as { type: string }[]).map((e) => e.type)).toContain('promise.kept')
+        const before = await stateOf(s, id, borya.key)
+        const t = await server()
+        t.clock.now = s.clock.now
+        await ok(t.send(`/rooms/${id}/import`, { method: 'POST', headers: auth, body: JSON.stringify(copy) }))
+        const after = await stateOf(t, id, borya.key)
+        expect(after.settlement).toEqual(before.settlement)
+        expect(after.settlement?.promises).toMatchObject([{ offer: offer.id, status: 'kept', text: DISHES }])
+        expect(after.offers?.find((o) => o.id === offer.id)?.promise).toEqual({ author: SHASHLIK, taker: DISHES })
       })
     })
 
