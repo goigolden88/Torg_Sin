@@ -106,6 +106,7 @@ import {
   offerAmounts,
   offerAt,
 } from './offer'
+import { LONG_PROMISE, NEED_PROMISE, NEED_TAKER_PROMISE, PROMISE_AUCTION, PROMISE_ODDS } from './offer'
 import { isOfferView } from './protocol'
 import { LONG_CONDITION, NEED_CHECK, NEED_CONDITION, BAD_AMOUNT } from './event'
 import { FAST_TIMES, NORMAL_TIMES, type Times } from './pace'
@@ -1320,6 +1321,137 @@ describe('«Торг до …» (Р-37)', () => {
       expect(isOfferView({ ...view, bidding: { ...view.bidding, endsAt: '1' } })).toBe(false)
       expect(isOfferView({ ...view, bidding: { ...view.bidding, result: { how: 'now', at: 1 } } })).toBe(false)
       expect(isOfferView({ ...view, auction: { start: 1000, step: 100 } })).toBe(false)
+    })
+  })
+})
+
+describe('пари «на обещание» (Р-44)', () => {
+  const SHASHLIK = 'Везу шашлык на дачу'
+  const DISHES = 'Мою посуду неделю'
+  const form = (over: Record<string, unknown> = {}) => ({
+    condition: 'Вася подтянется 20 раз',
+    check: 'Видео в чате',
+    closesAt: CLOSE,
+    expectedAt: EXPECT,
+    promise: SHASHLIK,
+    ...over,
+  })
+  const promised = (over: Partial<OfferCreated> = {}) =>
+    created({ odds: { ...PROMISE_ODDS }, amount: 0, promise: { author: SHASHLIK, taker: SHASHLIK }, ...over })
+
+  describe('форма', () => {
+    it('своё обещание; у соперника по умолчанию — то же; кэф и сумма не нужны', () => {
+      const r = checkOfferInput(form())
+      expect(r).toEqual({
+        ok: true,
+        value: {
+          condition: 'Вася подтянется 20 раз',
+          check: 'Видео в чате',
+          side: 'yes',
+          odds: { a: 1, b: 1 },
+          amount: 0,
+          to: null,
+          closesAt: CLOSE,
+          expectedAt: EXPECT,
+          guarantor: null,
+          subject: null,
+          promise: { author: SHASHLIK, taker: SHASHLIK },
+        },
+      })
+    })
+
+    it('обещание соперника — своё; пробелы по краям срезаются; кэф и сумма формы не смотрятся', () => {
+      const r = checkOfferInput(form({ promise: `  ${SHASHLIK} `, takerPromise: ` ${DISHES}`, odds: { a: 3, b: 1 }, amount: 300, to: 'b' }))
+      expect(r.ok && r.value).toMatchObject({ promise: { author: SHASHLIK, taker: DISHES }, odds: { a: 1, b: 1 }, amount: 0, to: 'b' })
+    })
+
+    it('пустое или длинное обещание — отказ; соперника без своего — отказ; с торгом — отказ', () => {
+      expect(checkOfferInput(form({ promise: '   ' }))).toEqual({ ok: false, error: NEED_PROMISE })
+      expect(checkOfferInput(form({ promise: 5 }))).toEqual({ ok: false, error: NEED_PROMISE })
+      expect(checkOfferInput(form({ takerPromise: '' }))).toEqual({ ok: false, error: NEED_TAKER_PROMISE })
+      expect(checkOfferInput(form({ promise: 'я'.repeat(301) }))).toEqual({ ok: false, error: LONG_PROMISE })
+      expect(checkOfferInput(form({ promise: 'я'.repeat(300) })).ok).toBe(true)
+      expect(checkOfferInput(form({ takerPromise: 'я'.repeat(301) }))).toEqual({ ok: false, error: LONG_PROMISE })
+      expect(checkOfferInput(form({ promise: undefined, takerPromise: DISHES }))).toEqual({ ok: false, error: NEED_PROMISE })
+      expect(checkOfferInput(form({ auction: { start: 100 } }))).toEqual({ ok: false, error: PROMISE_AUCTION })
+    })
+
+    it('без обещания — как раньше: нужны кэф и сумма', () => {
+      expect(checkOfferInput(form({ promise: undefined }))).toEqual({ ok: false, error: BAD_ODDS })
+      expect(checkOfferInput(form({ promise: null, odds: { a: 3, b: 1 } }))).toEqual({ ok: false, error: BAD_AMOUNT })
+    })
+  })
+
+  describe('свёртка, принятие, исход', () => {
+    it('создание и принятие: адресное и открытое; суммы — ноль, в итоге денег нет', () => {
+      const open = one([promised(), act('offer.accepted', 'b', T + 10)])
+      expect(open.promise).toEqual({ author: SHASHLIK, taker: SHASHLIK })
+      expect(offerStatus(open, T + 20)).toBe('accepted')
+      expect(offerAmounts(open)).toEqual({ ok: true, value: { author: 0, taker: 0, bank: 0, exact: true } })
+      expect(offerInfo(open)).toMatchObject({ amount: 0, takerAmount: 0, odds: { a: 1, b: 1 }, promise: { author: SHASHLIK, taker: SHASHLIK } })
+      const addressed = one([promised({ to: 'c' }), act('offer.accepted', 'b', T + 10), act('offer.accepted', 'c', T + 11)])
+      expect(addressed.accepted).toEqual({ by: 'c', at: T + 11 })
+    })
+
+    it('исход, гарант и суд — как у пари: согласие окончательно, а offerResult пуст', () => {
+      const agreed = one([promised(), act('offer.accepted', 'b', T + 10), mark('a', 'taker', T + 20), mark('b', 'taker', T + 30)])
+      expect(offerOutcome(agreed, T + 40)).toMatchObject({ phase: 'final', approved: { winner: 'taker', how: 'agreement' }, finalAt: T + 30 })
+      expect(offerResult(agreed, T + 40)).toEqual([])
+      const split = one([promised(), act('offer.accepted', 'b', T + 10), mark('a', 'author', T + 20), mark('b', 'taker', T + 30)])
+      expect(offerOutcome(split, EXPECT)?.phase).toBe('guarantor')
+      expect(checkDecide(split, 'h', 'author', EXPECT)).toBeNull()
+      const decided = one([promised(), act('offer.accepted', 'b', T + 10), mark('a', 'author', T + 20), mark('b', 'taker', T + 30), decide('h', 'author', EXPECT)])
+      expect(offerOutcome(decided, EXPECT + FINAL_TIME)).toMatchObject({ phase: 'final', approved: { winner: 'author', how: 'guarantor' } })
+      // Без гаранта — суд сразу, как разошлись после «исход к»
+      const bare = one([promised({ guarantor: null }), act('offer.accepted', 'b', T + 10), mark('a', 'author', T + 20), mark('b', 'taker', T + 30)])
+      expect(courtDue(bare, EXPECT)).toBe(true)
+    })
+
+    it('запись без обещаний, с суммой, кэфом или торгом — не действует', () => {
+      expect(one([promised({ amount: 300 })])).toBeUndefined()
+      expect(one([promised({ odds: { a: 3, b: 1 } })])).toBeUndefined()
+      expect(one([promised({ promise: { author: '', taker: SHASHLIK } })])).toBeUndefined()
+      expect(one([promised({ promise: { author: SHASHLIK, taker: ' x' } })])).toBeUndefined()
+      expect(one([promised({ promise: { author: SHASHLIK, taker: 'я'.repeat(301) } })])).toBeUndefined()
+      expect(one([promised({ auction: { start: 100, step: 10 }, to: null })])).toBeUndefined()
+    })
+
+    it('ответ проходит проверку протокола; кривые обещания — нет', () => {
+      const view = offerView(one([promised(), act('offer.accepted', 'b', T + 10)]), T + 20)
+      expect(isOfferView(view)).toBe(true)
+      expect(isOfferView({ ...view, promise: { author: SHASHLIK } })).toBe(false)
+      expect(isOfferView({ ...view, promise: SHASHLIK })).toBe(false)
+      // У пари на сумму поля нет
+      expect('promise' in offerInfo(one([created()]))).toBe(false)
+    })
+  })
+
+  describe('встречное', () => {
+    const original = () => one([promised({ promise: { author: SHASHLIK, taker: DISHES } })])
+    const counterOf = (over: Partial<OfferCreated> = {}) =>
+      promised({ id: 'o2', at: T + 5, memberId: 'b', to: 'a', side: 'no', counterTo: 'o1', promise: { author: DISHES, taker: SHASHLIK }, ...over })
+
+    it('не задано — своё — что просили от соперника, автора исходного — его прежнее; кэф и сумма — ничьи', () => {
+      const input = counterInput(original(), { odds: { a: 3, b: 1 }, amount: 300, closesAt: CLOSE })
+      expect(input).toMatchObject({ promise: { author: DISHES, taker: SHASHLIK }, odds: { a: 1, b: 1 }, amount: 0, to: 'a', side: 'no' })
+      const own = counterInput(original(), { odds: { a: 1, b: 1 }, amount: 0, closesAt: CLOSE, promise: 'Везу пиво' })
+      expect(own.promise).toEqual({ author: 'Везу пиво', taker: SHASHLIK })
+      const both = counterInput(original(), { odds: { a: 1, b: 1 }, amount: 0, closesAt: CLOSE, promise: 'Везу пиво', takerPromise: 'Везёшь торт' })
+      expect(both.promise).toEqual({ author: 'Везу пиво', taker: 'Везёшь торт' })
+      // К пари на сумму обещаний нет
+      expect('promise' in counterInput(one([created()]), { odds: { a: 1, b: 1 }, amount: 100, closesAt: CLOSE, promise: 'Везу пиво' })).toBe(false)
+    })
+
+    it('автор принял встречное — оно принято, исходное закрыто встречным', () => {
+      const offers = roomOffers([promised({ promise: { author: SHASHLIK, taker: DISHES } }), counterOf(), act('offer.accepted', 'a', T + 20, 'o2')], room)
+      expect(offers.find((o) => o.id === 'o2')).toMatchObject({ accepted: { by: 'a', at: T + 20 }, promise: { author: DISHES, taker: SHASHLIK } })
+      expect(offers.find((o) => o.id === 'o1')?.closedBy).toEqual({ offer: 'o2', at: T + 20 })
+    })
+
+    it('встречное другого вида не действует: к обещанию — сумма, к сумме — обещание', () => {
+      const money = created({ id: 'o2', at: T + 5, memberId: 'b', to: 'a', side: 'no', counterTo: 'o1' })
+      expect(roomOffers([promised(), money], room).map((o) => o.id)).toEqual(['o1'])
+      expect(roomOffers([created(), counterOf()], room).map((o) => o.id)).toEqual(['o1'])
     })
   })
 })

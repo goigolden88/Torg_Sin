@@ -21,6 +21,17 @@ import {
   SAME_MODE,
   SELF_TRANSFER,
   TRANSFER_CANCELLED,
+  ALREADY_KEPT,
+  NO_PROMISE,
+  NOT_KEPT,
+  ONLY_LOSER,
+  ONLY_WINNER,
+  PROMISE_RECEIVED,
+  PROMISE_REJECTED,
+  checkKept,
+  checkPromiseAnswer,
+  duePromises,
+  roomPromises,
   cancelCycles,
   checkAnswer,
   checkReceive,
@@ -32,6 +43,7 @@ import {
   roomSettlement,
   roomTransfers,
   type MemberSettlement,
+  type PromiseRecord,
   type RoomSettlement,
   type SettleMode,
   type Transfer,
@@ -143,13 +155,29 @@ function offer(id: string, author: string, taker: string, amount: number, how: O
   ]
 }
 
-type Room = { log?: LogEntry[]; offers?: OfferRecord[]; appeals?: (events: EventState[], offers: OfferState[]) => AppealRecord[]; transfers?: TransferRecord[]; currency?: string; members?: string[] }
+type Room = {
+  log?: LogEntry[]
+  offers?: OfferRecord[]
+  appeals?: (events: EventState[], offers: OfferState[]) => AppealRecord[]
+  transfers?: TransferRecord[]
+  promises?: PromiseRecord[]
+  currency?: string
+  members?: string[]
+}
 function settle(r: Room, now: number, mode?: SettleMode): RoomSettlement {
   const events = roomEvents([...ROOM_LOG, ...(r.log ?? [])])
   const offers = roomOffers(r.offers ?? [], ROLES)
   const cases = roomAppeals(r.appeals?.(events, offers) ?? [], { events, offers }, COURT_ROOM)
   return roomSettlement(
-    { currency: r.currency ?? 'RUB', members: r.members ?? MEMBERS, events, offers, cases, transfers: r.transfers ?? [] },
+    {
+      currency: r.currency ?? 'RUB',
+      members: r.members ?? MEMBERS,
+      events,
+      offers,
+      cases,
+      transfers: r.transfers ?? [],
+      ...(r.promises && { promises: r.promises }),
+    },
     now,
     mode,
   )
@@ -643,5 +671,100 @@ describe('смена режима (checkSettleMode)', () => {
     // Балансы ноль, но перевод ждёт подтверждения
     expect(checkSettleMode(at([sent('t1', 'B', 'A', 100)]), ROOM, 'H', 'fewest')).toBe(MODE_LOCKED)
     expect(checkSettleMode(at([sent('t1', 'B', 'A', 100), got('g', 'A', 't1')]), ROOM, 'H', 'fewest')).toBeNull()
+  })
+})
+
+describe('обещания (Р-44)', () => {
+  const SHASHLIK = 'Везу шашлык'
+  const DISHES = 'Мою посуду неделю'
+  // Пари на обещание author против taker: у автора — шашлык, у соперника — посуда
+  const promised = (id: string, author: string, taker: string, how: OfferHow): OfferRecord[] => {
+    const [first, ...rest] = offer(id, author, taker, 0, how)
+    return [{ ...(first as OfferCreated), odds: { a: 1, b: 1 }, amount: 0, promise: { author: SHASHLIK, taker: DISHES } }, ...rest]
+  }
+  const mark = (type: PromiseRecord['type'], who: string, offerId: string, at = LATER): PromiseRecord => ({ type, id: nid('p'), at, memberId: who, offer: offerId })
+  const promisesOf = (offers: OfferRecord[], records: PromiseRecord[], now = LATER) => roomPromises(roomOffers(offers, ROLES), [], records, now)
+
+  it('«Расчёт» без денег: итоги, «кто кому» и таблица очков — как без пари на обещание', () => {
+    const money = offer('O1', 'A', 'B', 100, { agree: 'author' })
+    const words = [...promised('O2', 'A', 'C', { agree: 'taker' }), ...promised('O3', 'B', 'C', 'marking')]
+    const plain = settle({ offers: money }, LATER)
+    const both = settle({ offers: [...money, ...words], promises: [] }, LATER)
+    expect(both.members).toEqual(plain.members)
+    expect(both.suggestions).toEqual(plain.suggestions)
+    expect(both.promises).toEqual([{ offer: 'O2', at: P + 1, from: 'A', to: 'C', text: SHASHLIK, status: 'waiting', changedAt: P + 1 }])
+    const points = settle({ offers: [...money, ...words], promises: [], currency: 'PTS' }, LATER)
+    expect(points.members).toEqual(settle({ offers: money, currency: 'PTS' }, LATER).members)
+    expect(points.promises).toHaveLength(1)
+  })
+
+  it('старая комната: записей обещаний своду не дали или обещаний к исполнению нет — блока нет', () => {
+    const money = offer('O1', 'A', 'B', 100, { agree: 'author' })
+    expect('promises' in settle({ offers: money }, LATER)).toBe(false)
+    expect('promises' in settle({ offers: money, promises: [] }, LATER)).toBe(false)
+    expect('promises' in settle({ offers: [...money, ...promised('O2', 'A', 'C', 'marking')], promises: [] }, LATER)).toBe(false)
+  })
+
+  it('только окончательный исход: решение гаранта — через 7 дней; кто проиграл — тот и обещает', () => {
+    const offers = promised('O1', 'A', 'B', { decide: 'author' })
+    expect(promisesOf(offers, [], MID)).toEqual([])
+    expect(promisesOf(offers, [], P + 2 + FINAL_TIME)).toEqual([
+      { offer: 'O1', at: P + 2 + FINAL_TIME, from: 'B', to: 'A', text: DISHES, status: 'waiting', changedAt: P + 2 + FINAL_TIME },
+    ])
+    expect(duePromises(roomOffers([...promised('O2', 'A', 'B', 'apart'), ...promised('O3', 'A', 'B', 'open')], ROLES), [], LATER)).toEqual([])
+  })
+
+  it('суд: «изменить» — обещает другой; «отменить» — обещания нет', () => {
+    const offers = promised('O1', 'A', 'B', { decide: 'author' })
+    const run = (verdict: CourtVerdict) => {
+      const s = settle({ offers, promises: [], appeals: appeal('O1', 'B', P + 3, [verdict, verdict, verdict]) }, LATER)
+      return s.promises ?? []
+    }
+    expect(run({ verdict: 'change', winner: 'taker' })).toMatchObject([{ from: 'A', to: 'B', text: SHASHLIK, at: P + 6 }])
+    expect(run({ verdict: 'cancel' })).toEqual([])
+    expect(run({ verdict: 'keep' })).toMatchObject([{ from: 'B', to: 'A', text: DISHES, at: P + 6 }])
+  })
+
+  it('«Исполнил» → «Получил»; «Не получил» → снова «Исполнил»; «Получил» сам, без «Исполнил»', () => {
+    const offers = promised('O1', 'A', 'B', { agree: 'author' })
+    const kept = mark('promise.kept', 'B', 'O1', LATER)
+    expect(promisesOf(offers, [kept])[0]).toMatchObject({ status: 'kept', changedAt: LATER })
+    expect(promisesOf(offers, [kept, mark('promise.received', 'A', 'O1', LATER + 1)])[0]).toMatchObject({ status: 'received', changedAt: LATER + 1 })
+    const no = mark('promise.rejected', 'A', 'O1', LATER + 1)
+    expect(promisesOf(offers, [kept, no])[0]).toMatchObject({ status: 'rejected', changedAt: LATER + 1 })
+    expect(promisesOf(offers, [kept, no, mark('promise.kept', 'B', 'O1', LATER + 2)])[0]).toMatchObject({ status: 'kept', changedAt: LATER + 2 })
+    expect(promisesOf(offers, [kept, no, mark('promise.received', 'A', 'O1', LATER + 2)])[0].status).toBe('received')
+    expect(promisesOf(offers, [mark('promise.received', 'A', 'O1')])[0].status).toBe('received')
+  })
+
+  it('проверки: кто отмечает и из какого состояния; отметка не по правилу и до окончательности — не действует', () => {
+    const offers = promised('O1', 'A', 'B', { agree: 'author' })
+    const [waiting] = promisesOf(offers, [])
+    expect(checkKept(null, 'B')).toBe(NO_PROMISE)
+    expect(checkKept(waiting, 'A')).toBe(ONLY_LOSER)
+    expect(checkKept(waiting, 'H')).toBe(ONLY_LOSER)
+    expect(checkKept(waiting, 'B')).toBeNull()
+    expect(checkPromiseAnswer(null, 'A', 'received')).toBe(NO_PROMISE)
+    expect(checkPromiseAnswer(waiting, 'B', 'received')).toBe(ONLY_WINNER)
+    expect(checkPromiseAnswer(waiting, 'A', 'rejected')).toBe(NOT_KEPT)
+    expect(checkPromiseAnswer(waiting, 'A', 'received')).toBeNull()
+    const [kept] = promisesOf(offers, [mark('promise.kept', 'B', 'O1')])
+    expect(checkKept(kept, 'B')).toBe(ALREADY_KEPT)
+    expect(checkPromiseAnswer(kept, 'A', 'rejected')).toBeNull()
+    const [no] = promisesOf(offers, [mark('promise.kept', 'B', 'O1'), mark('promise.rejected', 'A', 'O1')])
+    expect(checkPromiseAnswer(no, 'A', 'rejected')).toBe(PROMISE_REJECTED)
+    const [done] = promisesOf(offers, [mark('promise.received', 'A', 'O1')])
+    expect(checkKept(done, 'B')).toBe(PROMISE_RECEIVED)
+    expect(checkPromiseAnswer(done, 'A', 'received')).toBe(PROMISE_RECEIVED)
+    // Чужие, раньше окончательности, повтор, о пари на сумму — не действуют
+    const ignored = [
+      mark('promise.kept', 'A', 'O1'),
+      mark('promise.received', 'B', 'O1'),
+      mark('promise.rejected', 'A', 'O1'),
+      mark('promise.kept', 'B', 'O9'),
+    ]
+    expect(promisesOf(offers, ignored)[0].status).toBe('waiting')
+    expect(promisesOf(offers, [mark('promise.kept', 'B', 'O1', P)])[0].status).toBe('waiting')
+    expect(promisesOf([...offers, ...offer('O2', 'A', 'B', 100, { agree: 'author' })], [mark('promise.kept', 'B', 'O2')])).toHaveLength(1)
   })
 })

@@ -49,13 +49,14 @@ import {
   roomMembers,
   TAKE_DROPPED,
   takeHostFrom,
+  UNKEPT_PROMISE,
   UNSETTLED,
   type LeaveRoom,
 } from './member'
 import { logOffers, offerOutcome, roomRoles, SIDE_SILENCE } from './offer'
 import { logPace } from './pace'
 import { absentAt, foldLog, hostAt, hostSince, isClosed, joinRequests, keyMember, nameTaken, returningMember, type LogEntry } from './room'
-import type { TransferRecord } from './settle'
+import type { PromiseRecord, TransferRecord } from './settle'
 
 // Записи о переводах из журнала — как у сервера
 const logTransfers = (log: readonly LogEntry[]): TransferRecord[] => log.filter((e): e is TransferRecord & LogEntry => e.type.startsWith('transfer.'))
@@ -243,7 +244,8 @@ describe('выйти: что мешает', () => {
   const room = (log: LogEntry[]): LeaveRoom => {
     const events = roomEvents(log)
     const offers = logOffers(log)
-    return { state: foldLog(log)!, events, offers, lots: [], choices: [], cases: [], transfers: logTransfers(log) }
+    const promises = log.filter((e): e is PromiseRecord & LogEntry => e.type.startsWith('promise.'))
+    return { state: foldLog(log)!, events, offers, lots: [], choices: [], cases: [], transfers: logTransfers(log), promises }
   }
 
   it('ведущему — передать ведение; без открытого и с отмеченными переводами — можно', () => {
@@ -280,6 +282,27 @@ describe('выйти: что мешает', () => {
     expect(leaveRevocations(logOffers([...base, open, accepted]), 'M2', 3000)).toEqual([])
     // Отзываемое не мешает выйти
     expect(checkLeave(room([...base, open, expired]), 'M2', 3000)).toBeNull()
+  })
+
+  it('обещание (Р-44) не «получено» — как неотмеченный перевод: мешает обеим сторонам, и в комнате на очки', () => {
+    const promise = offer({ odds: { a: 1, b: 1 }, amount: 0, promise: { author: 'Везу шашлык', taker: 'Везу шашлык' } })
+    const agreed: LogEntry[] = [
+      { id: 'P3', at: 20_000, memberId: 'M2', type: 'offer.marked', offer: 'P1', winner: 'taker', requestId: 'P3' },
+      { id: 'P4', at: 20_000, memberId: 'M3', type: 'offer.marked', offer: 'P1', winner: 'taker', requestId: 'P4' },
+    ]
+    const kept: LogEntry = { id: 'K1', at: 21_000, memberId: 'M2', type: 'promise.kept', offer: 'P1', requestId: 'K1' }
+    const got: LogEntry = { id: 'K2', at: 22_000, memberId: 'M3', type: 'promise.received', offer: 'P1', requestId: 'K2' }
+    const log = [...base, promise, accepted, ...agreed]
+    expect(checkLeave(room(log), 'M2', 30_000)).toBe(UNKEPT_PROMISE)
+    expect(checkLeave(room(log), 'M3', 30_000)).toBe(UNKEPT_PROMISE)
+    expect(checkLeave(room(log), 'M4', 30_000)).toBeNull()
+    expect(checkLeave(room([...log, kept]), 'M3', 30_000)).toBe(UNKEPT_PROMISE)
+    expect(checkLeave(room([...log, kept, got]), 'M2', 30_000)).toBeNull()
+    expect(checkLeave(room([...log, kept, got]), 'M3', 30_000)).toBeNull()
+    const points = [{ ...base[0], currency: 'PTS' } as LogEntry, ...log.slice(1)]
+    expect(checkLeave(room(points), 'M2', 30_000)).toBe(UNKEPT_PROMISE)
+    // Без записей обещаний (вход до выкатки) — отметок нет: обещание ждёт
+    expect(checkLeave({ ...room([...log, kept, got]), promises: undefined }, 'M2', 30_000)).toBe(UNKEPT_PROMISE)
   })
 })
 
