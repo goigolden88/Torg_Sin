@@ -1,6 +1,7 @@
 // «Мои комнаты»: список своих комнат и открытое — создание или комната. У комнаты, где участник —
 // член суда и ещё не голосовал, — значок «вы в суде» (по последнему ответу комнаты; копии старше
-// 5 минут при открытии спрашиваются у сервера один раз).
+// 5 минут при открытии спрашиваются у сервера один раз). Закрытая комната (Р-43) — с пометкой «закрыта», внизу
+// списка.
 // Раскладка «список + открытое» (.split): на компьютере — рядом; на телефоне открытое —
 // отдельным экраном с «Назад» (класс .open у .rooms), разметка одна. Под списком — «Вставить
 // ссылку» (PasteLink): у приложения с экрана «Домой» адресной строки нет
@@ -18,6 +19,7 @@ import { EventScreen } from './EventScreen'
 import { HistoryScreen } from './HistoryScreen'
 import { JoinRoom } from './JoinRoom'
 import { LotScreen } from './LotScreen'
+import { roomClosed } from './memberParts'
 import { NewChoice } from './NewChoice'
 import { NewEvent } from './NewEvent'
 import { NewLot } from './NewLot'
@@ -120,12 +122,13 @@ export function Rooms({ view }: { view: RoomsView }) {
             </div>
           ) : (
             <ul className="room-list">
-              {rooms.map((r) => (
+              {closedLast(rooms).map((r) => (
                 <li key={r.id}>
                   <a className="room-item" href={'#/room/' + r.id} aria-current={r.id === openId ? 'page' : undefined}>
                     <span className="room-name">
                       {r.name}
                       {roomAwaitsMyVote(r, savedEvents(r), savedOffers(r), savedLots(r)) &&<span className="badge court-badge">вы в суде</span>}
+                      {roomClosed(r) && <span className="badge muted">закрыта</span>}
                     </span>
                     <span className="hint">
                       {currencyLabel(r.currency)} · {participants(r.members.length)}
@@ -217,6 +220,11 @@ function RoomBalance({ room }: { room: SavedRoom }) {
   const note = balanceNote(savedSettlement(room), room.memberId, room.currency)
   if (!note) return null
   return <span className={'room-balance ' + (note.startsWith('вы должны') ? 'loss' : 'win')}>{note}</span>
+}
+
+// Закрытые комнаты (Р-43) — внизу списка; среди открытых и среди закрытых порядок прежний
+function closedLast(rooms: readonly SavedRoom[]): SavedRoom[] {
+  return [...rooms.filter((r) => !roomClosed(r)), ...rooms.filter(roomClosed)]
 }
 
 // Другая ссылка — экран заново, со своим состоянием

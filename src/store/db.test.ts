@@ -119,6 +119,17 @@ describe('хранилище на устройстве', () => {
     expect((await store.getRoom('A'))?.members).toEqual(state.members)
   })
 
+  it('закрыта (Р-43): когда — записано; открыли снова и сервер без поля — отметки нет', async () => {
+    const store = createStore(new IDBFactory())
+    const base = { v: 13, room: { id: 'A', name: 'Комната A', currency: 'RUB', hostId: 'MA', createdAt: 1 }, members: [], me: 'MA', events: [], now: 5 }
+    const closed: RoomStateResponse = { ...base, room: { ...base.room, closed: { id: 'C', at: 4, by: 'MA' } } }
+    await store.saveRoom(withState(room('A', 1), closed, 5))
+    const saved = (await store.getRoom('A'))!
+    expect(saved.closedAt).toBe(4)
+    expect('closedAt' in withState(saved, { ...base, room: { ...base.room, closed: null } }, 6)).toBe(false)
+    expect('closedAt' in withState(saved, base, 7)).toBe(false)
+  })
+
   it('схема заводится с первого открытия: комнаты и заявки', async () => {
     const factory = new IDBFactory()
     const db = await openDb(factory)

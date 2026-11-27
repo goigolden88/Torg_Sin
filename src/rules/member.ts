@@ -1,5 +1,5 @@
 // Жизнь комнаты (Р-40, Р-41; Архитектура, «Крайние случаи» — «Участник пропал с долгом»): выйти из
-// комнаты, «выбыл» и что можно выбывшему. Состав «вышел / выбыл» считает свёртка комнаты (applyEntry в
+// комнаты, «выбыл» и что можно выбывшему; ведение (Р-42); закрыть комнату (Р-43). Состав «вышел / выбыл» считает свёртка комнаты (applyEntry в
 // room.ts: member.left, member.returned, member.dropped, member.reinstated); здесь — проверки действий на
 // время сервера. Итоги и статусы считаются, не хранятся. Ни DOM, ни Cloudflare
 import { caseOf, courtState, courtVerdict, type CourtCase } from './appeal'
@@ -47,6 +47,19 @@ export const TAKE_DROPPED = 'Вы помечены «выбыл» — веден
 export const hostTakenBy = (name: string) => `Ведение уже взял ${name}`
 export const hostPassedTo = (name: string) => `Ведение уже передано: ведущий — ${name}`
 export const hostSeen = (ago: string, wait: string) => `Ведущий заходил ${ago} назад: взять ведение можно через ${wait}`
+
+// Закрыть комнату (Р-43): закрывает и открывает снова ведущий; закрыть — только когда всё доиграно; в закрытой
+// — только чтение и отметки переводов «Расчёта»
+export const ONLY_HOST_CLOSE = 'Закрыть комнату и открыть снова может только ведущий'
+export const ALREADY_CLOSED = 'Комната уже закрыта'
+export const NOT_CLOSED = 'Комната не закрыта'
+export const ROOM_CLOSED = 'Комната закрыта'
+export const openEvent = (event: string) => `Есть незавершённое событие: ${event}`
+export const openOfferIn = (offer: string) => `Есть незавершённое пари: ${offer}`
+export const openAuction = (offer: string) => `Идёт торг: ${offer}`
+export const openLotIn = (lot: string) => `Есть незавершённый лот: ${lot}`
+export const openChoiceIn = (choice: string) => `Идёт «Выбор»: ${choice}`
+export const openCourt = (dispute: string) => `Идёт суд: ${dispute}`
 
 // Комната на очки — переводов нет (Р-32): «все переводы отмечены» там не проверяется
 const POINTS = 'PTS'
@@ -208,6 +221,56 @@ export function checkTakeHost(state: RoomState, memberId: string, seenAt: number
   const name = memberOf(state, state.hostId)?.name ?? ''
   if (last && last.how !== 'created' && now < last.from + HOST_AWAY) return last.how === 'taken' ? hostTakenBy(name) : hostPassedTo(name)
   return hostSeen(formatCountdown(now - seenAt), formatCountdown(from - now))
+}
+
+// Лот не завершён на now: торг идёт или после торга передача, спор, суд
+const LOT_OPEN: readonly string[] = ['open', 'awaiting', 'handed', 'dispute', 'court']
+
+// Что мешает закрыть комнату на now (Р-43), первое по порядку; можно — null. Закрывает только ведущий, не
+// закрытую. Незавершённое: событие (не отменено и исход не окончательный — в том числе без ставок и без
+// предложенного исхода), пари (ещё можно принять или принято, а исход не окончательный и не отменён), торг
+// (идёт), лот (торг или передача не закончены), «Выбор» (нет итога), суд (решение не собрано). Переводы не
+// мешают — их отмечают и в закрытой
+export function checkClose(room: LeaveRoom, memberId: string, now: number): string | null {
+  const { state } = room
+  if (memberId !== state.hostId) return ONLY_HOST_CLOSE
+  if (state.closed) return ALREADY_CLOSED
+  for (const e of room.events) {
+    if (e.cancelled) continue
+    const status = eventOutcome(e, now, caseOf(room.cases, e.id))?.status
+    if (status !== 'final' && status !== 'cancelled') return openEvent(e.condition)
+  }
+  const offers = room.offers.map((o) => offerAt(o, now))
+  for (const o of offers) {
+    if (!o.auction && !offerDone(o, now, caseOf(room.cases, o.id))) return openOfferIn(o.condition)
+  }
+  for (const o of offers) {
+    if (!o.auction || offerDone(o, now, caseOf(room.cases, o.id))) continue
+    return offerStatus(o, now) === 'open' ? openAuction(o.condition) : openOfferIn(o.condition)
+  }
+  for (const l of room.lots) {
+    if (LOT_OPEN.includes(lotOutcome(l, now, caseOf(room.cases, l.id)).status)) return openLotIn(l.title)
+  }
+  for (const c of room.choices) {
+    const status = choiceOutcome(c, now).status
+    if (status !== 'decided' && status !== 'failed') return openChoiceIn(c.question)
+  }
+  for (const c of room.cases) {
+    if (!courtVerdict(c, now)) return openCourt(disputeTitle(room, c.target))
+  }
+  return null
+}
+
+// Открыть закрытую снова (Р-43): только ведущий; не закрыта — отказ. Можно — null
+export function checkReopen(state: RoomState, memberId: string): string | null {
+  if (memberId !== state.hostId) return ONLY_HOST_CLOSE
+  return state.closed ? null : NOT_CLOSED
+}
+
+// Новая запись в закрытой комнате (Р-43) — отказ «Комната закрыта»; можно — null. Отметки переводов и
+// «открыть снова» этой проверки не проходят: их можно и в закрытой
+export function checkOpen(state: RoomState): string | null {
+  return state.closed ? ROOM_CLOSED : null
 }
 
 // Новое действие (ставка, пари, встречное, вклад, событие, лот, выбор, апелляция): выбывшему — отказ (Р-41)

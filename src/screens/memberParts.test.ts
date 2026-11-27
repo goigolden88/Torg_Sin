@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest'
+import { formatDate } from '../rules/date'
 import type { LogEntry } from '../rules/room'
 import {
+  closedNote,
   dropAction,
+  mayStartNew,
+  roomClosed,
   hostTimes,
   iAmDropped,
   inPlayMember,
@@ -35,6 +39,17 @@ describe('жизнь комнаты на сайте (Р-40, Р-41)', () => {
     expect(iAmDropped({ members, memberId: 'MV' })).toBe(true)
     expect(iAmDropped({ members, memberId: 'MG' })).toBe(false)
     expect(iAmDropped({ members, memberId: 'MB' })).toBe(false)
+  })
+
+  it('закрытая комната (Р-43): нового не начать никому; открытая — всем, кроме «выбыл»; подпись — с датой', () => {
+    const closedAt = Date.UTC(2026, 10, 27, 9)
+    expect(roomClosed({})).toBe(false)
+    expect(roomClosed({ closedAt })).toBe(true)
+    expect(mayStartNew({ members, memberId: 'MG' })).toBe(true)
+    expect(mayStartNew({ members, memberId: 'MV' })).toBe(false)
+    expect(mayStartNew({ members, memberId: 'MG', closedAt })).toBe(false)
+    expect(mayStartNew({ members, memberId: 'MA', closedAt })).toBe(false)
+    expect(closedNote(closedAt)).toBe(`Комната закрыта ${formatDate(closedAt)}: только чтение и переводы`)
   })
 
   it('кнопка ведущего: пометить — тому, кто в игре; снять — помеченному; себе, вышедшему и не ведущему — нет', () => {
@@ -136,6 +151,17 @@ describe('ведение на сайте (Р-42)', () => {
     expect(lifeItems({ members }, log, 'UTC')).toEqual([
       { id: '08', at: seenAt + 8 * DAY, text: 'Участник Аня взял ведение: ведущий не заходил с 20.11.2026, 09:00' },
       { id: '07', at: seenAt - DAY, text: 'Ведущий Аня передал ведение: Гоша' },
+    ])
+  })
+
+  it('«История»: закрыл и открыл комнату снова (Р-43), новое сверху', () => {
+    const log: LogEntry[] = [
+      { id: '09', at: seenAt, memberId: 'MA', type: 'room.closed', requestId: 'R8' },
+      { id: '10', at: seenAt + DAY, memberId: 'MA', type: 'room.reopened', requestId: 'R9' },
+    ]
+    expect(lifeItems({ members }, log)).toEqual([
+      { id: '10', at: seenAt + DAY, text: 'Ведущий Аня открыл комнату снова' },
+      { id: '09', at: seenAt, text: 'Ведущий Аня закрыл комнату' },
     ])
   })
 })

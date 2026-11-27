@@ -1,13 +1,28 @@
 import { describe, expect, it } from 'vitest'
-import { checkReplace, courtCandidates, courtRoom, ONLY_HOST } from './appeal'
+import { checkReplace, courtCandidates, courtRoom, logAppeals, ONLY_HOST } from './appeal'
+import { logChoices } from './choice'
 import { formatCountdown } from './date'
-import { hostDecides, hostMayDecide, mayPropose, roomEvents } from './event'
+import { eventOutcome, hostDecides, hostMayDecide, mayPropose, roomEvents } from './event'
+import { logLots } from './lot'
 import {
+  ALREADY_CLOSED,
   ALREADY_DROPPED,
   ALREADY_HOST,
   checkActive,
+  checkClose,
   checkDrop,
   checkLeave,
+  checkOpen,
+  checkReopen,
+  NOT_CLOSED,
+  ONLY_HOST_CLOSE,
+  openAuction,
+  openChoiceIn,
+  openCourt,
+  openEvent,
+  openLotIn,
+  openOfferIn,
+  ROOM_CLOSED,
   checkPassHost,
   checkTakeHost,
   DROPPED,
@@ -39,7 +54,7 @@ import {
 } from './member'
 import { logOffers, offerOutcome, roomRoles, SIDE_SILENCE } from './offer'
 import { logPace } from './pace'
-import { absentAt, foldLog, hostAt, hostSince, joinRequests, keyMember, nameTaken, returningMember, type LogEntry } from './room'
+import { absentAt, foldLog, hostAt, hostSince, isClosed, joinRequests, keyMember, nameTaken, returningMember, type LogEntry } from './room'
 import type { TransferRecord } from './settle'
 
 // Записи о переводах из журнала — как у сервера
@@ -456,5 +471,117 @@ describe('ведущий на миг записи в событиях, пари,
     expect(logPace([...base, pass('M2', 1000), paced('M1', 2000)]).pace).toBe('normal')
     expect(logPace([...base, pass('M2', 1000), paced('M2', 2000)]).pace).toBe('fast')
     expect(logPace([...base, paced('M1', 900), pass('M2', 1000)]).pace).toBe('fast')
+  })
+})
+
+// Закрыть комнату (Р-43)
+const close = (at: number, by = 'M1'): LogEntry => ({ id: 'C' + at, at, memberId: by, type: 'room.closed', requestId: 'C' + at })
+const reopen = (at: number, by = 'M1'): LogEntry => ({ id: 'O' + at, at, memberId: by, type: 'room.reopened', requestId: 'O' + at })
+
+describe('закрыть комнату: свёртка', () => {
+  it('старая комната — открыта; закрыл ведущий — закрыта, открыл — снова открыта', () => {
+    expect(isClosed(foldLog(base)!)).toBe(false)
+    const closed = foldLog([...base, close(1000)])!
+    expect(closed.closed).toEqual({ id: 'C1000', at: 1000, by: 'M1' })
+    expect(isClosed(closed)).toBe(true)
+    expect(checkOpen(closed)).toBe(ROOM_CLOSED)
+    const again = foldLog([...base, close(1000), reopen(2000)])!
+    expect(again.closed).toBeUndefined()
+    expect(checkOpen(again)).toBeNull()
+    expect(foldLog([...base, close(1000), reopen(2000), close(3000)])!.closed?.at).toBe(3000)
+  })
+
+  it('свёртка держит порядок: закрывает и открывает нынешний ведущий; закрытую второй раз не закрыть', () => {
+    expect(foldLog([...base, close(1000, 'M2')])!.closed).toBeUndefined()
+    expect(foldLog([...base, close(1000), reopen(2000, 'M2')])!.closed?.at).toBe(1000)
+    expect(foldLog([...base, close(1000), close(2000)])!.closed?.at).toBe(1000)
+    expect(foldLog([...base, reopen(1000)])!.closed).toBeUndefined()
+    // После передачи ведения — новый ведущий, прежний — нет
+    expect(foldLog([...base, pass('M2', 500), close(1000)])!.closed).toBeUndefined()
+    expect(foldLog([...base, pass('M2', 500), close(1000, 'M2')])!.closed?.by).toBe('M2')
+  })
+})
+
+describe('закрыть комнату: что мешает', () => {
+  const room = (log: LogEntry[], cases: LeaveRoom['cases'] = []): LeaveRoom => {
+    const events = roomEvents(log)
+    const offers = logOffers(log)
+    const lots = logLots(log)
+    return { state: foldLog(log)!, events, offers, lots, choices: logChoices(log), cases: cases.length > 0 ? cases : logAppeals(log, { events, offers, lots }), transfers: logTransfers(log) }
+  }
+  const bet: LogEntry = { id: 'B1', at: 600, memberId: 'M2', type: 'bet.placed', event: 'V1', outcome: '1', amount: 100, requestId: 'B1' }
+  // Автор Боря — единственный ставивший: его исход окончательный сразу (Р-21)
+  const proposed: LogEntry = { id: 'X1', at: 10_500, memberId: 'M2', type: 'outcome.proposed', event: 'V1', outcome: '1', requestId: 'X1' }
+  const lotLog: LogEntry = { id: 'L1', at: 1000, memberId: 'M2', type: 'lot.created', title: 'Велосипед', description: '', start: 100, step: 10, closesAt: 1000 + 60 * 60 * 1000, requestId: 'L1' }
+  const choiceLog: LogEntry = {
+    id: 'K1',
+    at: 1000,
+    memberId: 'M2',
+    type: 'choice.created',
+    question: 'Куда едем',
+    options: [],
+    recipient: 'M1',
+    cashbox: false,
+    optionsUntil: 1000 + 60 * 60 * 1000,
+    closesAt: 1000 + 2 * 60 * 60 * 1000,
+    requestId: 'K1',
+  }
+
+  it('только ведущий; закрытую — «уже закрыта»; пустая комната — можно', () => {
+    expect(checkClose(room(base), 'M2', 1000)).toBe(ONLY_HOST_CLOSE)
+    expect(checkClose(room(base), 'M1', 1000)).toBeNull()
+    expect(checkClose(room([...base, close(900)]), 'M1', 1000)).toBe(ALREADY_CLOSED)
+    // Переводы не мешают
+    const sent: LogEntry = { id: 'T1', at: 700, memberId: 'M2', type: 'transfer.sent', to: 'M3', amount: 50, requestId: 'T1' }
+    expect(checkClose(room([...base, sent]), 'M1', 1000)).toBeNull()
+  })
+
+  it('событие: идёт приём (и без ставок) — отказ; окончательное и отменённое — нет', () => {
+    expect(checkClose(room([...base, event]), 'M1', 1000)).toBe(openEvent('Вася пробежит 10 км'))
+    expect(checkClose(room([...base, event, bet]), 'M1', 15_000)).toBe(openEvent('Вася пробежит 10 км'))
+    const done = [...base, event, bet, proposed]
+    expect(eventOutcome(roomEvents(done)[0], 10_500)?.status).toBe('final')
+    expect(checkClose(room(done), 'M1', 10_500)).toBeNull()
+    const cancelled: LogEntry = { id: 'X2', at: 700, memberId: 'M2', type: 'event.cancelled', event: 'V1', reason: null }
+    expect(checkClose(room([...base, event, bet, cancelled]), 'M1', 1000)).toBeNull()
+  })
+
+  it('пари: открытое и принятое без окончательного исхода — отказ; истёкшее и отозванное — нет', () => {
+    expect(checkClose(room([...base, offer()]), 'M1', 3000)).toBe(openOfferIn('Вася бросит курить'))
+    expect(checkClose(room([...base, offer(), accepted]), 'M1', 3000)).toBe(openOfferIn('Вася бросит курить'))
+    expect(checkClose(room([...base, offer()]), 'M1', 10_000)).toBeNull()
+    const revoked: LogEntry = { id: 'P5', at: 1500, memberId: 'M2', type: 'offer.revoked', offer: 'P1', requestId: 'P5' }
+    expect(checkClose(room([...base, offer(), revoked]), 'M1', 3000)).toBeNull()
+  })
+
+  it('торг идёт — «Идёт торг»; кончился без встречных — нет', () => {
+    const end = 1000 + 60 * 60 * 1000
+    const auction = offer({ to: null, guarantor: 'M1', auction: { start: 50, step: 10 }, odds: { a: 100, b: 50 }, closesAt: end, expectedAt: end + 7 * 24 * 60 * 60 * 1000 })
+    expect(logOffers([...base, auction])).toHaveLength(1)
+    expect(checkClose(room([...base, auction]), 'M1', 3000)).toBe(openAuction('Вася бросит курить'))
+    expect(checkClose(room([...base, auction]), 'M1', end)).toBeNull()
+  })
+
+  it('лот, «Выбор», суд — по порядку после событий и пари', () => {
+    expect(checkClose(room([...base, lotLog]), 'M1', 2000)).toBe(openLotIn('Велосипед'))
+    // Торг лота кончился без ставок — не продан, не мешает
+    expect(checkClose(room([...base, lotLog]), 'M1', 1000 + 60 * 60 * 1000)).toBeNull()
+    expect(checkClose(room([...base, choiceLog]), 'M1', 2000)).toBe(openChoiceIn('Куда едем'))
+    // Меньше двух вариантов к «варианты до» — не состоялся
+    expect(checkClose(room([...base, choiceLog]), 'M1', 1000 + 60 * 60 * 1000)).toBeNull()
+    // Событие раньше лота
+    expect(checkClose(room([...base, event, lotLog]), 'M1', 2000)).toBe(openEvent('Вася пробежит 10 км'))
+    // Суд без решения — отказ с названием спора
+    const done = [...base, event, bet, proposed]
+    const court = { target: 'V1', appeal: null, seed: 'ab', candidates: ['M3', 'M4'], drawnAt: 10_500, hostId: 'M1', acts: [] }
+    expect(checkClose({ ...room(done), events: [], cases: [court] }, 'M1', 10_600)).toBe(openCourt(''))
+    expect(checkClose(room(done, [court]), 'M1', 10_600)).not.toBeNull()
+  })
+
+  it('открыть снова: только ведущий и только закрытую', () => {
+    const closed = foldLog([...base, close(1000)])!
+    expect(checkReopen(closed, 'M2')).toBe(ONLY_HOST_CLOSE)
+    expect(checkReopen(closed, 'M1')).toBeNull()
+    expect(checkReopen(foldLog(base)!, 'M1')).toBe(NOT_CLOSED)
   })
 })

@@ -8,13 +8,13 @@
 // Участник — член суда по пари и ещё не голосовал — значок «вы в суде» (Р-24). Предмет спора —
 // сторона пари — пометка (Р-26). Пари без гаранта (Р-36) — строка «Гарант: нет — спор решит суд».
 // Торг (Р-37) — «торг · автор — …», лучшее встречное или старт, «торг до …, осталось …»; моё встречное
-// перебили — значок «вас перебили». Помеченному «выбыл» (Р-41) «Предложить пари» нет
+// перебили — значок «вас перебили». Помеченному «выбыл» (Р-41) и в закрытой комнате (Р-43) «Предложить пари» нет
 import { offerStatus } from '../rules/offer'
 import type { OfferView } from '../rules/protocol'
 import { savedOffers, type SavedRoom } from '../store/db'
 import { awaitsMyVote } from './courtParts'
 import { offerPastNow } from './historyParts'
-import { iAmDropped } from './memberParts'
+import { mayStartNew } from './memberParts'
 import { NO_GUARANTOR_LABEL, offerHref, offerState, OfferStatusLine, OfferSubjectFlag, outbid, stakesLine, toLabel, who } from './offerParts'
 import { useServerNow, type Clock } from './useRoom'
 
@@ -33,7 +33,7 @@ export function OfferList({ room, clock, current }: { room: SavedRoom; clock: Cl
     <section className="events offers" aria-label="Пари">
       <div className="events-head">
         <h3>Пари</h3>
-        {!iAmDropped(room) && (
+        {mayStartNew(room) && (
           <a className="button" href={`#/room/${room.id}/offer/new`}>
             Предложить пари
           </a>

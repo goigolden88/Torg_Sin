@@ -157,9 +157,9 @@ export async function handle(request: Request, deps: RoomsDeps): Promise<Respons
     const r = await roomAction(sub[1], sub[2], request, deps)
     if (r) return json(r.status, r.body)
   }
-  // Жизнь комнаты (Р-40, Р-41, Р-42): /rooms/<номер>/leave | host и /rooms/<номер>/members/<участник>/drop |
-  // restore | host
-  const life = /^\/rooms\/([^/]+)\/(?:(leave|host)|members\/([^/]+)\/(drop|restore|host))$/.exec(path)
+  // Жизнь комнаты (Р-40, Р-41, Р-42, Р-43): /rooms/<номер>/leave | host | close | reopen и
+  // /rooms/<номер>/members/<участник>/drop | restore | host
+  const life = /^\/rooms\/([^/]+)\/(?:(leave|host|close|reopen)|members\/([^/]+)\/(drop|restore|host))$/.exec(path)
   if (life && request.method === 'POST') {
     const r = await memberAction(life[1], life[3], (life[4] ?? life[2]) as MemberVerb, request, deps)
     return json(r.status, r.body)
@@ -209,11 +209,12 @@ export async function handle(request: Request, deps: RoomsDeps): Promise<Respons
   return notFound()
 }
 
-type MemberVerb = 'leave' | 'drop' | 'restore' | 'host'
+type MemberVerb = 'leave' | 'drop' | 'restore' | 'host' | 'close' | 'reopen'
 
 // POST /rooms/<номер>/leave { requestId? } — выйти самому (Р-40); …/members/<участник>/drop | restore
 // { requestId? } — ведущий ставит и снимает «выбыл» (Р-41); …/host { requestId? } — взять ведение,
-// …/members/<участник>/host { requestId? } — передать ведение (Р-42). Отказы — тексты правил (member.ts)
+// …/members/<участник>/host { requestId? } — передать ведение (Р-42); …/close | reopen { requestId? } —
+// ведущий закрывает комнату и открывает снова (Р-43). Отказы — тексты правил (member.ts)
 async function memberAction(
   roomId: string,
   memberId: string | undefined,
@@ -231,6 +232,8 @@ async function memberAction(
     if (!requestId) return failure(400, BAD_REQUEST_ID)
     if (memberId === undefined) {
       if (action === 'host') return reply(await deps.act(roomId, { type: 'takeHost', keyHash, requestId }))
+      if (action === 'close') return reply(await deps.act(roomId, { type: 'closeRoom', keyHash, requestId }))
+      if (action === 'reopen') return reply(await deps.act(roomId, { type: 'reopenRoom', keyHash, requestId }))
       return reply(await deps.act(roomId, { type: 'leave', keyHash, requestId }))
     }
     if (action === 'host') return reply(await deps.act(roomId, { type: 'passHost', keyHash, member: memberId, requestId }))
@@ -915,6 +918,8 @@ export async function getRoom(roomId: string, authorization: string | null, deps
         hosts: (state.hosts ?? []).map((h) => ({ id: h.id, member: h.member, from: h.from, how: h.how, by: h.by })),
         hostSeenAt: r.hostSeenAt,
         hostTakeFrom: takeHostFrom(r.hostSeenAt),
+        // Закрыта (Р-43): когда и кто закрыл; открыта — null
+        closed: state.closed ? { id: state.closed.id, at: state.closed.at, by: state.closed.by } : null,
       },
       // Вышел и «выбыл» (Р-40, Р-41) — у каждого участника
       members: state.members.map((m) => ({ id: m.id, name: m.name, left: m.leftAt !== undefined, dropped: m.droppedAt !== undefined })),

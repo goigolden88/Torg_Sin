@@ -120,6 +120,9 @@ import {
   isHostResponse,
   type HostRequest,
   type HostResponse,
+  isCloseResponse,
+  type CloseRequest,
+  type CloseResponse,
 } from './rules/protocol'
 import { checkBackup, type Backup } from './rules/backup'
 
@@ -237,6 +240,12 @@ export function passHost(server: string, roomId: string, key: string, member: st
 // текстом сервера (срок — словами: часового пояса сервер не знает)
 export function takeHost(server: string, roomId: string, key: string, request: Omit<HostRequest, 'v'>): Promise<Result<HostResponse>> {
   return call(roomUrl(server, roomId, 'host'), post(request, key), isHostResponse)
+}
+
+// POST /rooms/<номер>/close | reopen — ведущий закрывает комнату (только когда всё доиграно; отказ — что
+// открыто, текстом сервера) и открывает снова (Р-43)
+export function closeRoom(server: string, roomId: string, key: string, close: boolean, request: Omit<CloseRequest, 'v'>): Promise<Result<CloseResponse>> {
+  return call(roomUrl(server, roomId, close ? 'close' : 'reopen'), post(request, key), isCloseResponse)
 }
 
 // POST /rooms/<номер>/invite — новая ссылка-приглашение; старая перестаёт работать

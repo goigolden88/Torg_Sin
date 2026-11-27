@@ -58,6 +58,10 @@ export type LogEntry =
   // Участник (автор) взял ведение у ведущего from, который не заходил с seenAt (время сервера: 7 дней без
   // запросов — проверяет сервер, в журнале — основание для всех); requestId — номер запроса
   | (EntryBase & { type: 'host.taken'; from: string; seenAt: number; requestId: string })
+  // Закрыть комнату (Р-43; правила — checkClose, checkReopen в member.ts): ведущий (автор) закрыл — дальше
+  // только чтение и отметки переводов; открыл снова — комната как обычная; requestId — номер запроса
+  | (EntryBase & { type: 'room.closed'; requestId: string })
+  | (EntryBase & { type: 'room.reopened'; requestId: string })
   // Ведущий сменил ссылку-приглашение; токена в журнале нет
   | (EntryBase & { type: 'invite.changed' })
   // Выдана «ссылка для другого устройства» участнику member; автор — он сам или ведущий;
@@ -274,6 +278,16 @@ export type RoomState = {
   // Кто был ведущим (Р-42): создатель с мига создания, затем каждая смена — с её мига, по порядку журнала.
   // Нет поля — ведущий всё время hostId (состояние, собранное не из журнала)
   hosts?: HostTerm[]
+  // Комната закрыта (Р-43): запись room.closed — номер, миг, кто закрыл; открыли снова — поля нет. У старых
+  // комнат поля нет — открыта
+  closed?: RoomClosure
+}
+
+export type RoomClosure = { id: string; at: number; by: string }
+
+// Комната закрыта сейчас
+export function isClosed(room: { closed?: RoomClosure }): boolean {
+  return room.closed !== undefined
 }
 
 // Срок ведения: кто ведущий с мига from; how — как стал: создал комнату, ему передали, взял сам; by — автор
@@ -352,6 +366,17 @@ export function applyEntry(state: RoomState | null, e: LogEntry): RoomState | nu
       if (e.type === 'host.passed' ? e.memberId !== state.hostId : e.from !== state.hostId) return state
       const term: HostTerm = { member: m.id, from: e.at, how: e.type === 'host.passed' ? 'passed' : 'taken', by: e.memberId, id: e.id }
       return { ...state, hostId: m.id, hosts: [...(state.hosts ?? []), term] }
+    }
+    // Закрыть комнату (Р-43): проверки — на сервере (checkClose в member.ts); свёртка держит порядок —
+    // закрывает и открывает нынешний ведущий, закрыть закрытую и открыть открытую нельзя
+    case 'room.closed':
+      if (!state || e.memberId !== state.hostId || state.closed) return state
+      return { ...state, closed: { id: e.id, at: e.at, by: e.memberId } }
+    case 'room.reopened': {
+      if (!state || e.memberId !== state.hostId || !state.closed) return state
+      const next = { ...state }
+      delete next.closed
+      return next
     }
     // Заявки, ссылка и устройства участников не меняют: заявки считает joinRequests
     case 'join.requested':

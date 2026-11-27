@@ -15,7 +15,9 @@
 // и …/members/<участник>/drop | restore
 // 12 — ведение (Р-42): room.hosts, room.hostSeenAt, room.hostTakeFrom в состоянии комнаты, hostId у события и
 // суда, адреса …/host (взять) и …/members/<участник>/host (передать)
-export const PROTOCOL_VERSION = 12
+// 13 — закрыть комнату (Р-43): room.closed в состоянии комнаты, адреса …/close и …/reopen, отказ «Комната
+// закрыта» на новые записи в закрытой
+export const PROTOCOL_VERSION = 13
 
 // Ответ GET /health: сервер жив, его протокол и время (UTC, мс) — по нему закрываются сроки
 export type Health = { v: number; ok: true; time: number }
@@ -64,7 +66,8 @@ export type CreateRoomResponse = { v: number; roomId: string; invite: string; me
 // участника left — вышел, dropped — помечен «выбыл» (Р-40, Р-41; сервер до выкатки полей не шлёт).
 // Ведение (Р-42; сервер до выкатки полей не шлёт): room.hostId — нынешний ведущий; hosts — кто был ведущим
 // по порядку (создатель и каждая смена — для истории); hostSeenAt — когда ведущий заходил (с точностью до
-// часа), hostTakeFrom — с какого мига любой участник в игре может взять ведение
+// часа), hostTakeFrom — с какого мига любой участник в игре может взять ведение. room.closed — комната закрыта
+// (Р-43): номер записи, когда и кто закрыл; открыта — null (сервер до выкатки поля не шлёт)
 export type RoomStateResponse = {
   v: number
   room: {
@@ -78,6 +81,7 @@ export type RoomStateResponse = {
     hosts?: HostTermView[]
     hostSeenAt?: number
     hostTakeFrom?: number
+    closed?: RoomClosedView | null
   }
   members: MemberView[]
   me: string
@@ -110,6 +114,13 @@ export type HostTermView = { id: string; member: string; from: number; how: 'cre
 // Ответ — смена: previous — прежний ведущий; у «взял» ещё seenAt — когда тот заходил
 export type HostRequest = { v?: number; requestId?: string }
 export type HostResponse = { v: number; host: HostTermView & { previous: string; seenAt?: number } }
+
+// Закрыть комнату (Р-43). Комната закрыта: номер записи room.closed, когда, кто (ведущий)
+export type RoomClosedView = { id: string; at: number; by: string }
+// POST /rooms/<номер>/close | reopen { requestId? } — ведущий закрывает комнату (только когда всё доиграно:
+// отказ называет, что открыто) и открывает снова. Ответ — запись: closed — закрыл (true) или открыл (false)
+export type CloseRequest = { v?: number; requestId?: string }
+export type CloseResponse = { v: number; closed: RoomClosedView & { closed: boolean } }
 
 // Расчёт (этап 5, Р-32; правила — settle.ts, roomSettlement). Режим «кто кому»: «по ставкам» /
 // «меньше переводов»
@@ -752,6 +763,8 @@ export function isRoomStateResponse(x: unknown): x is RoomStateResponse {
   // Ведение (Р-42): сервер без него (до выкатки) не ломает сайт
   if (room.hosts !== undefined && !list(room.hosts, isHostTerm)) return false
   if ((room.hostSeenAt !== undefined && typeof room.hostSeenAt !== 'number') || (room.hostTakeFrom !== undefined && typeof room.hostTakeFrom !== 'number')) return false
+  // Закрыта (Р-43): сервер без поля (до выкатки) не ломает сайт
+  if (room.closed !== undefined && room.closed !== null && !isRoomClosed(room.closed)) return false
   if (typeof r.now !== 'number' || !Array.isArray(r.events) || !r.events.every(isEventView)) return false
   // Пари — с этапа 3: сервер без них (до выкатки) не ломает сайт
   if (r.offers !== undefined && !list(r.offers, isOfferView)) return false
@@ -785,6 +798,17 @@ export function isHostResponse(x: unknown): x is HostResponse {
   const r = versioned(x)
   const h = r && record(r.host)
   return !!h && isHostTerm(h) && strings(h, 'previous') && (h.seenAt === undefined || typeof h.seenAt === 'number')
+}
+
+function isRoomClosed(x: unknown): boolean {
+  const r = record(x)
+  return !!r && strings(r, 'id', 'by') && typeof r.at === 'number'
+}
+
+export function isCloseResponse(x: unknown): x is CloseResponse {
+  const r = versioned(x)
+  const c = r && record(r.closed)
+  return !!c && isRoomClosed(c) && typeof c.closed === 'boolean'
 }
 
 export function isDropResponse(x: unknown): x is DropResponse {

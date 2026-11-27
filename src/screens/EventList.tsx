@@ -3,7 +3,7 @@
 // отменённые — в «Истории» (historyParts), не здесь; пусто — «Событий пока нет», всё прошло — «Идущих
 // событий нет». События — последнее известное с сервера (у комнаты на устройстве), отсчёт — по времени
 // сервера. Участник — член суда по событию и ещё не голосовал — значок «вы в суде» (Р-24). У предмета
-// спора есть ставка — пометка (Р-26). Помеченному «выбыл» (Р-41) «Нового события» нет
+// спора есть ставка — пометка (Р-26). Помеченному «выбыл» (Р-41) и в закрытой комнате (Р-43) «Нового события» нет
 import { eventStatus } from '../rules/event'
 import { poolOdds } from '../rules/pool'
 import type { EventView } from '../rules/protocol'
@@ -11,7 +11,7 @@ import { savedEvents, type SavedRoom } from '../store/db'
 import { awaitsMyVote } from './courtParts'
 import { eventHref, money, StatusLine, SubjectFlag } from './eventParts'
 import { eventPastAt } from './historyParts'
-import { iAmDropped } from './memberParts'
+import { mayStartNew } from './memberParts'
 import { useServerNow, type Clock } from './useRoom'
 
 export function EventList({ room, clock }: { room: SavedRoom; clock: Clock | null }) {
@@ -25,7 +25,7 @@ export function EventList({ room, clock }: { room: SavedRoom; clock: Clock | nul
     <section className="events" aria-label="События">
       <div className="events-head">
         <h3>События</h3>
-        {!iAmDropped(room) && (
+        {mayStartNew(room) && (
           <a className="button" href={`#/room/${room.id}/event/new`}>
             Новое событие
           </a>
