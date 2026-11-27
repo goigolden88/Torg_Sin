@@ -44,6 +44,7 @@ import { outcomes } from './shots/outcomes.ts'
 import { pace } from './shots/pace.ts'
 import { pasteLink } from './shots/paste-link.ts'
 import { points } from './shots/points.ts'
+import { promises } from './shots/promises.ts'
 import { settle } from './shots/settle.ts'
 import { scenario } from './shots/start.ts'
 import { subjects } from './shots/subjects.ts'
@@ -239,6 +240,11 @@ const SCENARIOS: Scenario[] = [
     name: 'close',
     about: 'закрыть комнату: подтверждение, отказ — что открыто, закрыта у ведущей и участника, «Мои комнаты», «История», открыть снова (200–206)',
     perSize: (c, size) => close(c.cdp, size, c.startServer),
+  },
+  {
+    name: 'promises',
+    about: 'пари на обещание: до (на сумму) и после — форма, окно, пари, «Позвать в чат», список, встречное, «Принять», «Расчёт» у обеих сторон, «История» (210–221)',
+    perSize: (c, size) => promises(c.cdp, size, c.startServer),
   },
   {
     name: 'layout',

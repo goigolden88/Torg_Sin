@@ -93,6 +93,9 @@ import {
   type TransferActRequest,
   type TransferRequest,
   type TransferResponse,
+  isPromiseResponse,
+  type PromiseActRequest,
+  type PromiseResponse,
   isBidLotResponse,
   isLotMarkResponse,
   isLotResponse,
@@ -552,6 +555,22 @@ export function answerTransfer(
   request: Omit<TransferActRequest, 'v'>,
 ): Promise<Result<TransferResponse>> {
   return call(roomUrl(server, roomId, 'transfers/' + encodeURIComponent(transferId) + '/' + act), post(request, key), isTransferResponse)
+}
+
+// Отметка обещания (Р-44): kept — «Исполнил» (проигравший), received — «Получил», rejected — «Не получил»
+// (выигравший)
+export type PromiseAct = 'kept' | 'received' | 'rejected'
+
+// POST …/promises/<пари>/<действие>
+export function markPromise(
+  server: string,
+  roomId: string,
+  key: string,
+  offerId: string,
+  act: PromiseAct,
+  request: Omit<PromiseActRequest, 'v'>,
+): Promise<Result<PromiseResponse>> {
+  return call(roomUrl(server, roomId, 'promises/' + encodeURIComponent(offerId) + '/' + act), post(request, key), isPromiseResponse)
 }
 
 // POST /rooms/<номер>/settle-mode — ведущий меняет режим «кто кому»

@@ -4,7 +4,8 @@
 // Нажатие — тот же экран события, пари, лота или выбора; «Назад» с него ведёт сюда. Что прошедшее — historyParts (с тестами).
 // Состояние — с сервера раз в 5 с (useRoom); нет связи — последнее известное. В самом низу — «Участники:
 // вышел, «выбыл», ведение, закрытие комнаты» (Life, Р-40, Р-41, Р-42, Р-43): строки «вышел», «пометил „выбыл“», «снял
-// „выбыл“», «передал ведение», «взял ведение», «закрыл комнату», «открыл комнату снова» по журналу комнаты
+// „выбыл“», «передал ведение», «взял ведение», «закрыл комнату», «открыл комнату снова» по журналу комнаты.
+// Пари на обещание (Р-44) — исход с проигравшим, его обещанием и исполнением из «Расчёта»
 import { useCallback, useEffect, useState } from 'react'
 import { fetchBackup } from '../api'
 import { formatDate, formatDateTime } from '../rules/date'
@@ -32,7 +33,7 @@ export function HistoryScreen({ room, onUpdate }: { room: SavedRoom; onUpdate: (
     }, [back]),
   )
 
-  const all = historyItems(room, savedEvents(room), savedOffers(room), now, savedLots(room), savedChoices(room))
+  const all = historyItems(room, savedEvents(room), savedOffers(room), now, savedLots(room), savedChoices(room), savedSettlement(room)?.promises ?? [])
   const shown = onlyMine(all, mine)
 
   return (
@@ -119,7 +120,9 @@ function Row({ room, item }: { room: SavedRoom; item: HistoryItem }) {
           ? choiceHref(room.id, item.id)
           : offerHref(room.id, item.id)
   const result = myResultText(item.mine, room.currency)
-  const tone = item.mine.kind === 'net' && item.mine.amount > 0 ? 'win' : item.mine.kind === 'net' && item.mine.amount < 0 ? 'loss' : 'hint'
+  const m = item.mine
+  const won = m.kind === 'net' ? (m.amount > 0 ? true : m.amount < 0 ? false : null) : m.kind === 'promise' ? m.won : null
+  const tone = won === true ? 'win' : won === false ? 'loss' : 'hint'
   return (
     <li>
       <a className="event-item" href={href}>

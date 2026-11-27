@@ -28,8 +28,9 @@ import type { SavedRoom } from '../store/db'
 import { CourtBlock } from './CourtBlock'
 import { courtRoomOf } from './courtParts'
 import { nameOf } from './eventParts'
-import { courtWhy, netsOf, offerCourt, offerState, roomRolesOf, sideMember, who, winnerLabel, type OfferAsk } from './offerParts'
+import { courtWhy, netsOf, offerCourt, offerState, promiseResultText, roomRolesOf, sideMember, who, winnerLabel, type OfferAsk } from './offerParts'
 import { capital, spanText, viewTimes } from './paceParts'
+import { settleHref } from './settleParts'
 
 const SIDES: OfferSide[] = ['author', 'taker']
 const ROLE: Record<OfferSide, string> = { author: 'автор', taker: 'соперник' }
@@ -90,6 +91,7 @@ export function OfferOutcome({
   const fmt = formatDateTime
   const name = (side: OfferSide) => nameOf(room, sideMember(offer, side))
   const result = (winner: OfferSide) => {
+    if (offer.promise) return `${winnerLabel(winner)} — ${promiseResultText(room, offer, winner)}` // на обещание (Р-44)
     const n = netsOf(room, offer, winner)
     return n ? `${winnerLabel(winner)} — ${n.winner} получает банк ${n.bank}: ${n.lines.map((l) => `${l.name} ${l.text}`).join(', ')}` : winnerLabel(winner)
   }
@@ -465,7 +467,17 @@ function Result({ room, offer, winner }: { room: SavedRoom; offer: OfferView; wi
   return (
     <section className="payouts-box offer-result" aria-label="Итог пари">
       <h3>Итог</h3>
-      {n ? (
+      {offer.promise ? (
+        // На обещание (Р-44): банка нет — проигравший исполняет обещание, отметки — в «Расчёте»
+        <>
+          <p>
+            {capital(winnerLabel(winner))} — {promiseResultText(room, offer, winner)}.
+          </p>
+          <p className="hint">
+            Деньги не меняются. «Исполнил» и «Получил» — в <a href={settleHref(room.id)}>«Расчёте»</a>, блок «Обещания».
+          </p>
+        </>
+      ) : n ? (
         <>
           <p>
             {winnerLabel(winner)[0].toUpperCase() + winnerLabel(winner).slice(1)} — {n.winner} получает банк {n.bank}:

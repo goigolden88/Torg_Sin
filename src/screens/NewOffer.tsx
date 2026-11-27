@@ -10,7 +10,8 @@
 // кэфа старт (наименьшая сумма соперника) и шаг (подставлен 10 % старта), «Приём до» — «Конец торга» со
 // строкой «Торг закончится не позже …», адресата нет. repeat — «Повторить» не состоявшийся торг: те же
 // условия, сроки — та же длительность от нового «сейчас» (repeatForm). В «Кому» и «Гарант» — только кто в
-// игре: вышедших и помеченных «выбыл» нет (Р-40, Р-41)
+// игре: вышедших и помеченных «выбыл» нет (Р-40, Р-41). «На кону» (Р-44): «Сумма» или «Обещание» — тогда
+// «Если проиграю, я…» и «Если проиграет он…» (по умолчанию — то же); кэф, сумма и «Как примут» скрыты
 import { useCallback, useRef, useState, type FormEvent } from 'react'
 import { createOffer } from '../api'
 import { currency as currencyOf, isCurrencyCode, parseAmount, type CurrencyCode } from '../rules/currency'
@@ -43,6 +44,7 @@ import {
   oddsLabel,
   oddsNumber,
   offerHref,
+  promiseSummary,
   repeatForm,
   roomRolesOf,
   sideLabel,
@@ -81,6 +83,9 @@ export function NewOffer({ room, repeat, onUpdate }: { room: SavedRoom; repeat?:
   const [check, setCheck] = useState(again?.check ?? '')
   const [side, setSide] = useState<'yes' | 'no'>(again?.side ?? 'yes')
   const [mode, setMode] = useState<'first' | 'auction'>(again ? 'auction' : 'first') // «Принимает первый» / «Торг до …»
+  const [stake, setStake] = useState<'money' | 'promise'>('money') // на кону — сумма / обещание (Р-44)
+  const [promise, setPromise] = useState('') // «Если проиграю, я…»
+  const [theirs, setTheirs] = useState<string | null>(null) // «Если проиграет он…»; null — то же, что своё
   const [a, setA] = useState('1')
   const [b, setB] = useState('1')
   const [amount, setAmount] = useState(field(again?.amount))
@@ -110,7 +115,10 @@ export function NewOffer({ room, repeat, onUpdate }: { room: SavedRoom; repeat?:
   )
 
   const sign = code ? currencyOf(code).sign || code : room.currency
-  const auction = mode === 'auction'
+  const promised = stake === 'promise'
+  const theirText = theirs ?? promise
+  // На обещание (Р-44) торга нет: «Как примут» скрыт, принимает первый (или адресат)
+  const auction = mode === 'auction' && !promised
   // Торг: старт и шаг из полей; шаг не трогали — подставлен 10 % старта (auctionStep)
   const parse = (text: string) => {
     if (!code || !text.trim()) return null
@@ -180,7 +188,8 @@ export function NewOffer({ room, repeat, onUpdate }: { room: SavedRoom; repeat?:
     const closesAt = fromLocalInput(closes)
     const expectedAt = fromLocalInput(expected)
     if (closesAt === null || expectedAt === null) return setError(NEED_TIMES)
-    const sum = units()
+    // На обещание (Р-44): суммы и кэфа нет — обещания проверяют правила (пустое — свой отказ, а не null)
+    const sum = promised ? ({ ok: true, value: 0 } as const) : units()
     if (!sum.ok) return setError(sum.error)
     // Торг (Р-37): старт и шаг — суммы валюты; пусто или не сумма — отказ правил своим текстом
     let terms: { start: number; step: number } | null = null
@@ -196,8 +205,9 @@ export function NewOffer({ room, repeat, onUpdate }: { room: SavedRoom; repeat?:
       condition,
       check,
       side: mySide,
-      ...(terms ? { auction: terms } : { odds: { a: oddsNumber(a), b: oddsNumber(b) } }),
-      amount: sum.value,
+      ...(promised
+        ? { promise, takerPromise: theirText }
+        : { ...(terms ? { auction: terms } : { odds: { a: oddsNumber(a), b: oddsNumber(b) } }), amount: sum.value }),
       to: auction ? null : to || null,
       closesAt,
       expectedAt,
@@ -219,7 +229,11 @@ export function NewOffer({ room, repeat, onUpdate }: { room: SavedRoom; repeat?:
   async function confirm() {
     if (!ask || sending.current) return
     const x = ask.input
-    const terms = x.auction ? ['auction', String(x.auction.start), String(x.auction.step)] : []
+    const terms = x.auction
+      ? ['auction', String(x.auction.start), String(x.auction.step)]
+      : x.promise
+        ? ['promise', x.promise.author, x.promise.taker]
+        : []
     const form = formKey(room.id, x.condition, x.check, x.side, String(x.odds.a), String(x.odds.b), String(x.amount), x.to ?? '', String(x.closesAt), String(x.expectedAt), x.noGuarantor ? 'none' : (x.guarantor ?? ''), x.subject ?? '', ...terms)
     const request = requestFor(pending.current, form, ulid)
     pending.current = request
@@ -230,9 +244,13 @@ export function NewOffer({ room, repeat, onUpdate }: { room: SavedRoom; repeat?:
         condition: x.condition,
         check: x.check,
         side: x.side,
-        // Торг (Р-37): старт и шаг вместо кэфа
-        ...(x.auction ? { auction: { start: x.auction.start, step: x.auction.step } } : { odds: x.odds }),
-        amount: x.amount,
+        // Торг (Р-37): старт и шаг вместо кэфа; на обещание (Р-44) — обещания вместо кэфа и суммы
+        ...(x.promise
+          ? { promise: x.promise.author, takerPromise: x.promise.taker }
+          : x.auction
+            ? { auction: { start: x.auction.start, step: x.auction.step } }
+            : { odds: x.odds }),
+        amount: x.amount, // на обещание — 0, сервер его не смотрит
         ...(x.to ? { to: x.to } : {}),
         closesAt: x.closesAt,
         expectedAt: x.expectedAt,
@@ -329,6 +347,52 @@ export function NewOffer({ room, repeat, onUpdate }: { room: SavedRoom; repeat?:
             <span className="hint">По желанию. Предмет спора бывает только на стороне «сбудется» и не бывает гарантом.</span>
           </fieldset>
           <fieldset className="field">
+            <legend>На кону</legend>
+            <div className="chips">
+              <label className="chip">
+                <input type="radio" name="offer-stake" value="money" checked={!promised} onChange={() => setStake('money')} />
+                <span>Сумма</span>
+              </label>
+              <label className="chip">
+                <input type="radio" name="offer-stake" value="promise" checked={promised} onChange={() => setStake('promise')} />
+                <span>Обещание</span>
+              </label>
+            </div>
+            <span className="hint">
+              {promised
+                ? 'Проигравший исполняет своё обещание: «везу шашлык», «мою машину». Денег нет — итог и «кто кому» не меняются, исполнение отмечают в «Расчёте».'
+                : `Ставки — в валюте комнаты, ${sign}.`}
+            </span>
+          </fieldset>
+          {promised && (
+            <>
+              <label className="field">
+                <span>Если проиграю, я…</span>
+                <textarea
+                  className="input textarea"
+                  value={promise}
+                  onChange={(e) => setPromise(e.target.value)}
+                  maxLength={MAX_EVENT_TEXT * 2}
+                  rows={2}
+                  placeholder="Например: везу шашлык"
+                />
+              </label>
+              <label className="field">
+                <span>Если проиграет он…</span>
+                <textarea
+                  className="input textarea"
+                  value={theirText}
+                  onChange={(e) => setTheirs(e.target.value)}
+                  maxLength={MAX_EVENT_TEXT * 2}
+                  rows={2}
+                  placeholder="Например: моет машину"
+                />
+                <span className="hint">{theirs === null ? 'По умолчанию — то же, что у вас. Можно поменять.' : 'Что сделает соперник, если проиграет.'}</span>
+              </label>
+            </>
+          )}
+          {!promised && (
+          <fieldset className="field">
             <legend>Как примут</legend>
             <div className="chips">
               <label className="chip">
@@ -346,11 +410,14 @@ export function NewOffer({ room, repeat, onUpdate }: { room: SavedRoom; repeat?:
                 : 'Ваш кэф и сумма — кто первый примет, тот соперник.'}
             </span>
           </fieldset>
-          {!auction && <OddsField a={a} b={b} onA={setA} onB={setB} mine="Вы рискуете" theirs="Соперник" />}
-          <label className="field">
-            <span>Ваша сумма, {sign}</span>
-            <input className="input" inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="Например: 300" autoComplete="off" />
-          </label>
+          )}
+          {!auction && !promised && <OddsField a={a} b={b} onA={setA} onB={setB} mine="Вы рискуете" theirs="Соперник" />}
+          {!promised && (
+            <label className="field">
+              <span>Ваша сумма, {sign}</span>
+              <input className="input" inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="Например: 300" autoComplete="off" />
+            </label>
+          )}
           {auction && (
             <div className="times">
               <label className="field">
@@ -449,7 +516,11 @@ export function NewOffer({ room, repeat, onUpdate }: { room: SavedRoom; repeat?:
           {room.members.length < SMALL_ROOM && <p className="hint">{SMALL_ROOM_NOTE}</p>}
         </div>
 
-        {auction ? (
+        {promised ? (
+          <div className="offer-summary" aria-live="polite">
+            <p>{promiseSummary(promise, theirText)}</p>
+          </div>
+        ) : auction ? (
           <div className="offer-summary" aria-live="polite">
             <p>{auctionSummary({ side: mySide, amount: parse(amount), start: startUnits, step: parse(stepText), currency: room.currency })}</p>
           </div>
@@ -528,7 +599,12 @@ function ConfirmOffer({ room, ask, busy, onConfirm, onClose }: { room: SavedRoom
       <div className="modal" role="dialog" aria-modal="true" aria-label="Подтверждение пари" onClick={(e) => e.stopPropagation()}>
         <p className="modal-question">{terms ? 'Начать торг?' : 'Предложить пари?'}</p>
         <p>„{x.condition}“</p>
-        {terms ? (
+        {x.promise ? (
+          <>
+            <p>Вы — за „{sideLabel(x.side)}“, соперник — за „{sideLabel(x.side === 'yes' ? 'no' : 'yes')}“.</p>
+            <p>{promiseSummary(x.promise.author, x.promise.taker)}</p>
+          </>
+        ) : terms ? (
           <p>{auctionSummary({ side: x.side, amount: x.amount, start: terms.start, step: terms.step, currency: room.currency })}</p>
         ) : (
           s.ok && (

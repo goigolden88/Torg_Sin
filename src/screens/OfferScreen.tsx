@@ -10,11 +10,14 @@
 // Торг (Р-37): вместо «Принять» и «Встречного» — ход торга (Bidding: лучшее, все встречные, «вас
 // перебили») и «Ваше встречное» (BidPanel, checkBid); автору — «Принять сейчас» (checkTakeBid) и
 // «Отозвать», пока встречных нет; конец — «Торг закончен — соперник …», дальше — обычное пари; «не
-// состоялось» — автору «Повторить» (новое пари с теми же условиями)
+// состоялось» — автору «Повторить» (новое пари с теми же условиями). На обещание (Р-44): вместо кэфа и сумм —
+// «На кону» и «Если проиграет»; «Принять» подтверждает своё обещание; встречное — свои обещания
+// (PromiseCounterPanel)
 import { useCallback, useRef, useState, type FormEvent, type MutableRefObject } from 'react'
 import { acceptOffer, bidOffer, counterOffer, revokeOffer, takeBid } from '../api'
 import { currency as currencyOf, isCurrencyCode, parseAmount } from '../rules/currency'
 import { formatDateTime, fromLocalInput, toLocalInput } from '../rules/date'
+import { MAX_EVENT_TEXT } from '../rules/event'
 import {
   auctionLatestEnd,
   BAD_ODDS,
@@ -57,6 +60,7 @@ import {
   offerHref,
   offerState,
   OfferStatusLine,
+  promiseSummary,
   OfferSubjectFlag,
   outbid,
   repeatHref,
@@ -159,11 +163,14 @@ export function OfferScreen({ room, offerId, onUpdate }: { room: SavedRoom; offe
   function askAccept() {
     setCounter(false)
     setAsk({
-      question: 'Принять пари?',
+      question: o.promise ? `Принять пари и обещать: «${o.promise.taker}»?` : 'Принять пари?',
       body: [
-        stakes
-          ? `Вы ставите ${sum(stakes.taker)} против ${sum(stakes.author)} — кэф ${oddsLabel(o.odds)}, банк ${sum(stakes.bank)}.`
-          : `Кэф ${oddsLabel(o.odds)}.`,
+        // На обещание (Р-44): принимая, вы обещаете своё — его и подтверждаете
+        o.promise
+          ? `Проиграете — вы: ${o.promise.taker}. Проиграет ${nameOf(room, o.authorId)} — ${o.promise.author}. Денег на кону нет.`
+          : stakes
+            ? `Вы ставите ${sum(stakes.taker)} против ${sum(stakes.author)} — кэф ${oddsLabel(o.odds)}, банк ${sum(stakes.bank)}.`
+            : `Кэф ${oddsLabel(o.odds)}.`,
         `Ваша сторона — „${takerSide}“, у ${nameOf(room, o.authorId)} — „${sideLabel(o.side)}“. ${
           o.guarantorId === null
             ? `Исход к ${formatDateTime(o.expectedAt)}. Гаранта нет: отметите одинаково — окончательно сразу, разойдётесь — решит суд`
@@ -244,14 +251,32 @@ export function OfferScreen({ room, offerId, onUpdate }: { room: SavedRoom; offe
               </span>
             </li>
           )}
-          <li>
-            <span className="hint">Кэф</span>
-            <span>{auction ? (stakes ? amountsOddsLabel(stakes.author, stakes.taker) : '—') : oddsLabel(offer.odds)}</span>
-          </li>
-          <li>
-            <span className="hint">Суммы</span>
-            <span>{stakesLine(room, offer, now)}</span>
-          </li>
+          {offer.promise ? (
+            // На обещание (Р-44): вместо кэфа и сумм — что сделает каждая сторона, если проиграет
+            <>
+              <li>
+                <span className="hint">На кону</span>
+                <span>{stakesLine(room, offer, now)}</span>
+              </li>
+              <li>
+                <span className="hint">Если проиграет</span>
+                <span>
+                  {who(room, offer.authorId)} — {offer.promise.author}; {offer.accepted ? who(room, offer.accepted.by) : 'соперник'} — {offer.promise.taker}
+                </span>
+              </li>
+            </>
+          ) : (
+            <>
+              <li>
+                <span className="hint">Кэф</span>
+                <span>{auction ? (stakes ? amountsOddsLabel(stakes.author, stakes.taker) : '—') : oddsLabel(offer.odds)}</span>
+              </li>
+              <li>
+                <span className="hint">Суммы</span>
+                <span>{stakesLine(room, offer, now)}</span>
+              </li>
+            </>
+          )}
           {auction && (
             <li>
               <span className="hint">Торг</span>
@@ -349,7 +374,13 @@ export function OfferScreen({ room, offerId, onUpdate }: { room: SavedRoom; offe
             {!online && <p className="hint">Действия — когда есть связь с сервером.</p>}
           </>
         ) : null}
-        {counter && mayCounter && <CounterPanel room={room} offer={offer} clock={clock} busy={busy} onAsk={setAsk} onClose={() => setCounter(false)} />}
+        {counter &&
+          mayCounter &&
+          (offer.promise ? (
+            <PromiseCounterPanel room={room} offer={offer} clock={clock} busy={busy} onAsk={setAsk} onClose={() => setCounter(false)} />
+          ) : (
+            <CounterPanel room={room} offer={offer} clock={clock} busy={busy} onAsk={setAsk} onClose={() => setCounter(false)} />
+          ))}
         <OfferOutcome room={room} offer={offer} now={now} online={online} onAsk={setAsk} />
 
         {counters.length > 0 && <Counters room={room} offer={offer} counters={counters} now={now} />}
@@ -367,6 +398,7 @@ export function OfferScreen({ room, offerId, onUpdate }: { room: SavedRoom; offe
               ...(auction && { auction: { start: auction.start, best: o.bidding?.best?.amount ?? null } }),
               ...(status === 'accepted' && stakes && { bank: stakes.bank }),
               ...(status === 'accepted' && { taker: nameOf(room, offer.accepted?.by ?? o.bidding?.best?.by ?? null) }),
+              ...(offer.promise && { promise: { author: offer.promise.author, taker: offer.promise.taker } }),
             }}
           />
         )}
@@ -512,6 +544,96 @@ function CounterPanel({
                   ? BAD_ODDS
                   : 'Введите свою сумму — здесь появится, сколько ставит каждый.'}
         </p>
+      </div>
+      {error && (
+        <p className="error" role="alert">
+          {error}
+        </p>
+      )}
+      <div className="row">
+        <button className="button" type="submit">
+          Предложить встречное
+        </button>
+        <button className="button secondary" type="button" onClick={onClose}>
+          Закрыть
+        </button>
+      </div>
+    </form>
+  )
+}
+
+// Встречное к пари на обещание (Р-44): своё обещание (сначала — что исходное просило от соперника), обещание
+// автора исходного (сначала — его прежнее) и «приём до»; кэфа и суммы нет, остальное — как у встречного
+function PromiseCounterPanel({
+  room,
+  offer,
+  clock,
+  busy,
+  onAsk,
+  onClose,
+}: {
+  room: SavedRoom
+  offer: OfferView
+  clock: Clock | null
+  busy: MutableRefObject<boolean>
+  onAsk: (ask: Ask) => void
+  onClose: () => void
+}) {
+  const [mine, setMine] = useState(offer.promise?.taker ?? '')
+  const [theirs, setTheirs] = useState(offer.promise?.author ?? '')
+  const [closes, setCloses] = useState(() => toLocalInput(offer.closesAt))
+  const [error, setError] = useState('')
+  const author = nameOf(room, offer.authorId)
+  const mySide = offer.side === 'yes' ? 'no' : 'yes'
+
+  function submit(e: FormEvent) {
+    e.preventDefault()
+    if (busy.current) return
+    const closesAt = fromLocalInput(closes)
+    if (closesAt === null) return setError(NEED_TIMES)
+    // Как сервер: обещания из формы встречного — в проверку формы своим текстом и текстом соперника
+    const input = counterInput(offerState(offer), { odds: offer.odds, amount: 0, closesAt, promise: mine, takerPromise: theirs })
+    const checked = checkOfferInput({ ...input, promise: input.promise?.author, takerPromise: input.promise?.taker })
+    if (!checked.ok) return setError(checked.error)
+    const late = checkOfferTimes(checked.value, serverTime(clock))
+    if (late) return setError(late)
+    setError('')
+    const x: OfferInput = checked.value
+    const p = x.promise ?? { author: mine.trim(), taker: theirs.trim() }
+    onAsk({
+      question: 'Предложить встречное?',
+      body: [
+        `Проиграете — вы: ${p.author}. Проиграет ${author} — ${p.taker}. Вы — за „${sideLabel(x.side)}“.`,
+        `Приём до ${formatDateTime(x.closesAt)}; условие, «как проверяем», исход к и гарант — как у исходного.`,
+        `Ответит ${author}: примет встречное — исходное закроется.`,
+      ],
+      button: 'Предложить встречное',
+      busyLabel: 'Предлагаю…',
+      form: formKey(room.id, offer.id, 'counter', 'promise', p.author, p.taker, String(x.closesAt)),
+      run: (requestId) => counterOffer(room.server, room.id, room.key, offer.id, { promise: p.author, takerPromise: p.taker, closesAt: x.closesAt, requestId }),
+    })
+  }
+
+  return (
+    <form className="panel form" onSubmit={submit} aria-label="Встречное">
+      <p>
+        Встречное — новое пари на обещание, ответит автор — {author}. Вы — за „{sideLabel(mySide)}“, обещания — свои; условие, «как проверяем», исход к
+        и гарант — как у исходного.
+      </p>
+      <label className="field">
+        <span>Если проиграю, я…</span>
+        <textarea className="input textarea" value={mine} onChange={(e) => setMine(e.target.value)} maxLength={MAX_EVENT_TEXT * 2} rows={2} />
+      </label>
+      <label className="field">
+        <span>Если проиграет {author}…</span>
+        <textarea className="input textarea" value={theirs} onChange={(e) => setTheirs(e.target.value)} maxLength={MAX_EVENT_TEXT * 2} rows={2} />
+      </label>
+      <label className="field">
+        <span>Приём до</span>
+        <input className="input" type="datetime-local" value={closes} onChange={(e) => setCloses(e.target.value)} />
+      </label>
+      <div className="offer-summary" aria-live="polite">
+        <p>{promiseSummary(mine, theirs)}</p>
       </div>
       {error && (
         <p className="error" role="alert">
