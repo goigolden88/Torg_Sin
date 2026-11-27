@@ -208,20 +208,24 @@ function Member({
       {isHostRow && <span className="badge">ведущий</span>}
       {member.id === room.memberId && <span className="badge muted">вы</span>}
       {mark && <span className="badge muted">{mark}</span>}
-      {!asking && drop && (
-        <button className="button secondary member-action" type="button" onClick={() => setAsking(drop)}>
-          {DROP_LABEL[drop]}
-        </button>
-      )}
-      {!asking && pass && (
-        <button className="button secondary member-action" type="button" onClick={() => setAsking('pass')}>
-          {PASS_LABEL}
-        </button>
-      )}
-      {!asking && take?.kind === 'take' && (
-        <button className="button member-action" type="button" onClick={() => setAsking('take')}>
-          {TAKE_LABEL}
-        </button>
+      {!asking && (drop || pass || take?.kind === 'take') && (
+        <span className="member-action member-actions">
+          {drop && (
+            <button className="button secondary" type="button" onClick={() => setAsking(drop)}>
+              {DROP_LABEL[drop]}
+            </button>
+          )}
+          {pass && (
+            <button className="button secondary" type="button" onClick={() => setAsking('pass')}>
+              {PASS_LABEL}
+            </button>
+          )}
+          {take?.kind === 'take' && (
+            <button className="button" type="button" onClick={() => setAsking('take')}>
+              {TAKE_LABEL}
+            </button>
+          )}
+        </span>
       )}
       {isHostRow && host && <span className="hint member-confirm">{seenLine(host.seenAt)}</span>}
       {isHostRow && take?.kind === 'wait' && <span className="hint member-confirm">{takeLine(take.from)}</span>}

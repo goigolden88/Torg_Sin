@@ -9,7 +9,7 @@ import { api, Device, PASSWORD, SITE, type Cdp, type RoomsServer, type ServerMod
 const DROPPED = 'Ведущий пометил вас „выбыл“: доигрывайте своё и отмечайте переводы'
 
 // Открыть комнату на новом устройстве по «ссылке для другого устройства» за участника member
-async function openAs(cdp: Cdp, size: Size, server: RoomsServer, roomId: string, hostKey: string, member: string, name: string): Promise<Device> {
+export async function openAs(cdp: Cdp, size: Size, server: RoomsServer, roomId: string, hostKey: string, member: string, name: string): Promise<Device> {
   const { token } = await api<{ token: string }>(server, `/rooms/${roomId}/device`, hostKey, member ? { member } : {})
   const device = await Device.open(cdp, size, name)
   await device.goto(`${SITE}#/device/${roomId}/${token}?server=${encodeURIComponent(server.url)}`)
@@ -19,7 +19,7 @@ async function openAs(cdp: Cdp, size: Size, server: RoomsServer, roomId: string,
 }
 
 // Нажать кнопку text в строке участника name (у ведущего кнопки «Пометить „выбыл“» у всех — нужна своя)
-async function pressAt(device: Device, name: string, text: string): Promise<void> {
+export async function pressAt(device: Device, name: string, text: string): Promise<void> {
   const done = await device.eval<boolean>(`(() => {
     const li = [...document.querySelectorAll('.members .member')].find((el) => el.firstElementChild?.textContent === ${JSON.stringify(name)})
     const button = li && [...li.querySelectorAll('button')].find((b) => b.innerText.trim().startsWith(${JSON.stringify(text)}))
@@ -31,14 +31,14 @@ async function pressAt(device: Device, name: string, text: string): Promise<void
 }
 
 // Текст строки участника name — для проверки пометки
-async function memberRow(device: Device, name: string): Promise<string> {
+export async function memberRow(device: Device, name: string): Promise<string> {
   return device.eval<string>(`(() => {
     const li = [...document.querySelectorAll('.members .member')].find((el) => el.firstElementChild?.textContent === ${JSON.stringify(name)})
     return li ? li.innerText : ''
   })()`)
 }
 
-async function waitRow(device: Device, name: string, text: string): Promise<void> {
+export async function waitRow(device: Device, name: string, text: string): Promise<void> {
   for (let i = 0; i < 100; i++) {
     if ((await memberRow(device, name)).includes(text)) return
     await new Promise((r) => setTimeout(r, 200))
@@ -46,7 +46,7 @@ async function waitRow(device: Device, name: string, text: string): Promise<void
   throw new Error(`у «${name}» не дождался «${text}»: ${await memberRow(device, name)}`)
 }
 
-async function absent(device: Device, text: string): Promise<void> {
+export async function absent(device: Device, text: string): Promise<void> {
   const shown = await device.eval<boolean>(`document.body.innerText.includes(${JSON.stringify(text)})`)
   if (shown) throw new Error(`на экране не должно быть «${text}»`)
 }
@@ -82,7 +82,7 @@ export async function members(cdp: Cdp, size: Size, startServer: ServerModule['s
     // До: у ведущей — кнопки «Пометить „выбыл“» у каждого, у себя — подпись вместо «Выйти»
     const host = await openAs(cdp, size, server, room.roomId, room.key, '', 'ведущая')
     await host.waitText('Пометить „выбыл“')
-    await host.waitText('Сначала передайте ведение')
+    await host.waitText('Чтобы выйти, сначала передайте ведение')
     await absent(host, 'Выйти из комнаты')
     await host.shot('180-uchastniki-do')
 
