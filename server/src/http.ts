@@ -16,6 +16,8 @@ import {
   checkOfferInput,
   MAX_ODDS,
   MIN_ODDS,
+  NEED_PROMISE,
+  NEED_TAKER_PROMISE,
   NO_GUARANTOR_CHOSEN,
   NO_OFFER,
   offerView,
@@ -31,6 +33,7 @@ import { checkMemberName, checkRoomInput } from '../../src/rules/room'
 import { takeHostFrom } from '../../src/rules/member'
 import {
   BAD_MODE,
+  NO_PROMISE,
   NO_TRANSFER,
   NOT_MEMBER as TRANSFER_NOT_MEMBER,
   roomSettlement,
@@ -55,6 +58,7 @@ import {
   type CourtKind,
   type CreateInput,
   type CreateResult,
+  type PromiseMark,
   type RestoreResult,
   type RoomAction,
   type StateResult,
@@ -195,6 +199,12 @@ export async function handle(request: Request, deps: RoomsDeps): Promise<Respons
     const r = await transferAction(tr[1], tr[2], tr[3] as TransferAnswer | undefined, request, deps)
     return json(r.status, r.body)
   }
+  // Обещания (Р-44): /rooms/<номер>/promises/<пари>/kept | received | rejected
+  const pr = /^\/rooms\/([^/]+)\/promises\/([^/]+)\/(kept|received|rejected)$/.exec(path)
+  if (pr && request.method === 'POST') {
+    const r = await promiseAction(pr[1], pr[2], pr[3] as PromiseMark, request, deps)
+    return json(r.status, r.body)
+  }
   const sm = /^\/rooms\/([^/]+)\/settle-mode$/.exec(path)
   if (sm && request.method === 'POST') {
     const r = await settleModeAction(sm[1], request, deps)
@@ -291,6 +301,21 @@ async function transferAction(
   })
 }
 
+// POST /rooms/<номер>/promises/<пари>/kept | received | rejected { requestId? } — «Исполнил» (проигравший),
+// «Получил», «Не получил» (выигравший) по пари на обещание (Р-44). Отказы — тексты правил (settle.ts)
+async function promiseAction(roomId: string, offerId: string, mark: PromiseMark, request: Request, deps: RoomsDeps): Promise<Reply<unknown>> {
+  const authorization = request.headers.get('Authorization')
+  const raw: unknown = await request.json().catch(() => null)
+  return withKey(roomId, authorization, async (keyHash) => {
+    if (!ULID_PATTERN.test(offerId)) return failure(404, NO_PROMISE)
+    const read = readBody(raw, true)
+    if (!read.ok) return read.reply
+    const requestId = requestIdOf(read.body, deps)
+    if (!requestId) return failure(400, BAD_REQUEST_ID)
+    return reply(await deps.act(roomId, { type: 'markPromise', keyHash, offer: offerId, mark, requestId }))
+  })
+}
+
 // POST /rooms/<номер>/settle-mode { mode: "stakes" | "fewest", requestId? } — ведущий меняет режим «кто кому»
 async function settleModeAction(roomId: string, request: Request, deps: RoomsDeps): Promise<Reply<unknown>> {
   const authorization = request.headers.get('Authorization')
@@ -315,7 +340,8 @@ function settleModeOf(x: unknown): SettleMode | null {
 // expectedAt, guarantor?, noGuarantor?, subject?, requestId? } — предложить; торг (Р-37) — auction
 // { start, step? } вместо odds; …/offers/<пари>/accept | revoke { requestId? }; …/offers/<пари>/counter
 // { odds?, amount?, closesAt, guarantor?, noGuarantor?, requestId? } — встречное (noGuarantor — без
-// гаранта, Р-36); торг: …/bid { amount, requestId? } — встречное в торге, …/bid/accept { requestId? } —
+// гаранта, Р-36); на обещание (Р-44) — promise, takerPromise? при создании (вместо odds и amount) и во
+// встречном к пари на обещание; торг: …/bid { amount, requestId? } — встречное в торге, …/bid/accept { requestId? } —
 // «принять сейчас»; исход (Р-23):
 // …/mark | decide { winner: "author" | "taker", requestId? }, …/decline { requestId? },
 // …/nominate { guarantor, requestId? }; апелляция и суд (Р-25) — courtAction
@@ -352,6 +378,8 @@ async function offerAction(
         noGuarantor: b.noGuarantor,
         subject: b.subject,
         auction: b.auction,
+        promise: b.promise,
+        takerPromise: b.takerPromise,
       })
       if (!checked.ok) return failure(400, checked.error)
       if (!requestId) return failure(400, BAD_REQUEST_ID)
@@ -369,6 +397,11 @@ async function offerAction(
       const none = b.noGuarantor === undefined || b.noGuarantor === null ? false : b.noGuarantor
       if (typeof none !== 'boolean') return failure(400, BAD_GUARANTOR)
       if (none && guarantor !== undefined) return failure(400, NO_GUARANTOR_CHOSEN)
+      // Обещания встречного (Р-44): строки или не заданы; пустые и длинные — отказ правил в комнате
+      const promise = b.promise === undefined || b.promise === null ? undefined : b.promise
+      if (promise !== undefined && typeof promise !== 'string') return failure(400, NEED_PROMISE)
+      const takerPromise = b.takerPromise === undefined || b.takerPromise === null ? undefined : b.takerPromise
+      if (takerPromise !== undefined && typeof takerPromise !== 'string') return failure(400, NEED_TAKER_PROMISE)
       if (!requestId) return failure(400, BAD_REQUEST_ID)
       return reply(
         await deps.act(roomId, {
@@ -380,6 +413,8 @@ async function offerAction(
           closesAt: b.closesAt as number,
           ...(guarantor !== undefined && { guarantor }),
           ...(none && { noGuarantor: true }),
+          ...(promise !== undefined && { promise }),
+          ...(takerPromise !== undefined && { takerPromise }),
           requestId,
         }),
       )
@@ -944,6 +979,7 @@ export async function getRoom(roomId: string, authorization: string | null, deps
           choices: r.choices,
           cases: r.cases,
           transfers: r.transfers,
+          promises: r.promises,
         },
         now,
         r.settleMode,

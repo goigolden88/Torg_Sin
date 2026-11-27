@@ -133,6 +133,10 @@ export type LogEntry =
       // лучшего. Только открытое и не встречное; closesAt тогда — исходный конец торга, odds — стартовый
       // кэф { a: amount, b: start }. Нет поля — обычное пари
       auction?: { start: number; step: number }
+      // На обещание (Р-44): что сделает автор (author) и соперник (taker), если проиграет; odds тогда —
+      // { a: 1, b: 1 }, amount — 0 (не показываются и не считаются), торга нет; встречное к нему — тоже на
+      // обещание. Нет поля — пари на сумму
+      promise?: { author: string; taker: string }
       requestId: string
     })
   // Пари принято; автор записи — принявший (соперник)
@@ -223,6 +227,13 @@ export type LogEntry =
   | (EntryBase & { type: 'transfer.rejected'; transfer: string; requestId: string })
   // Отмена своей отметки (автор — должник или получатель)
   | (EntryBase & { type: 'transfer.revoked'; transfer: string; requestId: string })
+  // Обещания «Расчёта» (Р-44; правила — settle.ts, записи PromiseRecord). Обещание — по окончательному пари
+  // на обещание offer. «Исполнил» (автор — проигравший)
+  | (EntryBase & { type: 'promise.kept'; offer: string; requestId: string })
+  // «Получил» (автор — выигравший): после «Исполнил» или сам, без него
+  | (EntryBase & { type: 'promise.received'; offer: string; requestId: string })
+  // «Не получил» на «Исполнил» (автор — выигравший)
+  | (EntryBase & { type: 'promise.rejected'; offer: string; requestId: string })
 
 export type Member = {
   id: string // номер участника: не привязан к способу входа (Р-03)
@@ -438,6 +449,10 @@ export function applyEntry(state: RoomState | null, e: LogEntry): RoomState | nu
     case 'transfer.received':
     case 'transfer.rejected':
     case 'transfer.revoked':
+    // Обещания (Р-44) — тоже сервер с правилами расчёта
+    case 'promise.kept':
+    case 'promise.received':
+    case 'promise.rejected':
       return state
   }
 }

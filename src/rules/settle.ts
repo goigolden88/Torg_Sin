@@ -1,7 +1,8 @@
 // Расчёт комнаты (этап 5, Р-07, Р-11, Р-32; Архитектура, «Правила расчёта в коде»): три числа у каждого
 // участника — итог, ждёт окончательности, в игре; переводы «Перевёл» / «Получил» / «Не получал» из
 // записей TransferRecord (автор — memberId, время сервера — at, порядок — журнала); баланс и подсказка
-// «кто кому» в режиме комнаты. Итоги, балансы и подсказка считаются, не хранятся. Исход события и пари —
+// «кто кому» в режиме комнаты; обещания пари «на обещание» (Р-44) «Исполнил» / «Получил» / «Не получил» из
+// записей PromiseRecord. Итоги, балансы, подсказка и состояние обещаний считаются, не хранятся. Исход события и пари —
 // eventOutcome (event.ts) и offerOutcome (offer.ts) с делом суда (appeal.ts). Ни DOM, ни Cloudflare
 import { caseOf } from './appeal'
 import { choiceInPlay, choiceResult, type ChoiceState } from './choice'
@@ -32,6 +33,15 @@ export const ONLY_HOST_MODE = 'Режим «кто кому» меняет то�
 export const BAD_MODE = 'Режим — «по ставкам» или «меньше переводов»'
 export const SAME_MODE = 'Этот режим уже выбран'
 export const MODE_LOCKED = 'Переводы уже отмечены: режим меняется, только когда все рассчитались и ни один перевод не ждёт подтверждения'
+
+// Отказы обещаний (Р-44)
+export const NO_PROMISE = 'Такого обещания нет: пари не на обещание или его исход ещё не окончательный'
+export const ONLY_LOSER = 'Отметить «Исполнил» может только проигравший'
+export const ONLY_WINNER = 'Отметить «Получил» или «Не получил» может только выигравший'
+export const ALREADY_KEPT = 'Вы уже отметили «Исполнил» — ждём ответа выигравшего'
+export const PROMISE_RECEIVED = 'Обещание уже получено'
+export const PROMISE_REJECTED = 'Вы уже отметили «Не получил» — ждём, пока проигравший снова отметит «Исполнил»'
+export const NOT_KEPT = 'Проигравший ещё не отметил «Исполнил» — отвечать «Не получил» не на что'
 
 // Комната на очки — «Таблица очков», без переводов (Р-32)
 const POINTS = 'PTS'
@@ -152,6 +162,89 @@ export function roomTransfers(records: readonly TransferRecord[], room: Transfer
   return [...transfers.values()]
 }
 
+// Обещания (Р-44): по каждому окончательному пари на обещание проигравший должен выигравшему своё
+// обещание. Записи — как будут в журнале комнаты: memberId — автор, at — время сервера, offer — пари.
+// «Исполнил» — проигравший; «Получил» — выигравший, после «Исполнил» или сам; «Не получил» — выигравший,
+// на «Исполнил». Денег, итогов и подсказки «кто кому» обещания не трогают
+export type PromiseRecord =
+  | Act<'promise.kept', { offer: string }>
+  | Act<'promise.received', { offer: string }>
+  | Act<'promise.rejected', { offer: string }>
+
+// «ждёт» (никто не отметил) / «Исполнил» (ждёт ответа выигравшего) / «получено» / «не получено» (на
+// «Исполнил»; проигравший может снова отметить «Исполнил»)
+export type PromiseStatus = 'waiting' | 'kept' | 'received' | 'rejected'
+
+// Обещание: offer — пари, at — миг, с которого исход окончательный; from — проигравший, to — выигравший,
+// text — обещание проигравшего; changedAt — миг последней смены состояния (до отметок — at)
+export type PromiseDue = {
+  offer: string
+  at: number
+  from: string
+  to: string
+  text: string
+  status: PromiseStatus
+  changedAt: number
+}
+
+// Обещания к исполнению на now: принятые пари на обещание с окончательным исходом (судом «отменить» — нет),
+// по порядку пари; состояние — ещё без отметок
+export function duePromises(offers: readonly OfferState[], cases: readonly CourtCase[], now: number): PromiseDue[] {
+  return offers.flatMap((raw): PromiseDue[] => {
+    const o = offerAt(raw, now)
+    if (!o.promise || !o.accepted) return []
+    const out = offerOutcome(o, now, caseOf(cases, o.id))
+    if (!out?.approved || out.phase !== 'final' || out.finalAt === null) return []
+    const authorLost = out.approved.winner === 'taker'
+    const [from, to] = authorLost ? [o.authorId, o.accepted.by] : [o.accepted.by, o.authorId]
+    const text = authorLost ? o.promise.author : o.promise.taker
+    return [{ offer: o.id, at: out.finalAt, from, to, text, status: 'waiting', changedAt: out.finalAt }]
+  })
+}
+
+// «Исполнил»: только проигравший, пока обещание не получено и «Исполнил» не ждёт ответа; после «Не
+// получил» — снова можно. Нет обещания — NO_PROMISE
+export function checkKept(p: PromiseDue | null, memberId: string): string | null {
+  if (!p) return NO_PROMISE
+  if (memberId !== p.from) return ONLY_LOSER
+  if (p.status === 'received') return PROMISE_RECEIVED
+  if (p.status === 'kept') return ALREADY_KEPT
+  return null
+}
+
+// «Получил» — выигравший, пока не получено: на «Исполнил», сам (без него) и после своего «Не получил».
+// «Не получил» — выигравший, только на «Исполнил»
+export function checkPromiseAnswer(p: PromiseDue | null, memberId: string, answer: 'received' | 'rejected'): string | null {
+  if (!p) return NO_PROMISE
+  if (memberId !== p.to) return ONLY_WINNER
+  if (p.status === 'received') return PROMISE_RECEIVED
+  if (answer === 'received') return null
+  if (p.status === 'rejected') return PROMISE_REJECTED
+  return p.status === 'kept' ? null : NOT_KEPT
+}
+
+// Обещания комнаты на now: duePromises с отметками по порядку журнала. Отметка действует, если её
+// разрешает та же проверка на её место в журнале и она не раньше окончательности исхода (как
+// roomTransfers); отметки о пари без обещания к исполнению не действуют
+export function roomPromises(
+  offers: readonly OfferState[],
+  cases: readonly CourtCase[],
+  records: readonly PromiseRecord[],
+  now: number,
+): PromiseDue[] {
+  const due = duePromises(offers, cases, now)
+  const byOffer = new Map(due.map((p) => [p.offer, p]))
+  for (const r of records) {
+    const p = byOffer.get(r.offer)
+    if (!p || r.at < p.at) continue
+    const refused = r.type === 'promise.kept' ? checkKept(p, r.memberId) : checkPromiseAnswer(p, r.memberId, r.type === 'promise.received' ? 'received' : 'rejected')
+    if (refused) continue
+    p.status = r.type === 'promise.kept' ? 'kept' : r.type === 'promise.received' ? 'received' : 'rejected'
+    p.changedAt = r.at
+  }
+  return due
+}
+
 // Число с основанием: сумма и из скольких событий и пари она сложена; lots — из скольких лотов (Р-38):
 // поле есть, только когда своду дали лоты (SettleInput.lots); choices — из скольких выборов (Р-39): так же,
 // только когда дали выборы (SettleInput.choices)
@@ -173,16 +266,20 @@ export type MemberSettlement = {
 // Подсказка «кто кому»: from переводит to сумму amount
 export type Suggestion = { from: string; to: string; amount: number }
 
+// promises — обещания (Р-44; roomPromises): поле есть, только когда своду дали записи обещаний
+// (SettleInput.promises) и хоть одно обещание к исполнению есть
 export type RoomSettlement = {
   mode: SettleMode
   members: MemberSettlement[]
   transfers: Transfer[]
   suggestions: Suggestion[]
+  promises?: PromiseDue[]
 }
 
 // Вход свода: валюта, участники по порядку входа, события и пари комнаты (roomEvents, logOffers), дела
 // суда (logAppeals) и записи о переводах; lots — лоты комнаты (Р-38, logLots; нет — лотов нет и счётчика
-// lots в числах тоже); choices — выборы комнаты (Р-39, logChoices; нет — выборов нет и счётчика choices)
+// lots в числах тоже); choices — выборы комнаты (Р-39, logChoices; нет — выборов нет и счётчика choices);
+// promises — записи обещаний (Р-44; нет — блока обещаний в своде нет)
 export type SettleInput = {
   currency: string
   members: readonly string[]
@@ -192,6 +289,7 @@ export type SettleInput = {
   choices?: readonly ChoiceState[]
   cases: readonly CourtCase[]
   transfers: readonly TransferRecord[]
+  promises?: readonly PromiseRecord[]
 }
 
 // Окончательный результат спора: net каждого (≠ 0) по порядку первой ставки; у пари — автор, соперник; у
@@ -323,7 +421,8 @@ function stakeTransfers(results: readonly Result[], transfers: readonly Transfer
 // не продан, не состоялся, не передан — не в счёт. Выбор (Р-39): вклады идут или ждут жребия — свои вклады
 // «в игре» (у получателя — нет: свой вклад он не платит); решён — вложившиеся в победивший должны
 // получателю свои суммы, в итог сразу (спора нет); не состоялся, фаза вариантов — не в счёт. В комнате на
-// очки переводов и подсказки нет
+// очки переводов и подсказки нет. Пари на обещание (Р-44) — ни в одном числе и не в «кто кому»: их
+// окончательный исход — блок promises (roomPromises), в любой комнате, и на очки тоже
 export function roomSettlement(input: SettleInput, now: number, mode: SettleMode = DEFAULT_SETTLE_MODE): RoomSettlement {
   const withLots = input.lots !== undefined
   const withChoices = input.choices !== undefined
@@ -365,7 +464,8 @@ export function roomSettlement(input: SettleInput, now: number, mode: SettleMode
   // состоялось» — нет; суммы — offerAmounts (у торга — автора и принятого встречного)
   for (const raw of input.offers) {
     const o = offerAt(raw, now)
-    if (!o.accepted) continue
+    // На обещание (Р-44) — ни в одном числе: исполнение — блок promises
+    if (!o.accepted || o.promise) continue
     const out = offerOutcome(o, now, caseOf(input.cases, o.id))
     const stakes = offerAmounts(o)
     if (!out || !stakes.ok || out.phase === 'cancelled') continue
@@ -429,7 +529,8 @@ export function roomSettlement(input: SettleInput, now: number, mode: SettleMode
       : mode === 'fewest'
         ? fewestTransfers(members)
         : stakeTransfers(results, transfers)
-  return { mode, members, transfers, suggestions }
+  const promises = input.promises ? roomPromises(input.offers, input.cases, input.promises, now) : []
+  return { mode, members, transfers, suggestions, ...(promises.length > 0 && { promises }) }
 }
 
 // Смена режима «кто кому» (Р-32) ведущим: можно, пока в комнате нет ни одного перевода «ждёт

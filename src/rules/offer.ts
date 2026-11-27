@@ -105,6 +105,18 @@ export const ONLY_AUTHOR_TAKES = 'Принять лучшее может тол�
 export const NO_BIDS = 'Встречных ещё нет — принимать нечего'
 export const AUCTION_HAS_BIDS = 'Встречные уже есть — торг не отозвать'
 
+// Пари «на обещание» (Р-44): на кону у каждой стороны — своё обещание текстом (что сделает, если
+// проиграет), без кэфа и суммы; длина — как у условия. Только один на один: без торга; встречное — своё
+// обещание (к пари на сумму — сумма, к пари на обещание — обещание)
+export const NEED_PROMISE = 'Нужно обещание: что сделаете, если проиграете'
+export const NEED_TAKER_PROMISE = 'Нужно обещание соперника: что он сделает, если проиграет'
+export const LONG_PROMISE = `Обещание — не длиннее ${MAX_EVENT_TEXT} знаков`
+export const PROMISE_AUCTION = 'Пари на обещание — без торга'
+export const PROMISE_COUNTER = 'К пари на обещание встречное — тоже обещание, без суммы и кэфа'
+export const MONEY_COUNTER = 'К пари на сумму встречное — тоже на сумму, без обещания'
+// Кэф и сумма пари на обещание в записи и ответе — ради общего вида пари: не показываются и не считаются
+export const PROMISE_ODDS: Odds = { a: 1, b: 1 }
+
 type Checked<T> = { ok: true; value: T } | { ok: false; error: string }
 
 // Кэф «a к b»: автор рискует a·k, соперник b·k
@@ -160,6 +172,8 @@ export function offerAt(o: OfferState, now: number): OfferState {
 // (принятого — оно и есть лучшее), без встречных — старт; кэф торга только для показа, предел 1…100 к
 // нему не применяется (Р-37)
 export function offerAmounts(o: OfferState): Checked<OfferStakes> {
+  // На обещание (Р-44) денег на кону нет
+  if (o.promise) return { ok: true, value: { author: 0, taker: 0, bank: 0, exact: true } }
   if (!o.auction) return offerStakes(o.odds, o.amount)
   const taker = bestBid(o.auction)?.amount ?? o.auction.start
   return { ok: true, value: { author: o.amount, taker, bank: o.amount + taker, exact: true } }
@@ -179,7 +193,8 @@ function text(x: unknown, need: string, long: string): Checked<string> {
 // Проверенная форма пари. to — адресат (null — открытое), guarantor — выбранный (null — ведущий),
 // noGuarantor — без гаранта (Р-36; guarantor тогда null; нет поля — с гарантом), subject — о ком
 // спор (null — ни о ком; Р-26). auction — торг (Р-37; нет поля — обычное пари): closesAt тогда — конец
-// торга, odds — стартовый кэф { a: amount, b: start }
+// торга, odds — стартовый кэф { a: amount, b: start }. promise — пари на обещание (Р-44; нет поля — на
+// сумму): обещание автора и соперника; odds тогда — PROMISE_ODDS, amount — 0
 export type OfferInput = {
   condition: string
   check: string
@@ -193,6 +208,20 @@ export type OfferInput = {
   noGuarantor?: boolean
   subject: string | null
   auction?: AuctionTerms
+  promise?: OfferPromise
+}
+
+// На кону пари «на обещание» (Р-44): что сделает автор и что соперник, если проиграет
+export type OfferPromise = { author: string; taker: string }
+
+// Обещания из формы: своё — не пустое, ≤ 300 знаков; соперника не задано — то же, что своё, задано —
+// так же не пустое
+function promiseTerms(own: unknown, taker: unknown): Checked<OfferPromise> {
+  const author = text(own, NEED_PROMISE, LONG_PROMISE)
+  if (!author.ok) return author
+  if (taker === undefined || taker === null) return { ok: true, value: { author: author.value, taker: author.value } }
+  const other = text(taker, NEED_TAKER_PROMISE, LONG_PROMISE)
+  return other.ok ? { ok: true, value: { author: author.value, taker: other.value } } : other
 }
 
 // Условия торга из формы: старт — целое > 0, банк (сумма автора + старт) — точное целое; шаг не задан —
@@ -210,7 +239,8 @@ function auctionTerms(x: unknown, amount: number): Checked<AuctionTerms> {
 
 // Проверка формы без времени сервера и участников (их — checkOfferTimes, offerGuarantor,
 // checkOfferSubject). Сторона не задана — «сбудется». Торг (Р-37): auction { start, step? } вместо кэфа
-// (odds тогда не смотрится), только открытое
+// (odds тогда не смотрится), только открытое. На обещание (Р-44): promise — своё обещание, takerPromise —
+// соперника (не задано — то же); кэф и сумма тогда не смотрятся, торг — отказ; адресное и открытое — оба
 export function checkOfferInput(x: {
   condition: unknown
   check: unknown
@@ -224,6 +254,8 @@ export function checkOfferInput(x: {
   noGuarantor?: unknown
   subject?: unknown
   auction?: unknown
+  promise?: unknown
+  takerPromise?: unknown
 }): Checked<OfferInput> {
   const condition = text(x.condition, NEED_CONDITION, LONG_CONDITION)
   if (!condition.ok) return condition
@@ -232,22 +264,35 @@ export function checkOfferInput(x: {
   const side = x.side === undefined || x.side === null ? 'yes' : x.side
   if (side !== 'yes' && side !== 'no') return { ok: false, error: BAD_SIDE }
   const isAuction = x.auction !== undefined && x.auction !== null
-  const o = x.odds as { a?: unknown; b?: unknown } | null
-  if (!isAuction && (typeof o !== 'object' || o === null || !odd(o.a) || !odd(o.b))) return { ok: false, error: BAD_ODDS }
-  const amount = checkAmount(x.amount)
-  if (!amount.ok) return amount
+  const isPromise = (x.promise !== undefined && x.promise !== null) || (x.takerPromise !== undefined && x.takerPromise !== null)
   let odds: Odds
+  let amount: number
   let auction: AuctionTerms | null = null
-  if (isAuction) {
-    const terms = auctionTerms(x.auction, amount.value)
+  let promise: OfferPromise | null = null
+  if (isPromise) {
+    if (isAuction) return { ok: false, error: PROMISE_AUCTION }
+    const terms = promiseTerms(x.promise, x.takerPromise)
     if (!terms.ok) return terms
-    if (x.to !== undefined && x.to !== null) return { ok: false, error: AUCTION_ADDRESSED }
-    auction = terms.value
-    odds = { a: amount.value, b: auction.start }
+    promise = terms.value
+    odds = { ...PROMISE_ODDS }
+    amount = 0
   } else {
-    odds = { a: (o as { a: number }).a, b: (o as { b: number }).b }
-    const stakes = offerStakes(odds, amount.value)
-    if (!stakes.ok) return stakes
+    const o = x.odds as { a?: unknown; b?: unknown } | null
+    if (!isAuction && (typeof o !== 'object' || o === null || !odd(o.a) || !odd(o.b))) return { ok: false, error: BAD_ODDS }
+    const sum = checkAmount(x.amount)
+    if (!sum.ok) return sum
+    amount = sum.value
+    if (isAuction) {
+      const terms = auctionTerms(x.auction, amount)
+      if (!terms.ok) return terms
+      if (x.to !== undefined && x.to !== null) return { ok: false, error: AUCTION_ADDRESSED }
+      auction = terms.value
+      odds = { a: amount, b: auction.start }
+    } else {
+      odds = { a: (o as { a: number }).a, b: (o as { b: number }).b }
+      const stakes = offerStakes(odds, amount)
+      if (!stakes.ok) return stakes
+    }
   }
   if (!Number.isSafeInteger(x.closesAt) || !Number.isSafeInteger(x.expectedAt)) return { ok: false, error: NEED_TIMES }
   const member = (v: unknown) => v === undefined || v === null || (typeof v === 'string' && v !== '')
@@ -264,7 +309,7 @@ export function checkOfferInput(x: {
       check: check.value,
       side,
       odds,
-      amount: amount.value,
+      amount,
       to: typeof x.to === 'string' ? x.to : null,
       closesAt: x.closesAt as number,
       expectedAt: x.expectedAt as number,
@@ -272,6 +317,7 @@ export function checkOfferInput(x: {
       ...(none === true && { noGuarantor: true }),
       subject: typeof x.subject === 'string' ? x.subject : null,
       ...(auction && { auction }),
+      ...(promise && { promise }),
     },
   }
 }
@@ -368,6 +414,9 @@ export type OfferCreated = {
   // «Торг до …» (Р-37): только открытое и не встречное; closesAt — исходный конец торга, odds — стартовый
   // кэф { a: amount, b: start }. Нет — обычное пари
   auction?: AuctionTerms
+  // На обещание (Р-44): что сделает каждая сторона, если проиграет; odds — PROMISE_ODDS, amount — 0, торга
+  // нет; встречное к нему — тоже на обещание. Нет — на сумму
+  promise?: OfferPromise
 }
 type OfferAct<T extends string, X = object> = { type: T; id: string; at: number; memberId: string; offer: string } & X
 export type OfferRecord =
@@ -501,21 +550,33 @@ export function checkCounter(o: OfferState, memberId: string, room: RoomRoles, n
 // сторона — обратная, адресат — автор исходного; о ком спор — тот же (Р-26): правило предмета то же.
 // Гарант — выбор автора встречного (Р-36): guarantor — участник, noGuarantor — без гаранта; не выбрал —
 // тот же, что у исходного (он не автор и не принимает пари; у исходного без гаранта — тоже без).
-// Проверяет выбор offerGuarantor
+// Проверяет выбор offerGuarantor. К пари на обещание (Р-44) — свои обещания вместо кэфа и суммы
 export function counterInput(
   o: OfferState,
-  x: { odds: Odds; amount: number; closesAt: number; guarantor?: string | null; noGuarantor?: boolean },
+  x: {
+    odds: Odds
+    amount: number
+    closesAt: number
+    guarantor?: string | null
+    noGuarantor?: boolean
+    promise?: string | null
+    takerPromise?: string | null
+  },
 ): OfferInput {
   const chosen = typeof x.guarantor === 'string' || x.noGuarantor === true
   const guarantor = chosen ? (x.guarantor ?? null) : o.guarantorId
   const noGuarantor = chosen ? x.noGuarantor === true : o.guarantorId === null
+  // На обещание (Р-44): своё обещание автора встречного (не задано — что исходное просило от соперника) и
+  // обещание автора исходного (не задано — его прежнее); кэф и сумма — PROMISE_ODDS и 0
+  const promise = o.promise && { author: x.promise ?? o.promise.taker, taker: x.takerPromise ?? o.promise.author }
   return {
     ...(noGuarantor && { noGuarantor: true }),
+    ...(promise && { promise }),
     condition: o.condition,
     check: o.check,
     side: o.side === 'yes' ? 'no' : 'yes',
-    odds: x.odds,
-    amount: x.amount,
+    odds: promise ? { ...PROMISE_ODDS } : x.odds,
+    amount: promise ? 0 : x.amount,
     to: o.authorId,
     closesAt: x.closesAt,
     expectedAt: o.expectedAt,
@@ -689,6 +750,13 @@ function auctionRecordOk(r: OfferCreated, a: AuctionTerms): boolean {
   )
 }
 
+// Пари на обещание в записи offer.created (Р-44): без торга; кэф — PROMISE_ODDS, сумма — 0; оба обещания —
+// не пустые, ≤ 300 знаков, без пробелов по краям
+function promiseRecordOk(r: OfferCreated, p: OfferPromise): boolean {
+  const ok = (s: unknown) => typeof s === 'string' && s !== '' && s === s.trim() && [...s].length <= MAX_EVENT_TEXT
+  return r.auction === undefined && r.odds.a === PROMISE_ODDS.a && r.odds.b === PROMISE_ODDS.b && r.amount === 0 && ok(p.author) && ok(p.taker)
+}
+
 // Гарант пари помечен «выбыл» или пометку сняли (Р-41), миг at. Пометка — молчание гаранта (guarantorAway).
 // Снятие: решение уже ушло от гаранта из-за пометки (нужен другой) — так и остаётся, как отказ в тот миг
 // (declinedAt); не ушло — гарант снова в игре
@@ -714,8 +782,11 @@ export function roomOffers(records: readonly OfferRecord[], room: RoomRoles): Of
       if (r.counterTo !== null) {
         const original = offers.get(r.counterTo)
         if (!original || r.to !== original.authorId || checkCounter(original, r.memberId, room, r.at)) continue
+        // Встречное — того же вида (Р-44): к пари на обещание — обещание, к пари на сумму — сумма
+        if ((original.promise === undefined) !== (r.promise === undefined)) continue
       }
       if (r.auction !== undefined && !auctionRecordOk(r, r.auction)) continue
+      if (r.promise !== undefined && !promiseRecordOk(r, r.promise)) continue
       // Гарант по умолчанию — ведущий на миг создания (Р-42): в записи он уже назван и со сменой ведения не меняется
       const roles = { ...room, hostId: hostAt(room, r.at) }
       const g = offerGuarantor({ to: r.to, guarantor: r.guarantor, noGuarantor: r.guarantor === null, subject: r.subject }, r.memberId, roles)
@@ -724,6 +795,7 @@ export function roomOffers(records: readonly OfferRecord[], room: RoomRoles): Of
       offers.set(r.id, {
         ...(times && { times }),
         ...(r.auction && { auction: { start: r.auction.start, step: r.auction.step, endsAt: r.closesAt, bids: [], taken: null } }),
+        ...(r.promise && { promise: { author: r.promise.author, taker: r.promise.taker } }),
         id: r.id,
         at: r.at,
         authorId: r.memberId,
@@ -899,6 +971,8 @@ export function offerOutcome(state: OfferState, now: number, court: CourtCase | 
 // offerAmounts: у торга (Р-37) — автора и принятого встречного; «не состоялось» не принято — пусто
 export function offerResult(state: OfferState, now: number, court: CourtCase | null = null): { memberId: string; net: number }[] {
   const o = offerAt(state, now)
+  // На обещание (Р-44) денег нет: исполнение — в «Расчёте», блок «Обещания» (settle.ts, roomPromises)
+  if (o.promise) return []
   const out = offerOutcome(o, now, court)
   if (!o.accepted || !out?.approved || out.phase !== 'final') return []
   const stakes = offerAmounts(o)
@@ -969,6 +1043,8 @@ export function offerRecord(e: OfferEntry): OfferRecord {
         ...(e.times !== undefined && { times: e.times }),
         // Торг (Р-37): у обычного пари поля нет
         ...(e.auction !== undefined && { auction: { start: e.auction.start, step: e.auction.step } }),
+        // На обещание (Р-44): у пари на сумму поля нет
+        ...(e.promise !== undefined && { promise: { author: e.promise.author, taker: e.promise.taker } }),
       }
   }
 }
@@ -1006,7 +1082,7 @@ export function logOffers(log: readonly LogEntry[]): OfferState[] {
 // Условия пари для ответа: сумма соперника — по кэфу (offerStakes); гарант — нынешний. Торг (Р-37):
 // сумма соперника — принятое встречное, до конца — лучшее, без встречных — старт (offerAmounts); кэф —
 // отношение сумм { a: сумма автора, b: сумма соперника } (только для показа); auction — старт, шаг и
-// «торг закончится не позже …»
+// «торг закончится не позже …». На обещание (Р-44): promise — обещания сторон, суммы — 0, кэф — PROMISE_ODDS
 export function offerInfo(o: OfferState): OfferInfo {
   const stakes = offerAmounts(o)
   const taker = stakes.ok ? stakes.value.taker : 0
@@ -1028,6 +1104,7 @@ export function offerInfo(o: OfferState): OfferInfo {
     subjectId: o.subject,
     guarantorRule: o.guarantorRule,
     ...(o.auction && { auction: { start: o.auction.start, step: o.auction.step, latestEnd: auctionLatestEnd(o) } }),
+    ...(o.promise && { promise: { author: o.promise.author, taker: o.promise.taker } }),
   }
 }
 

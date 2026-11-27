@@ -9,7 +9,7 @@ import { bestLotBid, lotOutcome, type LotState } from './lot'
 import { checkWithdraw, offerAt, offerOutcome, offerStatus, sideOf, type OfferState } from './offer'
 import { formatCountdown } from './date'
 import { hostSince, inPlay, inRoom, type LogEntry, type Member, type RoomState } from './room'
-import { roomSettlement, roomTransfers, type TransferRecord } from './settle'
+import { roomPromises, roomSettlement, roomTransfers, type PromiseRecord, type TransferRecord } from './settle'
 
 // Выйти (Р-40): отказ называет, что мешает, — первое по порядку
 export const HOST_LEAVES = 'Сначала передайте ведение'
@@ -22,6 +22,8 @@ export const openChoice = (choice: string) => `Есть вклад в идущи
 export const guarantorIn = (offer: string) => `Вы гарант незавершённого пари: ${offer}`
 export const jurorIn = (dispute: string) => `Вы в суде, решение ещё не собрано: ${dispute}`
 export const UNSETTLED = 'Не все ваши переводы «Расчёта» отмечены'
+// Обещание (Р-44) не получено — как неотмеченный перевод
+export const UNKEPT_PROMISE = 'Не все ваши обещания «Расчёта» отмечены «Получил»'
 // Вышедший: ключи его устройств больше не пускают; вернуться — по ссылке комнаты, впускает ведущий
 export const LEFT = 'Вы вышли из комнаты — вернуться можно по ссылке-приглашению, впустит ведущий'
 
@@ -74,6 +76,7 @@ export type LeaveRoom = {
   choices: readonly ChoiceState[]
   cases: readonly CourtCase[]
   transfers: readonly TransferRecord[]
+  promises?: readonly PromiseRecord[] // отметки обещаний (Р-44); нет — отметок нет
 }
 
 // Участник по номеру; нет — null
@@ -104,7 +107,7 @@ export function leaveRevocations(offers: readonly OfferState[], memberId: string
 // мешают. Ведущий — сначала передать ведение; незавершённое: ставка в событии, принятое пари стороной,
 // своё встречное в идущем торге, свой торг со встречными, лот продавцом или лучшей ставкой (после торга —
 // победителем), вклад в «Выбор», гарант пари, место в суде без голоса, пока решения нет; переводы — баланс
-// не ноль или перевод с ним ждёт подтверждения
+// не ноль или перевод с ним ждёт подтверждения; обещание (Р-44) с ним, ещё не «получено»
 export function checkLeave(room: LeaveRoom, memberId: string, now: number): string | null {
   const { state } = room
   const me = memberOf(state, memberId)
@@ -155,6 +158,11 @@ export function checkLeave(room: LeaveRoom, memberId: string, now: number): stri
     )
     if (balance !== 0 || pending) return UNSETTLED
   }
+  // Обещания (Р-44) — в любой комнате: своё или тебе, ещё не «получено»
+  const unkept = roomPromises(room.offers, room.cases, room.promises ?? [], now).some(
+    (p) => (p.from === memberId || p.to === memberId) && p.status !== 'received',
+  )
+  if (unkept) return UNKEPT_PROMISE
   return null
 }
 

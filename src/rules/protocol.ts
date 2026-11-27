@@ -17,7 +17,9 @@
 // суда, адреса …/host (взять) и …/members/<участник>/host (передать)
 // 13 — закрыть комнату (Р-43): room.closed в состоянии комнаты, адреса …/close и …/reopen, отказ «Комната
 // закрыта» на новые записи в закрытой
-export const PROTOCOL_VERSION = 13
+// 14 — пари «на обещание» (Р-44): promise у пари, promise и takerPromise в «Предложить пари» и во
+// встречном, promises в «Расчёте», адреса …/promises/<пари>/kept | received | rejected
+export const PROTOCOL_VERSION = 14
 
 // Ответ GET /health: сервер жив, его протокол и время (UTC, мс) — по нему закрываются сроки
 export type Health = { v: number; ok: true; time: number }
@@ -153,12 +155,27 @@ export type TransferView = {
   status: TransferStatusView
   changedAt: number
 }
-// Свод: режим комнаты, участники, переводы по порядку заведения, подсказка «кто кому» (from → to)
+// Обещание (Р-44): по окончательному пари на обещание offer (at — с какого мига исход окончательный)
+// проигравший from должен выигравшему to обещание text; «ждёт» / «Исполнил» (ждёт ответа выигравшего) /
+// «получено» / «не получено»; changedAt — миг последней смены состояния (до отметок — at)
+export type PromiseStatusView = 'waiting' | 'kept' | 'received' | 'rejected'
+export type PromiseView = {
+  offer: string
+  at: number
+  from: string
+  to: string
+  text: string
+  status: PromiseStatusView
+  changedAt: number
+}
+// Свод: режим комнаты, участники, переводы по порядку заведения, подсказка «кто кому» (from → to);
+// promises — обещания по порядку пари (Р-44; нет поля — обещаний к исполнению нет, и у сервера до выкатки)
 export type SettlementView = {
   mode: SettleModeView
   members: MemberSettlementView[]
   transfers: TransferView[]
   suggestions: { from: string; to: string; amount: number }[]
+  promises?: PromiseView[]
 }
 
 // Переводы на сервере (Р-32). Адреса — POST /rooms/<номер>/transfers и …/transfers/<перевод>/receive |
@@ -172,6 +189,11 @@ export type TransferResponse = { v: number; transfer: TransferView }
 // POST /rooms/<номер>/settle-mode { mode } — ведущий меняет режим «кто кому»
 export type SettleModeRequest = { v?: number; mode: SettleModeView; requestId?: string }
 export type SettleModeResponse = { v: number; settleMode: { id: string; at: number; by: string; mode: SettleModeView } }
+// Обещания на сервере (Р-44). POST /rooms/<номер>/promises/<пари>/kept — «Исполнил» (проигравший);
+// …/received — «Получил», …/rejected — «Не получил» (выигравший); { requestId? }: повтор — тот же ответ без
+// второй записи. Можно и в закрытой комнате, и «выбывшему». Ответ — обещание, каким оно стало
+export type PromiseActRequest = { v?: number; requestId?: string }
+export type PromiseResponse = { v: number; promise: PromiseView }
 
 // Пари один на один (этап 3, Р-04, Р-22; правила — offer.ts). Условия пари; сумма соперника —
 // сумма автора × b ÷ a вниз до целой единицы (считается, не хранится); guarantorId — гарант
@@ -200,8 +222,12 @@ export type OfferInfo = {
   // лучшее, без встречных — старт; odds — отношение сумм { a: amount, b: takerAmount }, только для
   // показа. У обычного пари поля нет
   auction?: AuctionInfo
+  // На обещание (Р-44): что сделает автор (author) и соперник (taker), если проиграет; amount и
+  // takerAmount тогда — 0, odds — { a: 1, b: 1 } (не показываются). У пари на сумму поля нет
+  promise?: PromiseTerms
 }
 export type AuctionInfo = { start: number; step: number; latestEnd: number }
+export type PromiseTerms = { author: string; taker: string }
 
 // Встречное в торге (Р-37): кто, когда, сколько ставит против суммы автора
 export type OfferBid = { id: string; at: number; by: string; amount: number }
@@ -458,7 +484,9 @@ export type ChoiceStakeResponse = { v: number; stake: ChoiceStakeAct; choice: Ch
 // guarantor не задан — ведущий; noGuarantor: true — без гаранта (Р-36; guarantor тогда не задают).
 // «Торг до …» (Р-37): auction { start, step? } вместо odds — старт (наименьшая сумма соперника) и шаг (не
 // задан — 10 % старта); только открытое; closesAt — конец торга (от 10 минут до 3 дней), expectedAt — не
-// раньше конца + 30 минут. requestId — номер запроса (ULID): повтор — то же пари и тот же ответ
+// раньше конца + 30 минут. На обещание (Р-44): promise — своё обещание (что сделаю, если проиграю),
+// takerPromise — соперника (не задано — то же); odds и amount тогда не смотрятся, торг — отказ.
+// requestId — номер запроса (ULID): повтор — то же пари и тот же ответ
 export type CreateOfferRequest = {
   v?: number
   condition: string
@@ -473,13 +501,17 @@ export type CreateOfferRequest = {
   guarantor?: string
   noGuarantor?: boolean
   subject?: string // о ком спор (Р-26); не задан — ни о ком
+  promise?: string
+  takerPromise?: string
   requestId?: string
 }
 export type CreateOfferResponse = { v: number; offer: OfferInfo }
 // POST …/offers/<пари>/counter — встречное: свои кэф и/или сумма (не заданы — исходного) и «приём до»;
 // гарант — выбор автора встречного (Р-36): guarantor — участник, noGuarantor: true — без гаранта, ни
 // того ни другого — гарант исходного (у исходного без гаранта — тоже без); остальное — исходного,
-// сторона — обратная, адресат — автор исходного. Ответ — новое пари
+// сторона — обратная, адресат — автор исходного. К пари на обещание (Р-44) — promise (своё; не задано —
+// что исходное просило от соперника) и takerPromise (автора исходного; не задано — его прежнее) вместо
+// odds и amount; к пари на сумму обещаний нет. Ответ — новое пари
 export type CounterOfferRequest = {
   v?: number
   odds?: { a: number; b: number }
@@ -487,6 +519,8 @@ export type CounterOfferRequest = {
   closesAt: number
   guarantor?: string
   noGuarantor?: boolean
+  promise?: string
+  takerPromise?: string
   requestId?: string
 }
 // POST …/offers/<пари>/accept и /revoke — принять и отозвать
@@ -1043,8 +1077,15 @@ function isOfferInfo(r: Record<string, unknown>): boolean {
     orNull(r.counterTo, 'string') &&
     orNull(r.subjectId, 'string') &&
     typeof r.guarantorRule === 'boolean' &&
-    optionalAuction(r.auction)
+    optionalAuction(r.auction) &&
+    optionalPromise(r.promise)
   )
+}
+
+// Обещания сторон (Р-44): нет поля — пари на сумму
+function optionalPromise(x: unknown): boolean {
+  const p = record(x)
+  return x === undefined || (!!p && strings(p, 'author', 'taker'))
 }
 
 // Условия торга (Р-37): нет поля — обычное пари
@@ -1307,12 +1348,23 @@ export function isSettlementView(x: unknown): x is SettlementView {
       (m) => strings(m, 'memberId') && isSettleSum(m.total) && isSettleSum(m.pending) && isSettleSum(m.inPlay) && numbers(m, 'sent', 'received', 'balance'),
     ) &&
     list(r.transfers, isTransferView) &&
-    list(r.suggestions, (s) => strings(s, 'from', 'to') && numbers(s, 'amount'))
+    list(r.suggestions, (s) => strings(s, 'from', 'to') && numbers(s, 'amount')) &&
+    (r.promises === undefined || list(r.promises, isPromiseView))
   )
+}
+
+const PROMISE_STATUSES: readonly unknown[] = ['waiting', 'kept', 'received', 'rejected']
+
+function isPromiseView(r: Record<string, unknown>): boolean {
+  return strings(r, 'offer', 'from', 'to', 'text') && numbers(r, 'at', 'changedAt') && PROMISE_STATUSES.includes(r.status)
 }
 
 export function isTransferResponse(x: unknown): x is TransferResponse {
   return recordIn(x, 'transfer', isTransferView)
+}
+
+export function isPromiseResponse(x: unknown): x is PromiseResponse {
+  return recordIn(x, 'promise', isPromiseView)
 }
 
 export function isSettleModeResponse(x: unknown): x is SettleModeResponse {
