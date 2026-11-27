@@ -117,6 +117,9 @@ import {
   type DropResponse,
   type LeaveRequest,
   type LeaveResponse,
+  isHostResponse,
+  type HostRequest,
+  type HostResponse,
 } from './rules/protocol'
 import { checkBackup, type Backup } from './rules/backup'
 
@@ -223,6 +226,17 @@ export function dropMember(
 ): Promise<Result<DropResponse>> {
   const action = 'members/' + encodeURIComponent(member) + (dropped ? '/drop' : '/restore')
   return call(roomUrl(server, roomId, action), post(request, key), isDropResponse)
+}
+
+// POST /rooms/<номер>/members/<участник>/host — ведущий передаёт ведение участнику в игре (Р-42)
+export function passHost(server: string, roomId: string, key: string, member: string, request: Omit<HostRequest, 'v'>): Promise<Result<HostResponse>> {
+  return call(roomUrl(server, roomId, 'members/' + encodeURIComponent(member) + '/host'), post(request, key), isHostResponse)
+}
+
+// POST /rooms/<номер>/host — участник в игре берёт ведение, если ведущий 7 дней не заходил (Р-42); отказ —
+// текстом сервера (срок — словами: часового пояса сервер не знает)
+export function takeHost(server: string, roomId: string, key: string, request: Omit<HostRequest, 'v'>): Promise<Result<HostResponse>> {
+  return call(roomUrl(server, roomId, 'host'), post(request, key), isHostResponse)
 }
 
 // POST /rooms/<номер>/invite — новая ссылка-приглашение; старая перестаёт работать

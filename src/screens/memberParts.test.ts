@@ -1,6 +1,22 @@
 import { describe, expect, it } from 'vitest'
 import type { LogEntry } from '../rules/room'
-import { dropAction, iAmDropped, inPlayMember, leftAt, lifeItems, memberMark, returnLine } from './memberParts'
+import {
+  dropAction,
+  hostTimes,
+  iAmDropped,
+  inPlayMember,
+  leftAt,
+  lifeItems,
+  memberMark,
+  passAction,
+  passQuestion,
+  returnLine,
+  seenLine,
+  takeLine,
+  takeQuestion,
+  takeRefusal,
+  takeState,
+} from './memberParts'
 
 const members = [
   { id: 'MA', name: 'Аня' },
@@ -56,5 +72,70 @@ describe('жизнь комнаты на сайте (Р-40, Р-41)', () => {
       { id: '01', at: 1000, text: 'Боря — вышел' },
     ])
     expect(lifeItems({ members }, [])).toEqual([])
+  })
+})
+
+describe('ведение на сайте (Р-42)', () => {
+  const DAY = 24 * 60 * 60 * 1000
+  const seenAt = Date.UTC(2026, 10, 20, 9)
+  const host = { seenAt, takeFrom: seenAt + 7 * DAY }
+
+  it('времена ведущего — из ответа комнаты; сервер без них — null', () => {
+    expect(hostTimes({ hostSeenAt: seenAt, hostTakeFrom: seenAt + 7 * DAY })).toEqual(host)
+    expect(hostTimes({})).toBeNull()
+    expect(hostTimes({ hostSeenAt: seenAt })).toBeNull()
+  })
+
+  it('«Передать ведение» — ведущему у тех, кто в игре, не у себя; не ведущему — ни у кого', () => {
+    expect(members.map((m) => passAction({ hostId: 'MA', memberId: 'MA' }, m))).toEqual([false, false, false, true])
+    expect(members.map((m) => passAction({ hostId: 'MA', memberId: 'MG' }, m))).toEqual([false, false, false, false])
+  })
+
+  it('подтверждение передачи: «Вы станете обычным участником»', () => {
+    expect(passQuestion('Гоша')).toContain('Передать ведение «Гоша»? Вы станете обычным участником')
+  })
+
+  it('«заходил» и «можно с» — местным временем', () => {
+    expect(seenLine(seenAt, 'UTC')).toBe('заходил 20.11.2026, 09:00')
+    expect(seenLine(seenAt, 'Europe/Moscow')).toBe('заходил 20.11.2026, 12:00')
+    expect(takeLine(seenAt + 7 * DAY, 'UTC')).toBe('Взять ведение можно с 27.11.2026, 09:00')
+  })
+
+  it('«Взять ведение»: 7 дней — кнопка, больше суток — подпись, раньше — ничего', () => {
+    const room = { hostId: 'MA', memberId: 'MG', members }
+    expect(takeState(room, host, seenAt + DAY)).toBeNull()
+    expect(takeState(room, host, seenAt + DAY + 1)).toEqual({ kind: 'wait', from: seenAt + 7 * DAY })
+    expect(takeState(room, host, seenAt + 7 * DAY - 1)).toEqual({ kind: 'wait', from: seenAt + 7 * DAY })
+    expect(takeState(room, host, seenAt + 7 * DAY)).toEqual({ kind: 'take' })
+  })
+
+  it('«Взять ведение» — не ведущему, не «выбыл» и не без времён с сервера', () => {
+    const late = seenAt + 8 * DAY
+    expect(takeState({ hostId: 'MA', memberId: 'MA', members }, host, late)).toBeNull()
+    expect(takeState({ hostId: 'MA', memberId: 'MV', members }, host, late)).toBeNull()
+    expect(takeState({ hostId: 'MA', memberId: 'MG', members }, null, late)).toBeNull()
+    expect(takeState({ hostId: 'MA', memberId: 'MX', members }, host, late)).toBeNull()
+  })
+
+  it('отказ сервера на «Взять ведение» — как есть; срок не настал — дата «можно с»', () => {
+    const refusal = 'Ведущий заходил 1 дн назад: взять ведение можно через 6 дн'
+    expect(takeRefusal(refusal, host, seenAt + DAY, 'UTC')).toBe(refusal + ' — можно с 27.11.2026, 09:00')
+    expect(takeRefusal('Ведение уже взял Гоша', host, seenAt + 8 * DAY, 'UTC')).toBe('Ведение уже взял Гоша')
+    expect(takeRefusal(refusal, null, seenAt, 'UTC')).toBe(refusal)
+  })
+
+  it('подтверждение «Взять ведение»: кто и с какого мига не заходил', () => {
+    expect(takeQuestion('Аня', seenAt, 'UTC')).toContain('Взять ведение? Ведущий «Аня» не заходил с 20.11.2026, 09:00')
+  })
+
+  it('«История»: передал и взял ведение, новое сверху', () => {
+    const log: LogEntry[] = [
+      { id: '07', at: seenAt - DAY, memberId: 'MA', type: 'host.passed', member: 'MG', requestId: 'R6' },
+      { id: '08', at: seenAt + 8 * DAY, memberId: 'MA', type: 'host.taken', from: 'MG', seenAt, requestId: 'R7' },
+    ]
+    expect(lifeItems({ members }, log, 'UTC')).toEqual([
+      { id: '08', at: seenAt + 8 * DAY, text: 'Участник Аня взял ведение: ведущий не заходил с 20.11.2026, 09:00' },
+      { id: '07', at: seenAt - DAY, text: 'Ведущий Аня передал ведение: Гоша' },
+    ])
   })
 })

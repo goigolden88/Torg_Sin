@@ -31,6 +31,7 @@ import { courts } from './shots/courts.ts'
 import { crash } from './shots/crash.ts'
 import { eventWidth } from './shots/event-width.ts'
 import { history } from './shots/history.ts'
+import { host } from './shots/host.ts'
 import { known } from './shots/known.ts'
 import { layout } from './shots/layout.ts'
 import { lots } from './shots/lots.ts'
@@ -227,6 +228,11 @@ const SCENARIOS: Scenario[] = [
     name: 'members',
     about: 'выйти и «выбыл»: участники до и после, подтверждение, комната и событие выбывшего, отказ в выходе, вышел, заявка-возврат, «История» (180–190)',
     perSize: (c, size) => members(c.cdp, size, c.startServer),
+  },
+  {
+    name: 'host',
+    about: 'ведение: участники до и после у ведущей и участника, «Передать ведение», «Взять ведение можно с …», «Взять ведение», «История» (191–199)',
+    perSize: (c, size) => host(c.cdp, size, c.startServer),
   },
   {
     name: 'layout',

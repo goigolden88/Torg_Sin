@@ -1355,6 +1355,15 @@ h3 {
   margin-left: auto;
 }
 
+/* Кнопки участника (Р-41, Р-42) — вместе справа; не влезли — переносятся, прижаты вправо */
+.member-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  padding-block: 0.25rem;
+}
+
 .member .member-confirm {
   flex-basis: 100%;
   margin: 0 0 0.5rem;

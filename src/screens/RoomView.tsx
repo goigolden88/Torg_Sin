@@ -8,12 +8,14 @@
 // «Пари» (OfferList), под ними — «Лоты» (LotList, Р-38), под ними — «Выбор» (ChoiceList, Р-39); прошедшее из
 // них — в «Истории», строка «История · N» под «Выбором». На iPhone в браузере —
 // заметка про экран «Домой» (HomeScreenNote). Внизу — «Скачать копию комнаты» (BackupBlock), под ней —
-// «Выйти из комнаты» (LeaveBlock, Р-40; ведущему — подпись «Сначала передайте ведение»). Жизнь комнаты
-// (Р-40, Р-41, Р-46; memberParts): у участника — «вышел» / «выбыл», ведущему — «Пометить „выбыл“» / «Снять
-// „выбыл“»; помеченному вверху — строка «Ведущий пометил вас „выбыл“…», кнопок нового в списках нет;
-// заявка-возврат вышедшего — «Похож на вышедшего…», «Вернуть его» / «Отклонить — это другой человек»
-import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
-import { admitRequest, changePace, dropMember, fetchBackup, fetchRequests, issueDeviceLink, leaveRoom, rejectRequest, renewInvite } from '../api'
+// «Выйти из комнаты» (LeaveBlock, Р-40; ведущему — «Чтобы выйти, сначала передайте ведение…» со ссылкой к
+// участникам). Жизнь комнаты (Р-40, Р-41, Р-46; memberParts): у участника — «вышел» / «выбыл», ведущему —
+// «Пометить „выбыл“» / «Снять „выбыл“»; помеченному вверху — строка «Ведущий пометил вас „выбыл“…», кнопок
+// нового в списках нет; заявка-возврат вышедшего — «Похож на вышедшего…», «Вернуть его» / «Отклонить — это
+// другой человек». Ведение (Р-42): под ведущим — «заходил …»; ведущему — «Передать ведение» у участника;
+// остальным — «Взять ведение» (7 дней не заходил) или «Взять ведение можно с …»
+import { useCallback, useEffect, useRef, useState, type FormEvent, type MouseEvent } from 'react'
+import { admitRequest, changePace, dropMember, fetchBackup, fetchRequests, issueDeviceLink, leaveRoom, passHost, rejectRequest, renewInvite, takeHost } from '../api'
 import { currencyLabel } from '../rules/currency'
 import { formatDate, formatDateTime } from '../rules/date'
 import { deviceLink, inviteLink } from '../rules/link'
@@ -36,25 +38,35 @@ import {
   dropAction,
   dropQuestion,
   DROPPED_NOTE,
-  HOST_CANNOT_LEAVE,
+  HOST_LEAVE,
   iAmDropped,
   LEAVE_CONFIRM,
   leftAt,
   memberMark,
+  PASS_LABEL,
+  passAction,
+  passQuestion,
   returnLine,
+  seenLine,
+  TAKE_LABEL,
+  takeLine,
+  takeQuestion,
+  takeRefusal,
+  takeState,
+  type HostTimes,
 } from './memberParts'
 import { OfferList } from './OfferList'
 import { PacePicker } from './PacePicker'
 import { draftTimes, PACE_CHANGE_NOTE, paceDraft, paceInput, paceLine, type PaceDraft } from './paceParts'
 import { balanceNote, isPoints, myTotalLine, settleHref } from './settleParts'
 import { usePoll } from './usePoll'
-import { useRoom, useServerNow, type Clock } from './useRoom'
+import { serverTime, useRoom, useServerNow, type Clock } from './useRoom'
 
 type Panel = 'none' | 'invite' | 'device'
 
 export function RoomView({ room, onUpdate, onLeft }: { room: SavedRoom; onUpdate: (room: SavedRoom) => void; onLeft: (id: string) => void }) {
   const [panel, setPanel] = useState<Panel>('none')
-  const { sync, clock, pace, refresh, save, latest } = useRoom(room, onUpdate)
+  const { sync, clock, pace, host, refresh, save, latest } = useRoom(room, onUpdate)
 
   useEscape(
     useCallback(() => setPanel('none'), []),
@@ -96,10 +108,10 @@ export function RoomView({ room, onUpdate, onLeft }: { room: SavedRoom; onUpdate
       )}
       {panel === 'device' && <DevicePanel room={room} isHost={isHost} onClose={() => setPanel('none')} />}
 
-      <h3>Участники</h3>
+      <h3 id="members">Участники</h3>
       <ul className="members">
         {room.members.map((m) => (
-          <Member key={m.id} room={room} member={m} onChanged={refresh} />
+          <Member key={m.id} room={room} member={m} host={host} now={serverTime(clock)} onChanged={refresh} />
         ))}
       </ul>
       <SettleBlock room={room} />
@@ -114,31 +126,65 @@ export function RoomView({ room, onUpdate, onLeft }: { room: SavedRoom; onUpdate
   )
 }
 
-const dropPending = new Map<string, PendingRequest>() // по комнате и участнику: повтор — тот же номер (Р-13)
+// по комнате, участнику и действию: повтор — тот же номер (Р-13)
+const memberPending = new Map<string, PendingRequest>()
 
-// Участник в списке: имя, «ведущий», «вы», «вышел» / «выбыл»; ведущему — «Пометить „выбыл“» / «Снять
-// „выбыл“» с подтверждением (dropAction). Отказ сервера — его текстом под строкой
-function Member({ room, member, onChanged }: { room: SavedRoom; member: SavedRoom['members'][number]; onChanged: () => Promise<void> }) {
-  const [asking, setAsking] = useState(false)
+type MemberAct = 'drop' | 'restore' | 'pass' | 'take'
+
+const CONFIRM_LABEL: Record<MemberAct, string> = { drop: 'Да, пометить', restore: 'Да, снять', pass: 'Да, передать', take: 'Да, взять' }
+
+// Участник в списке: имя, «ведущий», «вы», «вышел» / «выбыл»; под ведущим — «заходил <когда>» (Р-42). Ведущему —
+// «Пометить „выбыл“» / «Снять „выбыл“» (dropAction) и «Передать ведение» (passAction); остальным в строке
+// ведущего — «Взять ведение» (7 дней не заходил) или подпись «Взять ведение можно с …» (больше суток; takeState).
+// Всё — с подтверждением; отказ сервера — его текстом под строкой (на «Взять ведение» — с датой «можно с»)
+function Member({
+  room,
+  member,
+  host,
+  now,
+  onChanged,
+}: {
+  room: SavedRoom
+  member: SavedRoom['members'][number]
+  host: HostTimes | null
+  now: number
+  onChanged: () => Promise<void>
+}) {
+  const [asking, setAsking] = useState<MemberAct | null>(null)
   const [sending, setSending] = useState(false)
-  const [error, setError] = useState('')
+  const [error, setError] = useState<{ text: string; late: boolean } | null>(null)
   const busy = useRef(false)
-  const action = dropAction(room, member)
+  const drop = dropAction(room, member)
+  const pass = passAction(room, member)
+  const isHostRow = member.id === room.hostId
+  const take = isHostRow ? takeState(room, host, now) : null
   const mark = memberMark(member)
 
-  async function send() {
-    if (!action || busy.current) return
-    const slot = room.id + '/' + member.id
-    const request = requestFor(dropPending.get(slot) ?? null, formKey(room.id, member.id, action), ulid)
-    dropPending.set(slot, request)
+  async function send(act: MemberAct) {
+    if (busy.current) return
+    const slot = room.id + '/' + member.id + '/' + act
+    const request = requestFor(memberPending.get(slot) ?? null, formKey(room.id, member.id, act), ulid)
+    memberPending.set(slot, request)
     busy.current = true
     setSending(true)
-    setError('')
+    setError(null)
     try {
-      const res = await dropMember(room.server, room.id, room.key, member.id, action === 'drop', { requestId: request.requestId })
-      if (!res.ok) return setError(res.error)
-      dropPending.delete(slot)
-      setAsking(false)
+      const opts = { requestId: request.requestId }
+      const res =
+        act === 'pass'
+          ? await passHost(room.server, room.id, room.key, member.id, opts)
+          : act === 'take'
+            ? await takeHost(room.server, room.id, room.key, opts)
+            : await dropMember(room.server, room.id, room.key, member.id, act === 'drop', opts)
+      if (!res.ok) {
+        // 409 на «Взять ведение» — срок по времени сервера: свежие времена ведущего и к тексту — дата «можно с»
+        const late = act === 'take' && 'status' in res && res.status === 409
+        setError({ text: res.error, late })
+        if (late) await onChanged()
+        return
+      }
+      memberPending.delete(slot)
+      setAsking(null)
       await onChanged()
     } finally {
       busy.current = false
@@ -146,31 +192,57 @@ function Member({ room, member, onChanged }: { room: SavedRoom; member: SavedRoo
     }
   }
 
+  const question =
+    asking === 'pass'
+      ? passQuestion(member.name)
+      : asking === 'take'
+        ? takeQuestion(member.name, host?.seenAt ?? now)
+        : asking
+          ? dropQuestion(asking, member.name)
+          : ''
+  const label = asking === 'pass' ? PASS_LABEL : asking === 'take' ? TAKE_LABEL : asking ? DROP_LABEL[asking] : ''
+
   return (
     <li className="member">
       <span>{member.name}</span>
-      {member.id === room.hostId && <span className="badge">ведущий</span>}
+      {isHostRow && <span className="badge">ведущий</span>}
       {member.id === room.memberId && <span className="badge muted">вы</span>}
       {mark && <span className="badge muted">{mark}</span>}
-      {action && !asking && (
-        <button className="button secondary member-action" type="button" onClick={() => setAsking(true)}>
-          {DROP_LABEL[action]}
-        </button>
-      )}
-      {action && asking && (
-        <div className="confirm member-confirm" role="group" aria-label={DROP_LABEL[action] + '?'}>
-          <p>{dropQuestion(action, member.name)}</p>
-          <div className="row">
-            <button className="button" type="button" onClick={send} disabled={sending}>
-              {sending ? 'Минутку…' : action === 'drop' ? 'Да, пометить' : 'Да, снять'}
+      {!asking && (drop || pass || take?.kind === 'take') && (
+        <span className="member-action member-actions">
+          {drop && (
+            <button className="button secondary" type="button" onClick={() => setAsking(drop)}>
+              {DROP_LABEL[drop]}
             </button>
-            <button className="button secondary" type="button" onClick={() => setAsking(false)} disabled={sending}>
+          )}
+          {pass && (
+            <button className="button secondary" type="button" onClick={() => setAsking('pass')}>
+              {PASS_LABEL}
+            </button>
+          )}
+          {take?.kind === 'take' && (
+            <button className="button" type="button" onClick={() => setAsking('take')}>
+              {TAKE_LABEL}
+            </button>
+          )}
+        </span>
+      )}
+      {isHostRow && host && <span className="hint member-confirm">{seenLine(host.seenAt)}</span>}
+      {isHostRow && take?.kind === 'wait' && <span className="hint member-confirm">{takeLine(take.from)}</span>}
+      {asking && (
+        <div className="confirm member-confirm" role="group" aria-label={label + '?'}>
+          <p>{question}</p>
+          <div className="row">
+            <button className="button" type="button" onClick={() => send(asking)} disabled={sending}>
+              {sending ? 'Минутку…' : CONFIRM_LABEL[asking]}
+            </button>
+            <button className="button secondary" type="button" onClick={() => setAsking(null)} disabled={sending}>
               Не надо
             </button>
           </div>
         </div>
       )}
-      {error && <p className="error member-confirm">{error}</p>}
+      {error && <p className="error member-confirm">{error.late ? takeRefusal(error.text, host, now) : error.text}</p>}
     </li>
   )
 }
@@ -207,10 +279,22 @@ function LeaveBlock({ room, isHost, onLeft }: { room: SavedRoom; isHost: boolean
     }
   }
 
+  // Ведущему — ссылка к списку участников, где «Передать ведение» (Р-42): адрес — та же комната, экран
+  // прокручивается к «Участникам»
   if (isHost) {
+    const toMembers = (e: MouseEvent) => {
+      e.preventDefault()
+      document.getElementById('members')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }
     return (
       <section className="leave" aria-label="Выйти из комнаты">
-        <p className="hint">{HOST_CANNOT_LEAVE}</p>
+        <p className="hint">
+          {HOST_LEAVE.before}
+          <a href={'#/room/' + room.id} onClick={toMembers}>
+            {HOST_LEAVE.link}
+          </a>
+          {HOST_LEAVE.after}
+        </p>
       </section>
     )
   }

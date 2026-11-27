@@ -6,6 +6,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { fetchRoom } from '../api'
 import type { RoomPace } from '../rules/pace'
 import { store, withState, type SavedRoom } from '../store/db'
+import { hostTimes, type HostTimes } from './memberParts'
 import { statePace } from './paceParts'
 import { usePoll } from './usePoll'
 
@@ -19,6 +20,9 @@ const clocks = new Map<string, Clock>()
 // Темп комнаты (Р-35) — из последнего ответа сервера, тоже на комнату и только в памяти: на устройство не
 // пишется (запись комнаты та же). Сервер без темпа или ответа ещё не было — null (строки темпа нет)
 const paces = new Map<string, RoomPace | null>()
+// Когда ведущий заходил и с какого мига ведение можно взять (Р-42) — так же: на комнату, только в памяти;
+// сервер без них или ответа ещё не было — null (ни «заходил», ни «Взять ведение»)
+const hosts = new Map<string, HostTimes | null>()
 
 export const OFFLINE_SHOWN = 'Нет связи с сервером — показано последнее известное'
 
@@ -26,6 +30,7 @@ export function useRoom(room: SavedRoom, onUpdate: (room: SavedRoom) => void) {
   const [sync, setSync] = useState<Sync>({ state: 'busy' })
   const [clock, setClock] = useState<Clock | null>(() => clocks.get(room.id) ?? null)
   const [pace, setPace] = useState<RoomPace | null>(() => paces.get(room.id) ?? null)
+  const [host, setHost] = useState<HostTimes | null>(() => hosts.get(room.id) ?? null)
   const latest = useRef(room)
   latest.current = room
 
@@ -53,13 +58,16 @@ export function useRoom(room: SavedRoom, onUpdate: (room: SavedRoom) => void) {
     const p = statePace(res.value.room)
     paces.set(r.id, p)
     setPace(p)
+    const h = hostTimes(res.value.room)
+    hosts.set(r.id, h)
+    setHost(h)
     setSync({ state: 'ok' })
     save(withState(latest.current, res.value, Date.now()))
   }, [save])
 
   usePoll(refresh)
 
-  return { sync, clock, pace, refresh, save, latest }
+  return { sync, clock, pace, host, refresh, save, latest }
 }
 
 // Время сервера сейчас; ответа ещё не было — часы телефона (ставить без ответа сервера всё равно нельзя)
