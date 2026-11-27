@@ -36,6 +36,7 @@ import {
   isPaceResponse,
   isRoomStateResponse,
   isHostResponse,
+  isCloseResponse,
   isSettlementView,
   isSettleModeResponse,
   isTransferResponse,
@@ -133,6 +134,18 @@ describe('ответы комнат', () => {
     expect(isHostResponse({ v, host: { ...term, how: 'taken', previous: 'A', seenAt: 3 } })).toBe(true)
     expect(isHostResponse({ v, host: { ...term, how: 'taken' } })).toBe(false)
     expect(isHostResponse({ v, host: { ...term, previous: 'A', seenAt: '3' } })).toBe(false)
+  })
+  it('закрыть комнату (Р-43): закрыта — когда и кто, открыта — null, старый сервер — без поля; ответ на закрытие', () => {
+    const closed = { id: 'C', at: 7, by: 'M' }
+    expect(isRoomStateResponse({ ...state, room: { ...state.room, closed } })).toBe(true)
+    expect(isRoomStateResponse({ ...state, room: { ...state.room, closed: null } })).toBe(true)
+    expect(isRoomStateResponse({ ...state, room: { ...state.room, closed: { ...closed, at: '7' } } })).toBe(false)
+    expect(isRoomStateResponse({ ...state, room: { ...state.room, closed: true } })).toBe(false)
+    const v = PROTOCOL_VERSION
+    expect(isCloseResponse({ v, closed: { ...closed, closed: true } })).toBe(true)
+    expect(isCloseResponse({ v, closed: { ...closed, closed: false } })).toBe(true)
+    expect(isCloseResponse({ v, closed })).toBe(false)
+    expect(isCloseResponse({ closed: { ...closed, closed: true } })).toBe(false)
   })
   it('состояние комнаты: события и время сервера', () => {
     expect(isRoomStateResponse({ ...state, events: [view] })).toBe(true)

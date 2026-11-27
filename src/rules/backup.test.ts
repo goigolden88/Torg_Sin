@@ -83,6 +83,16 @@ describe('checkBackup', () => {
     expect(r.ok && foldLog(r.backup.log)?.hostId).toBe('M3')
   })
 
+  it('закрыть комнату (Р-43): записи room.closed и room.reopened — годные, как есть; закрыта после загрузки', () => {
+    const closed: LogEntry = { id: 'E6', at: 500, memberId: 'M1', type: 'room.closed', requestId: 'Q2' }
+    const reopened: LogEntry = { id: 'E7', at: 600, memberId: 'M1', type: 'room.reopened', requestId: 'Q3' }
+    const again: LogEntry = { id: 'E8', at: 700, memberId: 'M1', type: 'room.closed', requestId: 'Q4' }
+    const log = [created, host, bet, closed, reopened, again]
+    const r = checkBackup({ ...full, log }, 'full')
+    expect(r).toEqual({ ok: true, backup: { ...full, log } })
+    expect(r.ok && foldLog(r.backup.log)?.closed).toEqual({ id: 'E8', at: 700, by: 'M1' })
+  })
+
   it('лишние поля сверху (версия протокола ответа) в копию не попадают', () => {
     expect(checkBackup({ v: 6, ...full })).toEqual({ ok: true, backup: full })
   })

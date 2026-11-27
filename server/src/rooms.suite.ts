@@ -176,6 +176,7 @@ import { isDropResponse, isLeaveResponse, type AdmitResponse, type DropResponse,
 import { HOST_AWAY } from '../../src/rules/member'
 import { formatCountdown } from '../../src/rules/date'
 import { isHostResponse, type HostResponse } from '../../src/rules/protocol'
+import { isCloseResponse, type CloseResponse } from '../../src/rules/protocol'
 import * as P from '../../src/rules/pace'
 import { NORMAL_TIMES } from '../../src/rules/pace'
 import { isPaceResponse, type PaceResponse } from '../../src/rules/protocol'
@@ -5513,6 +5514,134 @@ export function roomsSuite(
         expect(court).toMatchObject({ hostId: borya.memberId, candidates: [dasha.memberId] })
         const draws = (await readLog(s.storage(id))).filter((e) => e.type === 'court.drawn')
         expect(draws).toEqual([expect.objectContaining({ memberId: borya.memberId, target: third.id })])
+      })
+
+      // Закрыть комнату (Р-43): …/close — закрыть, …/reopen — открыть снова
+      function closeRoom(s: TestServer, roomId: string, key: string, requestId?: string) {
+        return act(s, roomId, key, 'close', { requestId })
+      }
+      function reopenRoom(s: TestServer, roomId: string, key: string, requestId?: string) {
+        return act(s, roomId, key, 'reopen', { requestId })
+      }
+
+      it('закрыть: отказ называет, что открыто первым, — событие, пари, торг, лот, «Выбор»; не ведущему — 403', async () => {
+        type Setup = (s: TestServer, p: Room5) => Promise<string>
+        const cases: Setup[] = [
+          // Событие без ставок — тоже незавершённое
+          async (s, { room, vera }) => {
+            await ok(act(s, room.roomId, vera.key, 'events', eventForm(s)))
+            return M.openEvent('Вася пробежит 10 км')
+          },
+          // Непринятое и принятое пари
+          async (s, { room, borya, vera }) => {
+            await newOffer(s, room.roomId, borya.key, { to: vera.memberId })
+            return M.openOfferIn(CONDITION)
+          },
+          async (s, { room, borya, vera }) => {
+            const offer = await newOffer(s, room.roomId, borya.key, { to: vera.memberId })
+            await ok(act(s, room.roomId, vera.key, `offers/${offer.id}/accept`))
+            s.clock.now = offer.closesAt
+            return M.openOfferIn(CONDITION)
+          },
+          // Торг идёт
+          async (s, { room, borya, vera }) => {
+            const offer = await newOffer(s, room.roomId, vera.key, { odds: undefined, auction: { start: 100 } })
+            await ok(act(s, room.roomId, borya.key, `offers/${offer.id}/bid`, { amount: 100 }))
+            return M.openAuction(CONDITION)
+          },
+          // Лот и «Выбор»
+          async (s, { room, borya }) => {
+            await ok(act(s, room.roomId, borya.key, 'lots', lotForm(s)))
+            return M.openLotIn(LOT)
+          },
+          async (s, { room, vera }) => {
+            await ok(act(s, room.roomId, vera.key, 'choices', choiceForm(s)))
+            return M.openChoiceIn(QUESTION)
+          },
+        ]
+        for (const setup of cases) {
+          const s = await server()
+          const p = await room5(s)
+          const error = await setup(s, p)
+          await refused(closeRoom(s, p.room.roomId, p.borya.key), 403, M.ONLY_HOST_CLOSE)
+          await refused(closeRoom(s, p.room.roomId, p.room.key), 409, error)
+          expect((await readLog(s.storage(p.room.roomId))).some((e) => e.type === 'room.closed')).toBe(false)
+        }
+      })
+
+      it('закрыть, когда всё доиграно: у всех «закрыта» и когда; новые записи — «Комната закрыта», переводы — можно; открыть снова — как обычная', async () => {
+        const s = await server()
+        const { room, borya, vera, gosha } = await room5(s)
+        const id = room.roomId
+        // Доиграно: пари истекло, лот снят, событие отменено автором
+        const offer = await newOffer(s, id, borya.key, { to: vera.memberId })
+        const { event } = await ok<CreateEventResponse>(act(s, id, vera.key, 'events', eventForm(s)))
+        await ok(act(s, id, vera.key, `events/${event.id}/cancel`, {}))
+        const { lot } = await ok<LotResponse>(act(s, id, borya.key, 'lots', lotForm(s)))
+        await ok(act(s, id, borya.key, `lots/${lot.id}/withdraw`))
+        s.clock.now = offer.closesAt
+        expect((await stateOf(s, id, borya.key)).room.closed).toBeNull()
+        // Закрыть; повтор — тот же ответ, вторая запись не пишется
+        const requestId = ulid(s.clock.now)
+        const closed = await ok<CloseResponse>(closeRoom(s, id, room.key, requestId))
+        expect(isCloseResponse(closed)).toBe(true)
+        expect(closed.closed).toEqual({ id: expect.any(String), at: s.clock.now, by: room.memberId, closed: true })
+        const closedAt = s.clock.now
+        s.clock.now += 1000
+        expect(await ok(closeRoom(s, id, room.key, requestId))).toEqual(closed)
+        expect((await readLog(s.storage(id))).filter((e) => e.type === 'room.closed')).toHaveLength(1)
+        await refused(closeRoom(s, id, room.key), 409, M.ALREADY_CLOSED)
+        // У участника — «закрыта» и когда; история видна
+        const state = await stateOf(s, id, vera.key)
+        expect(state.room.closed).toEqual({ id: closed.closed.id, at: closedAt, by: room.memberId })
+        expect(state.offers?.map((o) => o.id)).toEqual([offer.id])
+        // Новые записи — отказ: событие, пари, лот, «Выбор», выйти, «выбыл», ведение, режим, темп, ссылки, заявки
+        const blocked: [string | undefined, string, Record<string, unknown>][] = [
+          [borya.key, 'events', eventForm(s)],
+          [borya.key, 'offers', offerForm(s, { to: vera.memberId })],
+          [borya.key, 'lots', lotForm(s)],
+          [vera.key, 'choices', choiceForm(s)],
+          [gosha.key, 'leave', {}],
+          [room.key, `members/${gosha.memberId}/drop`, {}],
+          [room.key, `members/${borya.memberId}/host`, {}],
+          [borya.key, 'host', {}],
+          [room.key, 'settle-mode', { mode: 'fewest' }],
+          [room.key, 'pace', { pace: 'fast' }],
+          [room.key, 'invite', {}],
+          [borya.key, 'device', {}],
+          [undefined, 'join', { invite: room.invite, name: 'Вова' }],
+        ]
+        const before = (await readLog(s.storage(id))).length
+        for (const [key, path, body] of blocked) await refused(act(s, id, key, path, body), 409, M.ROOM_CLOSED)
+        expect(await readLog(s.storage(id))).toHaveLength(before)
+        // Посторонним — прежние отказы: чужая ссылка и чужой ключ закрытость не видят
+        await refused(act(s, id, undefined, 'join', { invite: 'чужая', name: 'Вова' }), 403, BAD_LINK)
+        await refused(act(s, id, 'not-a-member-key', 'events', eventForm(s)), 403, WRONG_KEY)
+        // Переводы «Расчёта» отмечаются и в закрытой
+        const sent = await ok<TransferResponse>(act(s, id, borya.key, 'transfers', { to: vera.memberId, amount: 50 }))
+        await ok(act(s, id, vera.key, `transfers/${sent.transfer.id}/receive`))
+        await ok(act(s, id, gosha.key, 'transfers', { from: vera.memberId, amount: 20 }))
+        // Открыть снова — только ведущий; дальше — как обычная
+        await refused(reopenRoom(s, id, borya.key), 403, M.ONLY_HOST_CLOSE)
+        const reopened = await ok<CloseResponse>(reopenRoom(s, id, room.key))
+        expect(isCloseResponse(reopened)).toBe(true)
+        expect(reopened.closed).toEqual({ id: expect.any(String), at: s.clock.now, by: room.memberId, closed: false })
+        await refused(reopenRoom(s, id, room.key), 409, M.NOT_CLOSED)
+        expect((await stateOf(s, id, borya.key)).room.closed).toBeNull()
+        await ok(act(s, id, borya.key, 'events', eventForm(s)))
+        await member(s, room, 'Вова')
+        expect((await readLog(s.storage(id))).map((e) => e.type).filter((t) => t.startsWith('room.'))).toEqual(['room.created', 'room.closed', 'room.reopened'])
+      })
+
+      it('закрыть может нынешний ведущий: после передачи ведения прежний — 403', async () => {
+        const s = await server()
+        const { room, borya } = await room5(s)
+        const id = room.roomId
+        await ok(host(s, id, room.key, borya.memberId))
+        await refused(closeRoom(s, id, room.key), 403, M.ONLY_HOST_CLOSE)
+        await ok(closeRoom(s, id, borya.key))
+        await refused(reopenRoom(s, id, room.key), 403, M.ONLY_HOST_CLOSE)
+        await ok(reopenRoom(s, id, borya.key))
       })
     })
 
