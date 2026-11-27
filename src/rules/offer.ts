@@ -246,7 +246,7 @@ export function checkOfferInput(x: {
   check: unknown
   side?: unknown
   odds?: unknown
-  amount: unknown
+  amount?: unknown // у пари на обещание (Р-44) не нужна; у пари на сумму нет — отказ BAD_AMOUNT
   to?: unknown
   closesAt: unknown
   expectedAt: unknown
