@@ -140,6 +140,7 @@ import type {
   ChoiceStakeAct,
   ChoiceView,
   Clarification,
+  CloseResponse,
   CourtAct,
   DropResponse,
   HostResponse,
@@ -550,6 +551,9 @@ export type RoomAction =
   // Ведение (Р-42; правила — member.ts): ведущий передаёт участнику; участник берёт, если ведущий 7 дней не заходил
   | { type: 'passHost'; keyHash: string; member: string; requestId: string }
   | { type: 'takeHost'; keyHash: string; requestId: string }
+  // Закрыть комнату и открыть снова (Р-43; правила — checkClose, checkReopen в member.ts): ведущий
+  | { type: 'closeRoom'; keyHash: string; requestId: string }
+  | { type: 'reopenRoom'; keyHash: string; requestId: string }
   // События-пул: форма уже проверена (event.ts, checkEventInput); сроки — здесь, по времени сервера
   | { type: 'createEvent'; keyHash: string; input: EventInput; requestId: string }
   | { type: 'placeBet'; keyHash: string; event: string; outcome: string; amount: number; requestId: string }
@@ -632,6 +636,8 @@ export type ActionValues = {
   dropMember: { dropped: DropResponse['dropped'] }
   passHost: { host: HostResponse['host'] }
   takeHost: { host: HostResponse['host'] }
+  closeRoom: { closed: CloseResponse['closed'] }
+  reopenRoom: { closed: CloseResponse['closed'] }
   createEvent: { event: EventInfo }
   placeBet: { bet: BetInfo }
   clarifyEvent: { clarification: Clarification }
@@ -686,6 +692,8 @@ export async function act<K extends ActionType>(
   const a = action as RoomAction
   await drawDue(storage, now, seed)
   if ('keyHash' in a) await noteSeen(storage, a.keyHash, now)
+  const closed = await closedRefusal(storage, a)
+  if (closed) return closed
   let r: ActionResult
   switch (a.type) {
     case 'preview':
@@ -723,6 +731,12 @@ export async function act<K extends ActionType>(
       break
     case 'takeHost':
       r = await takeHost(storage, a, now)
+      break
+    case 'closeRoom':
+      r = await closeRoom(storage, a, now)
+      break
+    case 'reopenRoom':
+      r = await reopenRoom(storage, a, now)
       break
     case 'createEvent':
       r = await createEvent(storage, a, now)
@@ -828,6 +842,26 @@ export async function act<K extends ActionType>(
       break
   }
   return r as ActionResult<K>
+}
+
+// В закрытой комнате (Р-43) можно: чтение (что за комната по ссылке, заявки ведущему), отметки переводов
+// «Расчёта», закрыть (повтор — тот же ответ) и открыть снова
+const OPEN_IN_CLOSED: readonly ActionType[] = ['preview', 'requests', 'sendTransfer', 'receiveTransfer', 'answerTransfer', 'closeRoom', 'reopenRoom']
+
+// Комната закрыта, а действие пишет новую запись — 409 «Комната закрыта»; иначе null. Сначала — обычные
+// отказы доступа (чужой ключ, вышедший, заявка; у заявки на вход — ссылка), чтобы закрытость не видел
+// посторонний; ссылку для другого устройства в закрытой не использовать
+async function closedRefusal(storage: RoomStorage, a: RoomAction): Promise<Failure | null> {
+  if (OPEN_IN_CLOSED.includes(a.type)) return null
+  const state = foldLog(await readLog(storage))
+  if (!state || !member.checkOpen(state)) return null
+  if (a.type === 'join') {
+    if (!(await inviteValid(storage, a.invite))) return fail(403, BAD_LINK)
+  } else if (a.type !== 'claimDevice' && 'keyHash' in a) {
+    const c = await caller(storage, a.keyHash)
+    if (!c.ok) return c
+  }
+  return fail(409, member.ROOM_CLOSED)
 }
 
 async function inviteValid(storage: RoomStorage, given: string): Promise<boolean> {
@@ -1151,6 +1185,62 @@ async function takeHost(storage: RoomStorage, a: { keyHash: string; requestId: s
   const entry: HostEntry = { id: ulid(now), at: now, memberId: c.me, type: 'host.taken', from: c.state.hostId, seenAt, requestId: a.requestId }
   await append(storage, [entry])
   return ok({ host: hostOut(entry) })
+}
+
+// --- Закрыть комнату (Р-43). Правила — checkClose / checkReopen (member.ts); закрытость держит свёртка
+// комнаты, запрет новых записей в закрытой — closedRefusal в act
+
+type CloseEntry = Extract<LogEntry, { type: 'room.closed' | 'room.reopened' }>
+
+function closeOut(e: CloseEntry): CloseResponse['closed'] {
+  return { id: e.id, at: e.at, by: e.memberId, closed: e.type === 'room.closed' }
+}
+
+// Отказ: не ведущий — 403, «уже не то состояние» и незавершённое — 409
+function closeRefusal(error: string): Failure {
+  return fail(error === member.ONLY_HOST_CLOSE ? 403 : 409, error)
+}
+
+// Закрыть или открыть снова: повтор с тем же номером запроса — тот же ответ
+async function closeOrReopen(
+  storage: RoomStorage,
+  a: { keyHash: string; requestId: string },
+  type: CloseEntry['type'],
+  check: (c: Caller) => string | null,
+  now: number,
+): Promise<ActionResult<'closeRoom'>> {
+  const c = await caller(storage, a.keyHash)
+  if (!c.ok) return c
+  const again = byRequest(c.log, a.requestId)
+  if (again) return again.type === type && again.memberId === c.me ? ok({ closed: closeOut(again as CloseEntry) }) : fail(409, REQUEST_USED)
+  const refused = check(c)
+  if (refused) return closeRefusal(refused)
+  const entry: CloseEntry = { id: ulid(now), at: now, memberId: c.me, type, requestId: a.requestId }
+  await append(storage, [entry])
+  return ok({ closed: closeOut(entry) })
+}
+
+// Закрыть (checkClose): ведущий, когда нет незавершённого — отказ называет, что открыто, первым
+async function closeRoom(storage: RoomStorage, a: { keyHash: string; requestId: string }, now: number): Promise<ActionResult<'closeRoom'>> {
+  return closeOrReopen(
+    storage,
+    a,
+    'room.closed',
+    (c) => {
+      const events = roomEvents(c.log)
+      const offers = logOffers(c.log)
+      const lots = lot.logLots(c.log)
+      const choices = choice.logChoices(c.log)
+      const cases = appeal.logAppeals(c.log, { events, offers, lots })
+      return member.checkClose({ state: c.state, events, offers, lots, choices, cases, transfers: logTransfers(c.log) }, c.me, now)
+    },
+    now,
+  )
+}
+
+// Открыть снова (checkReopen): ведущий, закрытую
+async function reopenRoom(storage: RoomStorage, a: { keyHash: string; requestId: string }, now: number): Promise<ActionResult<'reopenRoom'>> {
+  return closeOrReopen(storage, a, 'room.reopened', (c) => member.checkReopen(c.state, c.me), now)
 }
 
 // Выбывший (Р-41) не начинает нового: отказ 403; в игре — null

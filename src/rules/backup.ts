@@ -59,6 +59,8 @@ const LOG_TYPES: Record<LogEntry['type'], true> = {
   'member.reinstated': true,
   'host.passed': true,
   'host.taken': true,
+  'room.closed': true,
+  'room.reopened': true,
   'invite.changed': true,
   'device.issued': true,
   'device.linked': true,
