@@ -42,7 +42,7 @@ import { BackLink, useEscape } from './BackLink'
 import { BidList } from './BidList'
 import { money, nameOf } from './eventParts'
 import { historyHref, offerPastNow } from './historyParts'
-import { iAmDropped } from './memberParts'
+import { mayStartNew } from './memberParts'
 import { OfferList } from './OfferList'
 import { OfferOutcome } from './OfferOutcome'
 import {
@@ -112,8 +112,8 @@ export function OfferScreen({ room, offerId, onUpdate }: { room: SavedRoom; offe
   const status = offerStatus(state, now)
   const online = sync.state === 'ok'
   // Помеченный «выбыл» (Р-41) нового не начинает: «Принять», «Встречное», встречное в торге и «Повторить»
-  // скрыты; отозвать своё, «Принять сейчас» в своём торге и исход — как раньше
-  const dropped = iAmDropped(room)
+  // скрыты; отозвать своё, «Принять сейчас» в своём торге и исход — как раньше. В закрытой комнате (Р-43) — так же
+  const dropped = !mayStartNew(room)
   const acceptRefusal = checkAccept(state, me, roles, now)
   const mayAccept = acceptRefusal === null && !dropped
   // Торг, который не состоялся (Р-37), уже закончен: отзывать нечего — вместо этого «Повторить»

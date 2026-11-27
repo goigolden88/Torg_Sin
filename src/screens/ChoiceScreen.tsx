@@ -34,7 +34,7 @@ import {
 } from './choiceParts'
 import { money, nameOf } from './eventParts'
 import { historyHref } from './historyParts'
-import { iAmDropped } from './memberParts'
+import { mayStartNew } from './memberParts'
 import { who } from './offerParts'
 import { serverTime, useRoom, useServerNow, type Clock } from './useRoom'
 
@@ -85,8 +85,8 @@ export function ChoiceScreen({ room, choiceId, onUpdate }: { room: SavedRoom; ch
   const out = choiceOutcomeOf(c, now)
   const croom = choiceRoomOf(room)
   // Правила: с пустым названием отказ — «нужно название», значит, остальное разрешено
-  // Помеченный «выбыл» (Р-41) вариантов не добавляет и не вкладывает
-  const dropped = iAmDropped(room)
+  // Помеченный «выбыл» (Р-41) вариантов не добавляет и не вкладывает; в закрытой комнате (Р-43) — никто
+  const dropped = !mayStartNew(room)
   const mayAdd = !dropped && checkChoiceOption(state, me, null, croom, now) === NEED_OPTION && c.options.length < MAX_CHOICE_OPTIONS
   const stakeable = dropped ? [] : c.options.filter((o) => checkChoiceStake(state, me, o.id, 1, croom, now) === null)
   const mine = myOption(c, me)

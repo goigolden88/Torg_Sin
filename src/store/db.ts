@@ -52,6 +52,9 @@ export type SavedRoom = {
   // Выборы — последнее известное с сервера (этап 7, Р-39), так же: поле только добавлено, версия базы та
   // же; у записей до него и у сервера до выбора поля нет — «выборов нет» до первого ответа сервера
   choices?: ChoiceView[]
+  // Комната закрыта (Р-43): когда (время сервера, UTC, мс) — как прислал сервер. Поле только добавлено,
+  // версия базы та же: у записей до него, у открытой и у сервера до выкатки поля нет — открыта
+  closedAt?: number
 }
 
 // Копия с сервера на устройстве — только то, что проходит проверку протокола: запись, сохранённая
@@ -88,13 +91,17 @@ export function savedSettlement(room: SavedRoom): SettlementView | null {
 
 // Ответ сервера о комнате поверх записанного на устройстве (с событиями, пари и сводом); syncedAt —
 // сейчас. Сервер без пари (до этапа 3) — пари нет; без свода (до этапа 5) — свода нет, прежний не остаётся;
-// без лотов (до этапа 7) — лотов нет; без выборов — выборов нет
+// без лотов (до этапа 7) — лотов нет; без выборов — выборов нет; открыта (или сервер до Р-43) — поля
+// closedAt нет, прежнее не остаётся
 export function withState(room: SavedRoom, state: RoomStateResponse, now: number): SavedRoom {
   const { room: s, members, events, settlement } = state
   const offers = state.offers ?? []
   const lots = state.lots ?? []
   const choices = state.choices ?? []
-  return { ...room, name: s.name, currency: s.currency, hostId: s.hostId, createdAt: s.createdAt, members, events, offers, lots, choices, settlement, syncedAt: now }
+  const next: SavedRoom = { ...room, name: s.name, currency: s.currency, hostId: s.hostId, createdAt: s.createdAt, members, events, offers, lots, choices, settlement, syncedAt: now }
+  if (s.closed) next.closedAt = s.closed.at
+  else delete next.closedAt
+  return next
 }
 
 // Заявка на вход по ссылке, которую ещё не впустили: ключ заявки откроет комнату, когда ведущий

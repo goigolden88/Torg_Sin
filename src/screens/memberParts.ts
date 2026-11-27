@@ -25,6 +25,30 @@ export function iAmDropped(room: Pick<SavedRoom, 'members' | 'memberId'>): boole
   return room.members.some((m) => m.id === room.memberId && m.dropped === true)
 }
 
+// Комната закрыта (Р-43) — по последнему ответу сервера (closedAt на устройстве)
+export function roomClosed(room: Pick<SavedRoom, 'closedAt'>): boolean {
+  return typeof room.closedAt === 'number'
+}
+
+// Начать новое (событие, пари, лот, «Выбор», ставку, вклад, встречное, «Повторить»): не помечен «выбыл» (Р-41)
+// и комната не закрыта (Р-43) — иначе кнопок нового нет
+export function mayStartNew(room: Pick<SavedRoom, 'members' | 'memberId' | 'closedAt'>): boolean {
+  return !iAmDropped(room) && !roomClosed(room)
+}
+
+// Подпись закрытой комнаты (Р-43): дата — местным временем
+export function closedNote(closedAt: number): string {
+  return `Комната закрыта ${formatDate(closedAt)}: только чтение и переводы`
+}
+
+export const CLOSE_LABEL = 'Закрыть комнату'
+export const REOPEN_LABEL = 'Открыть снова'
+export const CLOSE_CONFIRM =
+  'Закрыть комнату? Новых событий, пари, лотов, «Выборов», ставок и участников не будет — только история и отметки переводов. Открыть снова можно потом.'
+export const REOPEN_CONFIRM = 'Открыть комнату снова? В ней снова можно будет ставить, предлагать пари и впускать участников.'
+// Ведущему под кнопкой «Закрыть комнату»: когда можно
+export const CLOSE_HINT = 'Закрыть можно, когда всё доиграно: нет идущих событий, пари, торгов, лотов, «Выборов» и судов'
+
 // Ведущему у участника: пометить «выбыл» — у того, кто в игре; снять — у помеченного; у себя и у
 // вышедшего — ничего (сервер откажет: ведущего и вышедшего — 409)
 export function dropAction(room: Pick<SavedRoom, 'hostId' | 'memberId'>, m: RoomMember): 'drop' | 'restore' | null {
@@ -123,7 +147,8 @@ function nameIn(room: Pick<SavedRoom, 'members'>, id: string): string {
 }
 
 // «Боря — вышел», «Ведущий пометил „выбыл“: Вера», «Ведущий снял „выбыл“: Вера»; ведение (Р-42) — «Ведущий Лена
-// передал ведение: Костя», «Участник Вера взял ведение: ведущий не заходил с <дата>» из журнала комнаты
+// передал ведение: Костя», «Участник Вера взял ведение: ведущий не заходил с <дата>»; закрыть комнату (Р-43) —
+// «Ведущий Лена закрыл комнату», «Ведущий Лена открыл комнату снова» из журнала комнаты
 // (без рода: имя не говорит, «пометил» он или «пометила» — род у слов «ведущий», «участник»), новое сверху
 // (равные — по номеру записи)
 export function lifeItems(room: Pick<SavedRoom, 'members'>, log: readonly LogEntry[], timeZone?: string): LifeItem[] {
@@ -137,6 +162,8 @@ export function lifeItems(room: Pick<SavedRoom, 'members'>, log: readonly LogEnt
       const why = `ведущий не заходил с ${formatDateTime(e.seenAt, timeZone)}`
       items.push({ id: e.id, at: e.at, text: `Участник ${nameIn(room, e.memberId)} взял ведение: ${why}` })
     }
+    if (e.type === 'room.closed') items.push({ id: e.id, at: e.at, text: `Ведущий ${nameIn(room, e.memberId)} закрыл комнату` })
+    if (e.type === 'room.reopened') items.push({ id: e.id, at: e.at, text: `Ведущий ${nameIn(room, e.memberId)} открыл комнату снова` })
   }
   return items.sort((a, b) => b.at - a.at || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0))
 }

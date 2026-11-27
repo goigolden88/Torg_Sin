@@ -13,9 +13,11 @@
 // «Пометить „выбыл“» / «Снять „выбыл“»; помеченному вверху — строка «Ведущий пометил вас „выбыл“…», кнопок
 // нового в списках нет; заявка-возврат вышедшего — «Похож на вышедшего…», «Вернуть его» / «Отклонить — это
 // другой человек». Ведение (Р-42): под ведущим — «заходил …»; ведущему — «Передать ведение» у участника;
-// остальным — «Взять ведение» (7 дней не заходил) или «Взять ведение можно с …»
+// остальным — «Взять ведение» (7 дней не заходил) или «Взять ведение можно с …». Закрыть комнату (Р-43): над
+// «Скачать копию» ведущему — «Закрыть комнату» / «Открыть снова» (CloseBlock); в закрытой под названием — «Комната
+// закрыта <дата>: только чтение и переводы», кнопок нового, заявок, ссылок, темпа, «Выйти» и кнопок у участников нет
 import { useCallback, useEffect, useRef, useState, type FormEvent, type MouseEvent } from 'react'
-import { admitRequest, changePace, dropMember, fetchBackup, fetchRequests, issueDeviceLink, leaveRoom, passHost, rejectRequest, renewInvite, takeHost } from '../api'
+import { admitRequest, changePace, closeRoom, dropMember, fetchBackup, fetchRequests, issueDeviceLink, leaveRoom, passHost, rejectRequest, renewInvite, takeHost } from '../api'
 import { currencyLabel } from '../rules/currency'
 import { formatDate, formatDateTime } from '../rules/date'
 import { deviceLink, inviteLink } from '../rules/link'
@@ -34,6 +36,13 @@ import { HomeScreenNote } from './HomeScreenNote'
 import { LinkBox, siteUrl } from './LinkBox'
 import { LotList } from './LotList'
 import {
+  CLOSE_CONFIRM,
+  CLOSE_HINT,
+  CLOSE_LABEL,
+  closedNote,
+  REOPEN_CONFIRM,
+  REOPEN_LABEL,
+  roomClosed,
   DROP_LABEL,
   dropAction,
   dropQuestion,
@@ -74,6 +83,9 @@ export function RoomView({ room, onUpdate, onLeft }: { room: SavedRoom; onUpdate
   )
 
   const isHost = room.hostId === room.memberId
+  // Закрытая комната (Р-43): только чтение и переводы — заявок, ссылок, темпа, кнопок у участников и
+  // «Выйти» нет (сервер откажет «Комната закрыта»)
+  const closed = roomClosed(room)
   const toggle = (p: Panel) => setPanel((now) => (now === p ? 'none' : p))
 
   return (
@@ -83,30 +95,37 @@ export function RoomView({ room, onUpdate, onLeft }: { room: SavedRoom; onUpdate
       <p className="hint">
         Валюта: {currencyLabel(room.currency)} · создана {formatDate(room.createdAt)}
       </p>
+      {room.closedAt !== undefined && (
+        <p className="status closed" role="status">
+          {closedNote(room.closedAt)}
+        </p>
+      )}
       {sync.state === 'busy' && <p className="hint">Обновляю с сервера…</p>}
       {sync.state === 'fail' && <p className="error">{sync.text}</p>}
-      {iAmDropped(room) && (
+      {iAmDropped(room) && !closed && (
         <p className="error" role="status">
           {DROPPED_NOTE}
         </p>
       )}
-      <PaceBlock room={room} pace={pace} isHost={isHost} onChanged={refresh} />
+      <PaceBlock room={room} pace={pace} isHost={isHost && !closed} onChanged={refresh} />
       <HomeScreenNote room={room} />
 
-      {isHost && <Requests room={room} onAdmitted={refresh} />}
+      {isHost && !closed && <Requests room={room} onAdmitted={refresh} />}
 
-      <div className="row">
-        <button className="button" type="button" onClick={() => toggle('invite')} aria-expanded={panel === 'invite'}>
-          Пригласить
-        </button>
-        <button className="button secondary" type="button" onClick={() => toggle('device')} aria-expanded={panel === 'device'}>
-          Ссылка для другого устройства
-        </button>
-      </div>
-      {panel === 'invite' && (
+      {!closed && (
+        <div className="row">
+          <button className="button" type="button" onClick={() => toggle('invite')} aria-expanded={panel === 'invite'}>
+            Пригласить
+          </button>
+          <button className="button secondary" type="button" onClick={() => toggle('device')} aria-expanded={panel === 'device'}>
+            Ссылка для другого устройства
+          </button>
+        </div>
+      )}
+      {panel === 'invite' && !closed && (
         <Invite room={room} isHost={isHost} onRenewed={(invite) => save({ ...latest.current, invite })} onClose={() => setPanel('none')} />
       )}
-      {panel === 'device' && <DevicePanel room={room} isHost={isHost} onClose={() => setPanel('none')} />}
+      {panel === 'device' && !closed && <DevicePanel room={room} isHost={isHost} onClose={() => setPanel('none')} />}
 
       <h3 id="members">Участники</h3>
       <ul className="members">
@@ -120,9 +139,80 @@ export function RoomView({ room, onUpdate, onLeft }: { room: SavedRoom; onUpdate
       <LotList room={room} clock={clock} />
       <ChoiceList room={room} clock={clock} />
       <HistoryLink room={room} clock={clock} />
+      {isHost && <CloseBlock room={room} closed={closed} onChanged={refresh} />}
       <BackupBlock room={room} />
-      <LeaveBlock room={room} isHost={isHost} onLeft={onLeft} />
+      {!closed && <LeaveBlock room={room} isHost={isHost} onLeft={onLeft} />}
     </div>
+  )
+}
+
+const closePending = new Map<string, PendingRequest>() // по комнате и действию: повтор — тот же номер (Р-13)
+
+// Ведущему (Р-43): «Закрыть комнату» с подтверждением — отказ сервера (что ещё открыто) его текстом;
+// в закрытой — «Открыть снова» с подтверждением. Ответ — свежее состояние комнаты с сервера
+function CloseBlock({ room, closed, onChanged }: { room: SavedRoom; closed: boolean; onChanged: () => Promise<void> }) {
+  const [asking, setAsking] = useState(false)
+  const [sending, setSending] = useState(false)
+  const [error, setError] = useState('')
+  const busy = useRef(false)
+  const act = closed ? 'reopen' : 'close'
+
+  async function send() {
+    if (busy.current) return
+    const slot = room.id + '/' + act
+    const request = requestFor(closePending.get(slot) ?? null, formKey(room.id, act), ulid)
+    closePending.set(slot, request)
+    busy.current = true
+    setSending(true)
+    setError('')
+    try {
+      const res = await closeRoom(room.server, room.id, room.key, !closed, { requestId: request.requestId })
+      if (!res.ok) return setError(res.error)
+      closePending.delete(slot)
+      setAsking(false)
+      await onChanged()
+    } finally {
+      busy.current = false
+      setSending(false)
+    }
+  }
+
+  const label = closed ? REOPEN_LABEL : CLOSE_LABEL
+  return (
+    <section className="leave" aria-label={label}>
+      {asking ? (
+        <div className="confirm" role="group" aria-label={label + '?'}>
+          <p>{closed ? REOPEN_CONFIRM : CLOSE_CONFIRM}</p>
+          <div className="row">
+            <button className="button" type="button" onClick={send} disabled={sending}>
+              {sending ? 'Минутку…' : closed ? 'Да, открыть' : 'Да, закрыть'}
+            </button>
+            <button className="button secondary" type="button" onClick={() => setAsking(false)} disabled={sending}>
+              Не надо
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="row">
+          <button
+            className="button secondary"
+            type="button"
+            onClick={() => {
+              setError('')
+              setAsking(true)
+            }}
+          >
+            {label}
+          </button>
+        </div>
+      )}
+      {!closed && !asking && <p className="hint">{CLOSE_HINT}</p>}
+      {error && (
+        <p className="error" role="alert">
+          {error}
+        </p>
+      )}
+    </section>
   )
 }
 
@@ -154,10 +244,12 @@ function Member({
   const [sending, setSending] = useState(false)
   const [error, setError] = useState<{ text: string; late: boolean } | null>(null)
   const busy = useRef(false)
-  const drop = dropAction(room, member)
-  const pass = passAction(room, member)
+  // В закрытой комнате (Р-43) кнопок у участников нет
+  const closed = roomClosed(room)
+  const drop = closed ? null : dropAction(room, member)
+  const pass = closed ? null : passAction(room, member)
   const isHostRow = member.id === room.hostId
-  const take = isHostRow ? takeState(room, host, now) : null
+  const take = isHostRow && !closed ? takeState(room, host, now) : null
   const mark = memberMark(member)
 
   async function send(act: MemberAct) {
