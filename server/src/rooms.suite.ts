@@ -482,6 +482,8 @@ export function roomsSuite(
             hosts: [{ id: expect.any(String), member: created.memberId, from: s.clock.now, how: 'created', by: created.memberId }],
             hostSeenAt: s.clock.now,
             hostTakeFrom: s.clock.now + HOST_AWAY,
+            // Открыта (Р-43)
+            closed: null,
           },
           // Вышел и «выбыл» (Р-40, Р-41) — у каждого участника
           members: [{ id: created.memberId, name: 'Аня', left: false, dropped: false }],
