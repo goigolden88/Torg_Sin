@@ -27,6 +27,7 @@ import { Cdp, launchChrome, OUT, PASSWORD, PORT, SIZES, WIDE, type RoomsServer, 
 import { auction } from './shots/auction.ts'
 import { backup } from './shots/backup.ts'
 import { choices } from './shots/choices.ts'
+import { close } from './shots/close.ts'
 import { courts } from './shots/courts.ts'
 import { crash } from './shots/crash.ts'
 import { eventWidth } from './shots/event-width.ts'
@@ -233,6 +234,11 @@ const SCENARIOS: Scenario[] = [
     name: 'host',
     about: 'ведение: участники до и после у ведущей и участника, «Передать ведение», «Взять ведение можно с …», «Взять ведение», «История» (191–199)',
     perSize: (c, size) => host(c.cdp, size, c.startServer),
+  },
+  {
+    name: 'close',
+    about: 'закрыть комнату: подтверждение, отказ — что открыто, закрыта у ведущей и участника, «Мои комнаты», «История», открыть снова (200–206)',
+    perSize: (c, size) => close(c.cdp, size, c.startServer),
   },
   {
     name: 'layout',
