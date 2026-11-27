@@ -8,6 +8,7 @@
 // Рядом (от 1280 px) или ниже — список выборов комнаты (ChoiceList). Прошедший выбор — «Назад» в «Историю»
 import { useCallback, useRef, useState, type FormEvent, type MutableRefObject } from 'react'
 import { addChoiceOption, stakeChoice, type Result } from '../api'
+import type { ChatNews } from '../rules/chat'
 import { checkChoiceOption, checkChoiceStake, choiceDebts, checkOptionTitle, MAX_CHOICE_OPTION, MAX_CHOICE_OPTIONS, NEED_OPTION } from '../rules/choice'
 import { currency as currencyOf, isCurrencyCode, parseAmount } from '../rules/currency'
 import { formatDateTime } from '../rules/date'
@@ -32,9 +33,10 @@ import {
   stakeAskText,
   winnerLine,
 } from './choiceParts'
+import { ChatButton } from './ChatButton'
 import { money, nameOf } from './eventParts'
 import { historyHref } from './historyParts'
-import { mayStartNew } from './memberParts'
+import { mayCallChat, mayStartNew } from './memberParts'
 import { who } from './offerParts'
 import { serverTime, useRoom, useServerNow, type Clock } from './useRoom'
 
@@ -193,6 +195,7 @@ export function ChoiceScreen({ room, choiceId, onUpdate }: { room: SavedRoom; ch
           <StakePanel key={'s' + round} room={room} choice={c} options={stakeable.map((o) => o.id)} mine={mine} clock={clock} busy={busy} online={online} onAsk={setAsk} />
         )}
         {(mayAdd || stakeable.length > 0) && !online && <p className="hint">Действия — когда есть связь с сервером.</p>}
+        {mayCallChat(room) && <ChatButton room={room} screen={{ kind: 'choice', id: c.id }} news={choiceNews(c, out.status, out.winner)} />}
 
         <div className="offer-summary" aria-label="Как это работает">
           {choiceHowLines(nameOf(room, c.recipientId) + (c.cashbox ? ' — касса' : '')).map((line) => (
@@ -220,6 +223,17 @@ export function ChoiceScreen({ room, choiceId, onUpdate }: { room: SavedRoom; ch
     </div>
   )
 }
+
+// Сообщение «Позвать в чат»: всего вложено и вариант — победивший у решённого, иначе с наибольшей суммой
+// (вкладов нет — никакой)
+function choiceNews(c: ChoiceView, status: ChoiceNewsState, winner: string | null): ChatNews {
+  const total = c.options.reduce((s, o) => s + o.total, 0)
+  const top = c.options.reduce<ChoiceView['options'][number] | null>((best, o) => (o.total > (best?.total ?? 0) ? o : best), null)
+  const lead = status === 'decided' ? (c.options.find((o) => o.id === winner) ?? null) : top
+  return { kind: 'choice', question: c.question, state: status, total, lead: lead && { title: lead.title, total: lead.total } }
+}
+
+type ChoiceNewsState = Extract<ChatNews, { kind: 'choice' }>['state']
 
 // «Добавить вариант» в фазе вариантов: название; проверка — checkChoiceOption на часах сервера; окно
 // подтверждения («вариант не удалить»)

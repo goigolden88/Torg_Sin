@@ -40,9 +40,10 @@ import { ulid } from '../rules/ulid'
 import { savedOffers, type SavedRoom } from '../store/db'
 import { BackLink, useEscape } from './BackLink'
 import { BidList } from './BidList'
+import { ChatButton } from './ChatButton'
 import { money, nameOf } from './eventParts'
 import { historyHref, offerPastNow } from './historyParts'
-import { mayStartNew } from './memberParts'
+import { mayCallChat, mayStartNew } from './memberParts'
 import { OfferList } from './OfferList'
 import { OfferOutcome } from './OfferOutcome'
 import {
@@ -352,6 +353,23 @@ export function OfferScreen({ room, offerId, onUpdate }: { room: SavedRoom; offe
         <OfferOutcome room={room} offer={offer} now={now} online={online} onAsk={setAsk} />
 
         {counters.length > 0 && <Counters room={room} offer={offer} counters={counters} now={now} />}
+        {mayCallChat(room) && (
+          <ChatButton
+            room={room}
+            screen={{ kind: 'offer', id: offer.id }}
+            news={{
+              kind: 'offer',
+              author: nameOf(room, offer.authorId),
+              condition: offer.condition,
+              odds: offer.odds,
+              amount: offer.amount,
+              state: status === 'open' ? 'open' : status === 'accepted' ? 'accepted' : 'other',
+              ...(auction && { auction: { start: auction.start, best: o.bidding?.best?.amount ?? null } }),
+              ...(status === 'accepted' && stakes && { bank: stakes.bank }),
+              ...(status === 'accepted' && { taker: nameOf(room, offer.accepted?.by ?? o.bidding?.best?.by ?? null) }),
+            }}
+          />
+        )}
       </div>
       <div className="event-side">
         <OfferList room={room} clock={clock} current={offer.id} />

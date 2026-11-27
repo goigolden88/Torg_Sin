@@ -208,6 +208,7 @@ export function OfferOutcome({
         room={room}
         kind="offer"
         target={offer.id}
+        title={offer.condition}
         dispute={{ kind: 'offer', offer: state }}
         c={court}
         now={now}

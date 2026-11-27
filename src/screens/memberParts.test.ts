@@ -4,6 +4,7 @@ import type { LogEntry } from '../rules/room'
 import {
   closedNote,
   dropAction,
+  mayCallChat,
   mayStartNew,
   roomClosed,
   hostTimes,
@@ -50,6 +51,11 @@ describe('жизнь комнаты на сайте (Р-40, Р-41)', () => {
     expect(mayStartNew({ members, memberId: 'MG', closedAt })).toBe(false)
     expect(mayStartNew({ members, memberId: 'MA', closedAt })).toBe(false)
     expect(closedNote(closedAt)).toBe(`Комната закрыта ${formatDate(closedAt)}: только чтение и переводы`)
+  })
+
+  it('«Позвать в чат» (#150): тому, кто в игре, и в закрытой комнате; вышедшему, «выбыл» и не участнику — нет', () => {
+    expect(members.map((m) => mayCallChat({ members, memberId: m.id }))).toEqual([true, false, false, true])
+    expect(mayCallChat({ members, memberId: 'MX' })).toBe(false)
   })
 
   it('кнопка ведущего: пометить — тому, кто в игре; снять — помеченному; себе, вышедшему и не ведущему — нет', () => {

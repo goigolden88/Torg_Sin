@@ -16,6 +16,8 @@ import { formKey, requestFor, type PendingRequest } from '../rules/request'
 import { ulid } from '../rules/ulid'
 import { savedChoices, savedEvents, savedLots, savedOffers, savedSettlement, type SavedRoom } from '../store/db'
 import { BackLink, useEscape } from './BackLink'
+import { ChatButton } from './ChatButton'
+import { mayCallChat } from './memberParts'
 import { choiceDebtLine, choiceDebtsOf, choiceHref, type ChoiceDebt } from './choiceParts'
 import { nameOf } from './eventParts'
 import { lotDebtLine, lotDebts, lotHref, type LotDebt } from './lotParts'
@@ -161,6 +163,17 @@ export function SettleScreen({ room, onUpdate }: { room: SavedRoom; onUpdate: (r
         <LotDebts room={room} debts={lotDebts(room, lots, now)} />
         <ChoiceDebts room={room} debts={choiceDebtsOf(choices, now)} />
         {!points && <ModeLine settlement={s} change={change} online={online} onChange={() => setAsk({ kind: 'mode' })} />}
+        {mayCallChat(room) && (
+          <ChatButton
+            room={room}
+            screen={{ kind: 'settle' }}
+            news={
+              points
+                ? { kind: 'points', room: room.name, totals: byTotal(s.members).map((m) => ({ name: nameOf(room, m.memberId), amount: m.total.amount })) }
+                : { kind: 'settle', room: room.name, transfers: s.suggestions.map((t) => ({ from: nameOf(room, t.from), to: nameOf(room, t.to), amount: t.amount })) }
+            }
+          />
+        )}
       </div>
 
       {!points && (
