@@ -137,7 +137,7 @@ export class Device {
   private cdp: Cdp
   private session: string
   private size: Size
-  private name: string
+  readonly name: string
 
   private constructor(cdp: Cdp, session: string, size: Size, name: string) {
     this.cdp = cdp
@@ -412,6 +412,20 @@ export async function confirmTwice(device: Device, done: string): Promise<void> 
     button.click()
   })()`)
   await device.waitText(done)
+}
+
+// «Позвать в чат» (#150): у устройства с буфером обмена (Device.open, clipboard). «Поделиться» убирается —
+// путь «Скопировано»; в буфере — ровно message (неразрывные пробелы сумм — как обычные); кнопка не ниже 44 px
+export async function chatCall(device: Device, message: string): Promise<void> {
+  await device.eval(`Object.defineProperty(navigator, 'share', { value: undefined, configurable: true })`)
+  const height = await device.eval<number>(
+    `[...document.querySelectorAll('button')].find((b) => b.offsetParent !== null && b.innerText.trim() === 'Позвать в чат')?.getBoundingClientRect().height ?? 0`,
+  )
+  if (height < 44) throw new Error(`${device.name}: «Позвать в чат» — ${height} px, а нужно не ниже 44`)
+  await device.press('Позвать в чат')
+  await device.waitText('Скопировано — вставьте в чат компании')
+  const copied = await device.eval<string>(`navigator.clipboard.readText().then((t) => t.replace(/\\u00a0/g, ' '))`)
+  if (copied !== message) throw new Error(`${device.name}: в буфере «${copied}», а ждали «${message}»`)
 }
 
 // Где стоит карточка открытого: ширина, поля слева и справа от неё до краёв области справа от

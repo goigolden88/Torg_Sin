@@ -20,11 +20,12 @@ import { ulid } from '../rules/ulid'
 import { savedLots, type SavedRoom } from '../store/db'
 import { BackLink, useEscape } from './BackLink'
 import { BidList } from './BidList'
+import { ChatButton } from './ChatButton'
 import { CourtBlock } from './CourtBlock'
 import { money, nameOf } from './eventParts'
 import { historyHref } from './historyParts'
 import { LotList, LotStatusLine } from './LotList'
-import { mayStartNew } from './memberParts'
+import { mayCallChat, mayStartNew } from './memberParts'
 import {
   afterLine,
   LOT_COURT_WHY,
@@ -277,6 +278,7 @@ export function LotScreen({ room, lotId, onUpdate }: { room: SavedRoom; lotId: s
               room={room}
               kind="lot"
               target={l.id}
+              title={l.title}
               dispute={{ kind: 'lot', lot: state }}
               c={c}
               now={now}
@@ -287,6 +289,21 @@ export function LotScreen({ room, lotId, onUpdate }: { room: SavedRoom; lotId: s
               onAsk={setAsk}
             />
           </section>
+        )}
+        {mayCallChat(room) && (
+          <ChatButton
+            room={room}
+            screen={{ kind: 'lot', id: l.id }}
+            news={{
+              kind: 'lot',
+              seller,
+              title: l.title,
+              // Продан — победитель есть и лот не сорвался («Не смогу передать», суд «не передано»)
+              state: open ? 'open' : winner && out.status !== 'failed' && out.status !== 'undelivered' ? 'sold' : 'other',
+              start: l.start,
+              best: winner ? winner.amount : (best?.amount ?? null),
+            }}
+          />
         )}
       </div>
       <div className="event-side">

@@ -230,6 +230,7 @@ export function EventOutcome({
           room={room}
           kind="event"
           target={event.id}
+          title={event.condition}
           dispute={dispute}
           c={court}
           now={now}

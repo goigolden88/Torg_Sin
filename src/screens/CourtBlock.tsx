@@ -27,8 +27,10 @@ import { MAX_EVENT_TEXT } from '../rules/event'
 import type { CourtSeat, CourtVerdict } from '../rules/protocol'
 import { formKey } from '../rules/request'
 import type { SavedRoom } from '../store/db'
+import { ChatButton } from './ChatButton'
 import { courtRoomOf } from './courtParts'
 import { nameOf } from './eventParts'
+import { mayCallChat } from './memberParts'
 import { capital, spanText, viewTimes } from './paceParts'
 
 // Окно подтверждения: вопрос, основание строками, кнопка и запрос с номером
@@ -47,6 +49,7 @@ export function CourtBlock({
   room,
   kind,
   target,
+  title,
   dispute,
   c,
   now,
@@ -59,6 +62,7 @@ export function CourtBlock({
   room: SavedRoom
   kind: CourtKind
   target: string // номер события, пари или лота
+  title: string // условие события и пари, название лота — для «Позвать в чат»
   dispute: CourtTarget // спор для правил (eventState / offerState / lotState; у лота апелляции нет — только суд)
   c: CourtCase | null // дело суда из ответа (courtCaseOf)
   now: number
@@ -291,6 +295,9 @@ export function CourtBlock({
           ) : (
             <p className="hint">Голосов: {state.seats.filter((s) => s.vote).length} из {state.seats.length}.</p>
           )}
+
+          {/* Суд ждёт голосов — «Позвать в чат» (#150): сообщение без имён, ссылка на этот спор */}
+          {!decision && mayCallChat(room) && <ChatButton room={room} screen={{ kind, id: target }} news={{ kind: 'court', target: kind, title }} />}
 
           {verdicts.length > 0 && mySeat && (
             <div className="outcome-act" role="group" aria-label="Ваш голос">

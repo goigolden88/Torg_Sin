@@ -36,6 +36,13 @@ export function mayStartNew(room: Pick<SavedRoom, 'members' | 'memberId' | 'clos
   return !iAmDropped(room) && !roomClosed(room)
 }
 
+// «Позвать в чат» (#150): только тому, кто в игре; вышедшему (Р-40) и помеченному «выбыл» (Р-41) — нет.
+// Закрытая комната (Р-43) не мешает: «Расчёт» с переводами в ней идёт
+export function mayCallChat(room: Pick<SavedRoom, 'members' | 'memberId'>): boolean {
+  const me = room.members.find((m) => m.id === room.memberId)
+  return !!me && inPlayMember(me)
+}
+
 // Подпись закрытой комнаты (Р-43): дата — местным временем
 export function closedNote(closedAt: number): string {
   return `Комната закрыта ${formatDate(closedAt)}: только чтение и переводы`

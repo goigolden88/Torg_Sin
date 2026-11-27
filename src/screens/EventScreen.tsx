@@ -29,10 +29,11 @@ import { ulid } from '../rules/ulid'
 import { savedEvents, type SavedRoom } from '../store/db'
 import { BackLink, useEscape } from './BackLink'
 import { ChanceChart } from './ChanceChart'
+import { ChatButton } from './ChatButton'
 import { money, nameOf, StatusLine, SubjectFlag } from './eventParts'
 import { EventOutcome } from './EventOutcome'
 import { eventPastAt, historyHref } from './historyParts'
-import { DROPPED_NOTE, iAmDropped } from './memberParts'
+import { DROPPED_NOTE, iAmDropped, mayCallChat } from './memberParts'
 import { useRoom, useServerNow, type Sync } from './useRoom'
 
 type Ask = { outcome: string; units: number }
@@ -149,6 +150,13 @@ export function EventScreen({ room, eventId, onUpdate }: { room: SavedRoom; even
         )}
 
         <Position room={room} event={event} />
+        {mayCallChat(room) && (
+          <ChatButton
+            room={room}
+            screen={{ kind: 'event', id: event.id }}
+            news={{ kind: 'event', condition: event.condition, bank: poolOdds(event.outcomes.map((o) => o.id), event.bets).bank, state: status }}
+          />
+        )}
       </div>
       <div className="event-side">
         <ChanceChart room={room} event={event} now={now} />
