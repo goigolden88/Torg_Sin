@@ -101,6 +101,7 @@ import {
   GUARANTOR_TAKES,
   isOfferEntry,
   logOffers,
+  MONEY_COUNTER,
   NO_GUARANTOR_CHOSEN,
   NO_OFFER,
   NOT_ADDRESSEE,
@@ -115,6 +116,7 @@ import {
   OWN_BID,
   OWN_COUNTER,
   OWN_OFFER,
+  PROMISE_COUNTER,
   roomRoles,
   sideOf,
   SUBJECT_BIDS,
@@ -122,6 +124,7 @@ import {
   SUBJECT_TAKES,
   type OfferEntry,
   type OfferInput,
+  type OfferPromise,
   type OfferSide,
   type OfferState,
   type Odds,
@@ -360,6 +363,7 @@ export type StateResult =
       choices: choice.ChoiceState[]
       cases: CourtCase[]
       transfers: settle.TransferRecord[]
+      promises: settle.PromiseRecord[] // отметки обещаний (Р-44; состояние на время ответа считает http.ts)
       settleMode: settle.SettleMode
       pace: pace.RoomPace
       hostSeenAt: number // когда ведущий заходил (Р-42, hostSeenAt)
@@ -419,6 +423,7 @@ export async function roomState(storage: RoomStorage, keyHash: string, now: numb
     choices: choice.logChoices(c.log),
     cases: appeal.logAppeals(c.log, { events, offers, lots }),
     transfers: logTransfers(c.log),
+    promises: logPromises(c.log),
     settleMode: logSettleMode(c.log),
     pace: pace.logPace(c.log),
     hostSeenAt: await hostSeen(storage, c.log, c.state),
@@ -577,6 +582,8 @@ export type RoomAction =
       closesAt: number
       guarantor?: string // выбор автора встречного (Р-36); нет — гарант исходного
       noGuarantor?: boolean
+      promise?: string // к пари на обещание (Р-44): своё обещание; нет — что исходное просило от соперника
+      takerPromise?: string // обещание автора исходного; нет — его прежнее
       requestId: string
     }
   | { type: 'acceptOffer'; keyHash: string; offer: string; requestId: string }
@@ -612,6 +619,8 @@ export type RoomAction =
   | { type: 'receiveTransfer'; keyHash: string; from: string; amount: number; requestId: string }
   | { type: 'answerTransfer'; keyHash: string; transfer: string; answer: TransferAnswer; requestId: string }
   | { type: 'setSettleMode'; keyHash: string; mode: settle.SettleMode; requestId: string }
+  // Обещания (Р-44): «Исполнил» (проигравший), «Получил» и «Не получил» (выигравший) по пари на обещание
+  | { type: 'markPromise'; keyHash: string; offer: string; mark: PromiseMark; requestId: string }
   // Темп комнаты (Р-35): правила — pace.ts; форма уже проверена (checkPace); меняет ведущий
   | { type: 'setPace'; keyHash: string; pace: pace.PaceInput; requestId: string }
 
@@ -671,6 +680,7 @@ export type ActionValues = {
   receiveTransfer: { transfer: settle.Transfer }
   answerTransfer: { transfer: settle.Transfer }
   setSettleMode: { settleMode: SettleModeResponse['settleMode'] }
+  markPromise: { promise: settle.PromiseDue }
   setPace: { pace: PaceResponse['pace'] }
 }
 
@@ -837,6 +847,9 @@ export async function act<K extends ActionType>(
     case 'setSettleMode':
       r = await setSettleMode(storage, a, now)
       break
+    case 'markPromise':
+      r = await markPromise(storage, a, now)
+      break
     case 'setPace':
       r = await setPace(storage, a, now)
       break
@@ -845,8 +858,17 @@ export async function act<K extends ActionType>(
 }
 
 // В закрытой комнате (Р-43) можно: чтение (что за комната по ссылке, заявки ведущему), отметки переводов
-// «Расчёта», закрыть (повтор — тот же ответ) и открыть снова
-const OPEN_IN_CLOSED: readonly ActionType[] = ['preview', 'requests', 'sendTransfer', 'receiveTransfer', 'answerTransfer', 'closeRoom', 'reopenRoom']
+// и обещаний (Р-44) «Расчёта», закрыть (повтор — тот же ответ) и открыть снова
+const OPEN_IN_CLOSED: readonly ActionType[] = [
+  'preview',
+  'requests',
+  'sendTransfer',
+  'receiveTransfer',
+  'answerTransfer',
+  'markPromise',
+  'closeRoom',
+  'reopenRoom',
+]
 
 // Комната закрыта, а действие пишет новую запись — 409 «Комната закрыта»; иначе null. Сначала — обычные
 // отказы доступа (чужой ключ, вышедший, заявка; у заявки на вход — ссылка), чтобы закрытость не видел
@@ -1076,7 +1098,11 @@ async function leave(storage: RoomStorage, a: { keyHash: string; requestId: stri
   const lots = lot.logLots(c.log)
   const choices = choice.logChoices(c.log)
   const cases = appeal.logAppeals(c.log, { events, offers, lots })
-  const refused = member.checkLeave({ state: c.state, events, offers, lots, choices, cases, transfers: logTransfers(c.log) }, c.me, now)
+  const refused = member.checkLeave(
+    { state: c.state, events, offers, lots, choices, cases, transfers: logTransfers(c.log), promises: logPromises(c.log) },
+    c.me,
+    now,
+  )
   if (refused) return fail(refused === member.HOST_LEAVES ? 403 : 409, refused)
   const entries: LogEntry[] = member
     .leaveRevocations(offers, c.me, now)
@@ -1618,6 +1644,11 @@ function sameTerms(e: { odds: Odds; amount: number; closesAt: number }, x: { odd
   return e.odds.a === x.odds.a && e.odds.b === x.odds.b && e.amount === x.amount && e.closesAt === x.closesAt
 }
 
+// Те же обещания (Р-44): у обоих нет или оба те же (пробелы по краям не в счёт)
+function samePromise(e: { promise?: OfferPromise }, x: { promise?: OfferPromise }): boolean {
+  return e.promise?.author === x.promise?.author.trim() && e.promise?.taker === x.promise?.taker.trim()
+}
+
 // Записать новое пари (проверенное правилами) и ответить его условиями
 async function writeOffer(
   storage: RoomStorage,
@@ -1656,6 +1687,8 @@ async function writeOffer(
     times: { ...pace.logPace(c.log).times },
     // «Торг до …» (Р-37) — только у торга: у обычного пари поля нет
     ...(input.auction && { auction: { start: input.auction.start, step: input.auction.step } }),
+    // На обещание (Р-44) — только у него: у пари на сумму поля нет
+    ...(input.promise && { promise: { author: input.promise.author, taker: input.promise.taker } }),
     requestId,
   }
   await append(storage, [entry])
@@ -1681,6 +1714,7 @@ async function createOffer(
       (e) =>
         e.counterTo === null &&
         sameTerms(e, input) &&
+        samePromise(e, input) &&
         e.auction?.start === input.auction?.start &&
         e.auction?.step === input.auction?.step &&
         e.condition === input.condition &&
@@ -1699,7 +1733,8 @@ async function createOffer(
 
 // Встречное: новое пари автору исходного со своими кэфом, суммой и «приём до» (counterInput); делает
 // тот, кто мог бы принять исходное. Автор принял встречное — исходное закрыто встречным (roomOffers).
-// Гарант — выбор автора встречного (Р-36): guarantor, noGuarantor или, не выбрал, — гарант исходного
+// Гарант — выбор автора встречного (Р-36): guarantor, noGuarantor или, не выбрал, — гарант исходного.
+// К пари на обещание (Р-44) — свои обещания (promise, takerPromise) вместо кэфа и суммы
 async function counterOffer(
   storage: RoomStorage,
   a: {
@@ -1710,6 +1745,8 @@ async function counterOffer(
     closesAt: number
     guarantor?: string
     noGuarantor?: boolean
+    promise?: string
+    takerPromise?: string
     requestId: string
   },
   now: number,
@@ -1723,15 +1760,25 @@ async function counterOffer(
     closesAt: a.closesAt,
     ...(a.guarantor !== undefined && { guarantor: a.guarantor }),
     ...(a.noGuarantor === true && { noGuarantor: true }),
+    ...(a.promise !== undefined && { promise: a.promise }),
+    ...(a.takerPromise !== undefined && { takerPromise: a.takerPromise }),
   }
   const input = original && terms && counterInput(original, terms)
-  if (c.again) return repeatedOffer(c, (e) => e.counterTo === a.offer && !!input && sameTerms(e, input) && e.guarantor === (input.noGuarantor ? null : input.guarantor))
+  if (c.again) {
+    return repeatedOffer(
+      c,
+      (e) => e.counterTo === a.offer && !!input && sameTerms(e, input) && samePromise(e, input) && e.guarantor === (input.noGuarantor ? null : input.guarantor),
+    )
+  }
   if (!original || !input) return fail(404, NO_OFFER)
   const dropped = droppedRefusal(c)
   if (dropped) return dropped
+  // Встречное — того же вида (Р-44): к пари на обещание — без кэфа и суммы, к пари на сумму — без обещаний
+  if (original.promise && (a.odds !== null || a.amount !== null)) return fail(400, PROMISE_COUNTER)
+  if (!original.promise && (a.promise !== undefined || a.takerPromise !== undefined)) return fail(400, MONEY_COUNTER)
   const refused = checkCounter(original, c.me, c.roles, now)
   if (refused) return offerRefusal(refused)
-  const checked = checkOfferInput(input)
+  const checked = checkOfferInput({ ...input, promise: input.promise?.author, takerPromise: input.promise?.taker })
   if (!checked.ok) return fail(400, checked.error)
   return writeOffer(storage, c, checked.value, original.id, a.requestId, now)
 }
@@ -2533,6 +2580,7 @@ function settleInput(log: readonly LogEntry[], state: RoomState): settle.SettleI
     choices: choice.logChoices(log),
     cases: appeal.logAppeals(log, { events, offers, lots }),
     transfers: logTransfers(log),
+    promises: logPromises(log),
   }
 }
 
@@ -2673,6 +2721,67 @@ async function setSettleMode(
   const entry: SettleModeEntry = { id: ulid(now), at: now, memberId: c.me, type: 'room.settle-mode', mode: a.mode, requestId: a.requestId }
   await append(storage, [entry])
   return ok({ settleMode: settleModeAct(entry) })
+}
+
+// --- Обещания (Р-44). Правила — settle.ts: checkKept, checkPromiseAnswer и свёртка roomPromises на время
+// сервера. Обещание — по окончательному пари на обещание (номер — номер пари). Можно в закрытой комнате и
+// «выбывшему»; повтор с тем же номером запроса — тот же ответ без новой записи
+
+type PromiseEntry = Extract<LogEntry, { type: 'promise.kept' | 'promise.received' | 'promise.rejected' }>
+
+export type PromiseMark = 'kept' | 'received' | 'rejected'
+
+const PROMISE_TYPE = { kept: 'promise.kept', received: 'promise.received', rejected: 'promise.rejected' } as const
+
+function isPromiseEntry(e: LogEntry): e is PromiseEntry {
+  return e.type === 'promise.kept' || e.type === 'promise.received' || e.type === 'promise.rejected'
+}
+
+// Отметки обещаний из журнала — записи правил (номер запроса правилам не нужен)
+export function logPromises(log: readonly LogEntry[]): settle.PromiseRecord[] {
+  return log.filter(isPromiseEntry)
+}
+
+// Обещания комнаты на now из журнала
+function promisesOf(log: readonly LogEntry[], now: number): settle.PromiseDue[] {
+  const events = roomEvents(log)
+  const offers = logOffers(log)
+  const lots = lot.logLots(log)
+  return settle.roomPromises(offers, appeal.logAppeals(log, { events, offers, lots }), logPromises(log), now)
+}
+
+function promiseAfter(log: readonly LogEntry[], offer: string, now: number): ActionResult<'markPromise'> {
+  const promise = promisesOf(log, now).find((p) => p.offer === offer)
+  return promise ? ok({ promise }) : fail(404, settle.NO_PROMISE)
+}
+
+// Отказ правил обещаний: нет обещания — 404, «не вам» — 403, «уже не то состояние» — 409
+function promiseRefusal(error: string): Failure {
+  if (error === settle.NO_PROMISE) return fail(404, error)
+  return fail(error === settle.ONLY_LOSER || error === settle.ONLY_WINNER ? 403 : 409, error)
+}
+
+// «Исполнил» — проигравший; «Получил» — выигравший (на «Исполнил» или сам); «Не получил» — выигравший, на
+// «Исполнил». Ответ — обещание, каким стало
+async function markPromise(
+  storage: RoomStorage,
+  a: { keyHash: string; offer: string; mark: PromiseMark; requestId: string },
+  now: number,
+): Promise<ActionResult<'markPromise'>> {
+  const c = await caller(storage, a.keyHash)
+  if (!c.ok) return c
+  const type = PROMISE_TYPE[a.mark]
+  const again = byRequest(c.log, a.requestId)
+  if (again) {
+    const same = again.type === type && again.memberId === c.me && isPromiseEntry(again) && again.offer === a.offer
+    return same ? promiseAfter(c.log, a.offer, now) : fail(409, REQUEST_USED)
+  }
+  const p = promisesOf(c.log, now).find((x) => x.offer === a.offer) ?? null
+  const refused = a.mark === 'kept' ? settle.checkKept(p, c.me) : settle.checkPromiseAnswer(p, c.me, a.mark)
+  if (refused) return promiseRefusal(refused)
+  const entry: PromiseEntry = { id: ulid(now), at: now, memberId: c.me, type, offer: a.offer, requestId: a.requestId }
+  await append(storage, [entry])
+  return promiseAfter([...c.log, entry], a.offer, now)
 }
 
 // --- Темп комнаты (Р-35). Правила — pace.ts: смена — checkPaceChange, нынешний темп — logPace. Новый темп —

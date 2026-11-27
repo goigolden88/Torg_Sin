@@ -38,6 +38,7 @@ import {
   isHostResponse,
   isCloseResponse,
   isSettlementView,
+  isPromiseResponse,
   isSettleModeResponse,
   isTransferResponse,
   joinMark,
@@ -456,6 +457,20 @@ describe('расчёт (Р-32)', () => {
     expect(isSettleModeResponse({ v, settleMode: changed })).toBe(true)
     expect(isSettleModeResponse({ v, settleMode: { ...changed, mode: 'всё' } })).toBe(false)
     expect(isSettleModeResponse({ settleMode: changed })).toBe(false)
+  })
+
+  it('обещания (Р-44): нет поля (сервер до выкатки) или список; ответ на отметку', () => {
+    const promise = { offer: 'O', at: 3, from: 'B', to: 'A', text: 'Везу шашлык', status: 'waiting', changedAt: 3 }
+    expect(isSettlementView({ ...settlement, promises: [promise] })).toBe(true)
+    expect(isSettlementView({ ...settlement, promises: [] })).toBe(true)
+    for (const bad of [{ ...promise, status: 'потом' }, { ...promise, text: undefined }, { ...promise, changedAt: '3' }]) {
+      expect(isSettlementView({ ...settlement, promises: [bad] })).toBe(false)
+    }
+    expect(isSettlementView({ ...settlement, promises: promise })).toBe(false)
+    expect(isPromiseResponse({ v, promise: { ...promise, status: 'kept' } })).toBe(true)
+    expect(isPromiseResponse({ v, promise: { ...promise, status: 'received' } })).toBe(true)
+    expect(isPromiseResponse({ v, promise: { ...promise, from: undefined } })).toBe(false)
+    expect(isPromiseResponse({ promise })).toBe(false)
   })
 })
 

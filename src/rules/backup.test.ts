@@ -93,6 +93,34 @@ describe('checkBackup', () => {
     expect(r.ok && foldLog(r.backup.log)?.closed).toEqual({ id: 'E8', at: 700, by: 'M1' })
   })
 
+  it('обещания (Р-44): пари с promise и записи promise.kept, promise.received, promise.rejected — годные, как есть', () => {
+    const borya: LogEntry = { id: 'E4', at: 400, memberId: 'M1', type: 'member.added', member: 'M2', name: 'Боря' }
+    const offer: LogEntry = {
+      id: 'O1',
+      at: 500,
+      memberId: 'M1',
+      type: 'offer.created',
+      condition: 'Вася подтянется 20 раз',
+      check: 'Видео',
+      side: 'yes',
+      odds: { a: 1, b: 1 },
+      amount: 0,
+      to: 'M2',
+      closesAt: 1000,
+      expectedAt: 2000,
+      guarantor: null,
+      counterTo: null,
+      promise: { author: 'Везу шашлык', taker: 'Мою посуду' },
+      requestId: 'Q2',
+    }
+    const kept: LogEntry = { id: 'E6', at: 3000, memberId: 'M2', type: 'promise.kept', offer: 'O1', requestId: 'Q3' }
+    const no: LogEntry = { id: 'E7', at: 3100, memberId: 'M1', type: 'promise.rejected', offer: 'O1', requestId: 'Q4' }
+    const got: LogEntry = { id: 'E8', at: 3200, memberId: 'M1', type: 'promise.received', offer: 'O1', requestId: 'Q5' }
+    const log = [created, host, bet, borya, offer, kept, no, got]
+    expect(checkBackup({ ...full, log }, 'full')).toEqual({ ok: true, backup: { ...full, log } })
+    expect(checkBackup({ ...member, log })).toEqual({ ok: true, backup: { ...member, log } })
+  })
+
   it('лишние поля сверху (версия протокола ответа) в копию не попадают', () => {
     expect(checkBackup({ v: 6, ...full })).toEqual({ ok: true, backup: full })
   })

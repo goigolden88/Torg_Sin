@@ -102,6 +102,9 @@ const LOG_TYPES: Record<LogEntry['type'], true> = {
   'transfer.received': true,
   'transfer.rejected': true,
   'transfer.revoked': true,
+  'promise.kept': true,
+  'promise.received': true,
+  'promise.rejected': true,
 }
 
 function isRecord(x: unknown): x is Record<string, unknown> {
