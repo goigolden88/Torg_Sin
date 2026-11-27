@@ -1,4 +1,4 @@
-import { api, confirmTwice, Device, PASSWORD, SITE, type Cdp, type ServerModule, type Size } from './common.ts'
+import { api, chatCall, confirmTwice, Device, PASSWORD, SITE, type Cdp, type ServerModule, type Size } from './common.ts'
 
 // Пари (#52). Свой запасной сервер; комната «Дача 2026»: Аня — ведущая, Боря, Вера; на устройства —
 // ссылкой для другого устройства. Пусто → Аня предлагает Боре «3 к 1, 300 ₽» (ведущая — сторона:
@@ -27,7 +27,7 @@ export async function offers(cdp: Cdp, size: Size, startServer: ServerModule['st
     const vera = await join('Вера')
     const open = async (name: string, key: string) => {
       const { token } = await api<{ token: string }>(server, `${rooms}/device`, key, {})
-      const device = await Device.open(cdp, size, name)
+      const device = await Device.open(cdp, size, name, { clipboard: true })
       await device.goto(`${SITE}#/device/${room.roomId}/${token}?server=${encodeURIComponent(server.url)}`)
       await device.waitText('Открыть комнату здесь')
       await device.press('Открыть комнату здесь')
@@ -101,6 +101,10 @@ export async function offers(cdp: Cdp, size: Size, startServer: ServerModule['st
     await boryaPhone.press('Боря подтянется 20 раз до конца месяца')
     await boryaPhone.waitText('Принять')
     await boryaPhone.shot('47-pari-adresatu')
+    // «Позвать в чат» (#150): «Поделиться» у этого Chrome нет — сообщение со ссылкой на пари в буфере, «Скопировано»
+    await chatCall(boryaPhone, `Аня предлагает пари: „Боря подтянется 20 раз до конца месяца“ — 3 к 1, 300 ₽. Принять или встречное: ${offerHref(await boryaPhone.eval<string>(`location.hash.split('/').pop()`))}`)
+    await noScroll(boryaPhone, 'Пари: «Скопировано»')
+    await boryaPhone.shot('47b-pozvat-v-chat')
     await boryaPhone.press('Принять')
     await boryaPhone.waitIn('.modal', 'Вы ставите 100 ₽ против 300 ₽ — кэф 3 к 1, банк 400 ₽.')
     await boryaPhone.shot('47a-prinyat-podtverzhdenie')

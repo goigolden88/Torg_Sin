@@ -1,4 +1,4 @@
-import { api, confirmTwice, Device, PASSWORD, SITE, type Cdp, type ServerModule, type Size } from './common.ts'
+import { api, chatCall, confirmTwice, Device, PASSWORD, SITE, type Cdp, type ServerModule, type Size } from './common.ts'
 
 // «Расчёт» (#71). Свой запасной сервер с подставными часами: «исход к» — сдвигом часов. Ведущая Аня,
 // Боря, Вера, Гена (выдуманные). Пари 1: Аня — Боря, прав Боря (Аня −300 ₽); пари 2: Вера — Аня, права Аня
@@ -76,7 +76,7 @@ export async function settle(cdp: Cdp, size: Size, startServer: ServerModule['st
     await disputed(fewest)
 
     // На устройство Ани — ссылкой для другого устройства; комнаты — в одном хранилище
-    const host = await Device.open(cdp, size, 'Аня')
+    const host = await Device.open(cdp, size, 'Аня', { clipboard: true })
     const claim = async (roomId: string, key: string) => {
       const { token } = await api<{ token: string }>(server, `/rooms/${roomId}/device`, key, {})
       await host.goto(`${SITE}#/device/${roomId}/${token}?server=${encodeURIComponent(server.url)}`)
@@ -144,6 +144,13 @@ export async function settle(cdp: Cdp, size: Size, startServer: ServerModule['st
     await check('Расчёт по ставкам')
     await table('Расчёт по ставкам')
     await host.shot('112-raschyot-po-stavkam')
+    // «Позвать в чат» (#150): «кто кому» из подсказки с суммами и ссылка на «Расчёт»
+    await chatCall(
+      host,
+      `Расчёт комнаты „Шашлыки на даче“: Аня → Боря 300 ₽, Вера → Аня 500 ₽. Отметьте переводы: ${settleHref(stakes.room.roomId)}`,
+    )
+    await check('Расчёт: «Скопировано»')
+    await host.shot('112a-pozvat-v-chat')
 
     // «Перевёл» — окно с суммой из подсказки; частями — 100 ₽; двойное нажатие — один перевод
     await host.press('Перевёл')
@@ -210,8 +217,10 @@ export async function settle(cdp: Cdp, size: Size, startServer: ServerModule['st
     await host.waitIn(MAIN, 'Все участники')
     const first = await host.eval<string>(`document.querySelector('.settle-table tbody th').innerText`)
     if (!first.startsWith('Аня')) throw new Error('Таблица очков: первым — ' + first)
+    // Кнопок переводов нет; «Позвать в чат» — есть (итоги очков в сообщении)
+    await chatCall(host, `Таблица очков комнаты „Шахматы по пятницам“: Аня +30 очков, Вера 0 очков, Боря −30 очков. Посмотрите: ${settleHref(pts.room.roomId)}`)
     const extra = await host.eval<string[]>(
-      `[...document.querySelectorAll('.settle button')].map((b) => b.innerText.trim()).concat(document.querySelector('[aria-label="Переводы"]') ? ['Переводы'] : [])`,
+      `[...document.querySelectorAll('.settle button')].map((b) => b.innerText.trim()).filter((b) => b !== 'Позвать в чат').concat(document.querySelector('[aria-label="Переводы"]') ? ['Переводы'] : [])`,
     )
     if (extra.length > 0) throw new Error('Таблица очков: лишнее — ' + extra.join(', '))
     await noScroll('Таблица очков')
