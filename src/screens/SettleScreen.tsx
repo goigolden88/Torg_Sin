@@ -6,12 +6,13 @@
 // ответа комнаты (useRoom, раз в 5 с); сервер без свода — «Расчёта на этом сервере пока нет». Каждое
 // действие — окном подтверждения с синхронным замком и номером запроса (Р-13); Enter отправляет, Esc
 // закрывает. Колонки — как у события: .event-main и .event-side, от 1280 px — рядом. Полученные лоты (Р-38) —
-// «Долги по лотам» с основанием «лот „…“»; решённые выборы (Р-39) — «Долги по выборам» с основанием «выбор „…“»
+// «Долги по лотам» с основанием «лот „…“»; решённые выборы (Р-39) — «Долги по выборам» с основанием «выбор „…“».
+// Пари на обещание (Р-44) — блок «Обещания»: «Вы обещали» с «Исполнил», «Вам обещали» с «Получил» / «Не получил»
 import { useCallback, useRef, useState, type FormEvent, type MutableRefObject, type ReactNode } from 'react'
-import { answerTransfer, changeSettleMode, createTransfer, type Result, type TransferAct } from '../api'
+import { answerTransfer, changeSettleMode, createTransfer, markPromise, type PromiseAct, type Result, type TransferAct } from '../api'
 import { isCurrencyCode, parseAmount } from '../rules/currency'
 import { formatDateTime } from '../rules/date'
-import type { SettlementView, SettleModeView, TransferView } from '../rules/protocol'
+import type { PromiseView, SettlementView, SettleModeView, TransferView } from '../rules/protocol'
 import { formKey, requestFor, type PendingRequest } from '../rules/request'
 import { ulid } from '../rules/ulid'
 import { savedChoices, savedEvents, savedLots, savedOffers, savedSettlement, type SavedRoom } from '../store/db'
@@ -34,15 +35,20 @@ import {
   MODES,
   memberNumbers,
   myDebts,
+  myPromises,
   nothingFinal,
   pendingDisputes,
+  PROMISE_STATUS,
+  promiseButtons,
   signedSum,
   sumText,
   TRANSFER_STATUS,
   transferButtons,
   type Debt,
+  type PromiseButton,
   type TransferButton,
 } from './settleParts'
+import { offerHref } from './offerParts'
 import { useRoom, useServerNow } from './useRoom'
 
 const pending = new Map<string, PendingRequest>() // по комнате: окно закрыли и открыли — тот же номер
@@ -51,6 +57,7 @@ const pending = new Map<string, PendingRequest>() // по комнате: окн
 type Ask =
   | { kind: 'send' | 'receive'; debt: Debt }
   | { kind: 'act'; transfer: TransferView; button: TransferButton }
+  | { kind: 'promise'; promise: PromiseView; button: PromiseButton }
   | { kind: 'mode' }
 
 export function SettleScreen({ room, onUpdate }: { room: SavedRoom; onUpdate: (room: SavedRoom) => void }) {
@@ -160,6 +167,7 @@ export function SettleScreen({ room, onUpdate }: { room: SavedRoom; onUpdate: (r
           </section>
         )}
 
+        <Promises room={room} settlement={s} online={online} onAct={(promise, button) => setAsk({ kind: 'promise', promise, button })} />
         <LotDebts room={room} debts={lotDebts(room, lots, now)} />
         <ChoiceDebts room={room} debts={choiceDebtsOf(choices, now)} />
         {!points && <ModeLine settlement={s} change={change} online={online} onChange={() => setAsk({ kind: 'mode' })} />}
@@ -238,6 +246,69 @@ function DebtList({
         ))}
       </ul>
     </div>
+  )
+}
+
+// Обещания (Р-44): «Вы обещали» — кому и что, состояние, «Исполнил»; «Вам обещали» — от кого и что,
+// «Получил» / «Не получил» — по правам (promiseButtons), как у переводов; ссылка — на пари. Обещаний с вами
+// нет — блока нет
+function Promises({
+  room,
+  settlement,
+  online,
+  onAct,
+}: {
+  room: SavedRoom
+  settlement: SettlementView
+  online: boolean
+  onAct: (p: PromiseView, b: PromiseButton) => void
+}) {
+  const { mine, owed } = myPromises(settlement, room.memberId)
+  if (mine.length === 0 && owed.length === 0) return null
+  const offers = savedOffers(room)
+  const group = (label: string, list: PromiseView[], other: (p: PromiseView) => string) =>
+    list.length > 0 && (
+      <div className="settle-debts" role="group" aria-label={label}>
+        <p className="settle-debts-head">{label}:</p>
+        <ul className="transfer-list">
+          {list.map((p) => {
+            const buttons = promiseButtons(p, room.memberId)
+            const offer = offers.find((o) => o.id === p.offer)
+            return (
+              <li key={p.offer} className={'transfer ' + (p.status === 'received' ? 'received' : p.status === 'rejected' ? 'rejected' : 'pending')}>
+                <span className="transfer-who">
+                  {other(p)}: <strong>{p.text}</strong>
+                </span>
+                <span className={'status transfer-status ' + (p.status === 'received' ? 'received' : p.status === 'rejected' ? 'rejected' : 'pending')}>
+                  {PROMISE_STATUS[p.status]}
+                </span>
+                <span className="hint">
+                  {offer ? <a href={offerHref(room.id, offer.id)}>пари „{offer.condition}“</a> : 'пари'} · окончательно {formatDateTime(p.at)}
+                  {p.changedAt !== p.at ? ` · изменено ${formatDateTime(p.changedAt)}` : ''}
+                </span>
+                {buttons.length > 0 && (
+                  <div className="row">
+                    {buttons.map((b) => (
+                      <button key={b.act} className={b.act === 'rejected' ? 'button secondary' : 'button'} type="button" onClick={() => onAct(p, b)} disabled={!online}>
+                        {b.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </li>
+            )
+          })}
+        </ul>
+      </div>
+    )
+  return (
+    <section className="settle-lots settle-promises" aria-label="Обещания">
+      <h3>Обещания</h3>
+      <p className="hint">Пари на обещание: деньги, итог и «кто кому» они не меняют.</p>
+      {group('Вы обещали', mine, (p) => nameOf(room, p.to))}
+      {group('Вам обещали', owed, (p) => nameOf(room, p.from))}
+      {!online && <p className="hint">Действия — когда есть связь с сервером.</p>}
+    </section>
   )
 }
 
@@ -428,6 +499,7 @@ function AskWindow({
 }) {
   if (ask.kind === 'mode') return <ModeWindow room={room} current={settlement.mode} busy={busy} onClose={onClose} onDone={onDone} />
   if (ask.kind === 'act') return <ActWindow transfer={ask.transfer} button={ask.button} room={room} busy={busy} onClose={onClose} onDone={onDone} />
+  if (ask.kind === 'promise') return <PromiseWindow promise={ask.promise} button={ask.button} room={room} busy={busy} onClose={onClose} onDone={onDone} />
   return <AmountWindow ask={ask} room={room} busy={busy} onClose={onClose} onDone={onDone} />
 }
 
@@ -518,6 +590,42 @@ function ActWindow({
   return (
     <Window question={question} button={button.label} busyLabel="Отмечаю…" busy={busy} roomId={room.id} prepare={prepare} onClose={onClose} onDone={onDone}>
       <p>{body}</p>
+    </Window>
+  )
+}
+
+// Отметка обещания (Р-44): «Исполнил» — проигравший, «Получил» / «Не получил» — выигравший
+function PromiseWindow({
+  promise: p,
+  button,
+  room,
+  busy,
+  onClose,
+  onDone,
+}: {
+  promise: PromiseView
+  button: PromiseButton
+  room: SavedRoom
+  busy: MutableRefObject<boolean>
+  onClose: () => void
+  onDone: () => Promise<void>
+}) {
+  const from = nameOf(room, p.from)
+  const to = nameOf(room, p.to)
+  const text: Record<PromiseAct, { question: string; body: string }> = {
+    kept: { question: 'Вы исполнили обещание?', body: `${to}: «${p.text}». ${to} ответит «Получил» или «Не получил».` },
+    received: { question: 'Вы получили обещанное?', body: `От ${from}: «${p.text}». Обещание станет «получено» — отметку не отменить.` },
+    rejected: { question: 'Вы не получили обещанное?', body: `От ${from}: «${p.text}». Обещание станет «не получено», ${from} сможет снова отметить «Исполнил».` },
+  }
+  const { question, body } = text[button.act]
+  const prepare = (): Prepared => ({
+    form: formKey(room.id, 'promise', p.offer, button.act),
+    run: (requestId) => markPromise(room.server, room.id, room.key, p.offer, button.act, { requestId }),
+  })
+  return (
+    <Window question={question} button={button.label} busyLabel="Отмечаю…" busy={busy} roomId={room.id} prepare={prepare} onClose={onClose} onDone={onDone}>
+      <p>{body}</p>
+      <p className="hint">Деньги, итог и «кто кому» не меняются.</p>
     </Window>
   )
 }

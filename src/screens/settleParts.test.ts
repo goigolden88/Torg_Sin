@@ -9,12 +9,52 @@ import {
   modeChange,
   modeLabel,
   myDebts,
+  myPromises,
   myTotalLine,
   nothingFinal,
   pendingDisputes,
+  PROMISE_STATUS,
+  promiseButtons,
   signedSum,
   transferButtons,
 } from './settleParts'
+import type { PromiseView } from '../rules/protocol'
+
+// Обещание (Р-44): Боря (B) проиграл Вере (V) — везёт шашлык
+function promise(extra: Partial<PromiseView> = {}): PromiseView {
+  return { offer: 'O1', at: 10, from: 'B', to: 'V', text: 'везёт шашлык', status: 'waiting', changedAt: 10, ...extra }
+}
+
+describe('обещания (Р-44)', () => {
+  it('«Вы обещали» — где я проиграл, «Вам обещали» — где выиграл; поля нет — пусто', () => {
+    const s: SettlementView = { mode: 'stakes', members: [], transfers: [], suggestions: [], promises: [promise(), promise({ offer: 'O2', from: 'V', to: 'G' })] }
+    expect(myPromises(s, 'B')).toEqual({ mine: [promise()], owed: [] })
+    expect(myPromises(s, 'V')).toEqual({ mine: [promise({ offer: 'O2', from: 'V', to: 'G' })], owed: [promise()] })
+    expect(myPromises(s, 'A')).toEqual({ mine: [], owed: [] })
+    expect(myPromises({ ...s, promises: undefined }, 'B')).toEqual({ mine: [], owed: [] })
+  })
+
+  it('кнопки — по правилам: проигравшему «Исполнил», выигравшему «Получил», на «Исполнил» — и «Не получил»', () => {
+    expect(promiseButtons(promise(), 'B').map((b) => b.label)).toEqual(['Исполнил'])
+    expect(promiseButtons(promise(), 'V').map((b) => b.label)).toEqual(['Получил'])
+    expect(promiseButtons(promise(), 'A')).toEqual([])
+    const kept = promise({ status: 'kept' })
+    expect(promiseButtons(kept, 'B')).toEqual([])
+    expect(promiseButtons(kept, 'V').map((b) => b.act)).toEqual(['received', 'rejected'])
+    const rejected = promise({ status: 'rejected' })
+    expect(promiseButtons(rejected, 'B').map((b) => b.act)).toEqual(['kept'])
+    expect(promiseButtons(rejected, 'V').map((b) => b.act)).toEqual(['received'])
+    const received = promise({ status: 'received' })
+    expect(promiseButtons(received, 'B')).toEqual([])
+    expect(promiseButtons(received, 'V')).toEqual([])
+  })
+
+  it('состояние словами', () => {
+    expect(PROMISE_STATUS.waiting).toBe('ждёт исполнения')
+    expect(PROMISE_STATUS.received).toBe('получено')
+    expect(PROMISE_STATUS.rejected).toBe('не получено')
+  })
+})
 
 const N = ' ' // неразрывный пробел: между разрядами и перед знаком валюты
 const zero = { amount: 0, events: 0, offers: 0 }

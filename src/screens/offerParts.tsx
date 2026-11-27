@@ -168,6 +168,7 @@ export function offerState(o: OfferView): OfferState {
     closedBy: o.closedBy,
     ...(o.times && { times: o.times }),
     ...(auction && { auction }),
+    ...(o.promise && { promise: { author: o.promise.author, taker: o.promise.taker } }),
     ...outcomeState(o),
   }
 }
@@ -227,10 +228,13 @@ function acceptedLine(room: SavedRoom, offer: OfferView, now: number) {
     const why = out.guarantorId === null ? courtWhy(room, offer, out.marks) : `${spanText(viewTimes(offer).silence)} без общего гаранта`
     return <span className="status open">ждёт суда — {why}</span>
   }
-  if (out.phase === 'cancelled') return <span className="status cancelled">отменено судом — ставки возвращены</span>
+  if (out.phase === 'cancelled') {
+    return <span className="status cancelled">{offer.promise ? 'отменено судом — обещаний нет' : 'отменено судом — ставки возвращены'}</span>
+  }
   const winner = out.approved?.winner ?? 'author'
   const nets = netsOf(room, offer, winner)
-  const plus = nets ? `${nets.lines.find((l) => l.side === winner)?.text} ${nets.winner}` : winnerLabel(winner)
+  // На обещание (Р-44): вместо плюса — кто проиграл и что обещал
+  const plus = offer.promise ? promiseResultText(room, offer, winner) : nets ? `${nets.lines.find((l) => l.side === winner)?.text} ${nets.winner}` : winnerLabel(winner)
   if (out.phase === 'approved' && out.finalAt === null) return <span className="status open">апелляция — решает суд</span>
   if (out.phase === 'approved') {
     return (
@@ -250,6 +254,7 @@ export function roomRolesOf(room: SavedRoom): RoomRoles {
 // Суммы обеих сторон и банк — по кэфу (offerStakes); у торга (Р-37) — из сумм (offerAmounts: принятое
 // встречное, до конца — лучшее, без встречных — старт); сервер прислал другое — нет сумм
 export function stakesOf(o: OfferView): OfferStakes | null {
+  if (o.promise) return null // на обещание (Р-44) денег на кону нет
   if (o.auction) {
     const ok = (x: number) => Number.isSafeInteger(x) && x >= 1
     if (!ok(o.amount) || !ok(o.auction.start)) return null
@@ -297,6 +302,7 @@ export function courtWhy(room: SavedRoom, o: OfferView, marks: Record<OfferSide,
 // Торг (Р-37), now — часы сервера: до конца — «лучшее встречное — Вера, 10 000 ₽ (кэф 1 к 33)» или
 // «старт — 1 000 ₽ (кэф 1 к 3,3), встречных нет»; принято — как у обычного пари, с именем соперника
 export function stakesLine(room: SavedRoom, o: OfferView, now?: number): string {
+  if (o.promise) return promiseLine(o.promise)
   const s = stakesOf(o)
   if (!s) return o.auction ? `старт — ${money(o.auction.start, room.currency)}` : `кэф ${oddsLabel(o.odds)}`
   const sum = (n: number) => money(n, room.currency)
@@ -313,6 +319,33 @@ export function stakesLine(room: SavedRoom, o: OfferView, now?: number): string 
   }
   const taker = o.accepted ? who(o.accepted.by) : 'соперник'
   return `${mine}, ${taker} — ${sum(s.taker)} (кэф ${oddsLabel(o.odds)}), банк ${sum(s.bank)}`
+}
+
+// На кону — обещания (Р-44): «на обещание: везёт шашлык / моет машину» — автора / соперника; одно и то же —
+// одним текстом с «у обоих»
+export function promiseLine(p: { author: string; taker: string }): string {
+  return p.author === p.taker ? `на обещание: ${p.author} (у обоих)` : `на обещание: ${p.author} / ${p.taker}`
+}
+
+// Под формой и в окне (Р-44): «Проиграете — вы: везу шашлык. Проиграет соперник — он: моет машину. Денег на
+// кону нет…»; своего обещания ещё нет — что ввести
+export function promiseSummary(mine: string, theirs: string): string {
+  const own = mine.trim()
+  const other = theirs.trim()
+  if (!own) return 'Введите своё обещание — здесь появится, кто что сделает, если проиграет.'
+  if (!other) return 'Введите обещание соперника: что он сделает, если проиграет.'
+  return `Проиграете — вы: ${own}. Проиграет соперник — он: ${other}. Денег на кону нет: итог и «кто кому» не меняются.`
+}
+
+// Обещание стороны пари (Р-44); у пари на сумму — null
+export function promiseOf(o: OfferView, side: OfferSide): string | null {
+  return o.promise ? (side === 'author' ? o.promise.author : o.promise.taker) : null
+}
+
+// Итог пари на обещание (Р-44): «Боря проиграл(а): везёт шашлык» — проигравший и его обещание
+export function promiseResultText(room: SavedRoom, o: OfferView, winner: OfferSide): string {
+  const loser = other(winner)
+  return `${nameOf(room, sideMember(o, loser))} проиграл(а): ${promiseOf(o, loser) ?? ''}`
 }
 
 // Кэф торга из сумм (Р-37; только для показа): меньшая сторона — 1, большая — во сколько раз больше:

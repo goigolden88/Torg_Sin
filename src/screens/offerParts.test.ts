@@ -12,6 +12,10 @@ import {
   nextBid,
   offerState,
   outbid,
+  promiseLine,
+  promiseOf,
+  promiseResultText,
+  promiseSummary,
   repeatForm,
   repeatHref,
   stakesLine,
@@ -201,5 +205,50 @@ describe('форма торга', () => {
     expect(repeatForm(auction({}, { guarantorId: null }), 'A', later)).toMatchObject({ guarantor: '', none: true })
     expect(repeatForm({ ...auction(), auction: undefined }, 'A', later)).toBeNull()
     expect(repeatHref('R1', 'O1')).toBe('#/room/R1/offer/new?repeat=O1')
+  })
+})
+
+// Пари на обещание (Р-44): Боря — автор на «сбудется», Вера приняла
+function promised(extra: Partial<OfferView> = {}): OfferView {
+  return {
+    ...auction(),
+    auction: undefined,
+    bidding: undefined,
+    odds: { a: 1, b: 1 },
+    amount: 0,
+    takerAmount: 0,
+    promise: { author: 'везёт шашлык', taker: 'моет машину' },
+    ...extra,
+  }
+}
+
+describe('пари на обещание', () => {
+  it('вместо суммы — «на обещание: автора / соперника»; одно и то же — «у обоих»; сумм нет', () => {
+    expect(stakesOf(promised())).toBeNull()
+    expect(stakesLine(room('V'), promised(), T0)).toBe('на обещание: везёт шашлык / моет машину')
+    expect(stakesLine(room('V'), promised({ promise: { author: 'везёт шашлык', taker: 'везёт шашлык' } }))).toBe('на обещание: везёт шашлык (у обоих)')
+    expect(promiseLine({ author: 'a', taker: 'b' })).toBe('на обещание: a / b')
+  })
+
+  it('состояние для правил — с обещаниями (встречное и исход их видят)', () => {
+    expect(offerState(promised()).promise).toEqual({ author: 'везёт шашлык', taker: 'моет машину' })
+    expect(offerState(auction()).promise).toBeUndefined()
+  })
+
+  it('обещание стороны и итог — проигравший и его обещание', () => {
+    const o = promised({ accepted: { by: 'V', at: T0 + MINUTE } })
+    expect(promiseOf(o, 'author')).toBe('везёт шашлык')
+    expect(promiseOf(o, 'taker')).toBe('моет машину')
+    expect(promiseOf(auction(), 'author')).toBeNull()
+    expect(promiseResultText(room('V'), o, 'author')).toBe('Вера проиграл(а): моет машину')
+    expect(promiseResultText(room('V'), o, 'taker')).toBe('Боря проиграл(а): везёт шашлык')
+  })
+
+  it('под формой: кто что сделает; чего не хватает — что ввести', () => {
+    expect(promiseSummary('везу шашлык', 'моет машину')).toBe(
+      'Проиграете — вы: везу шашлык. Проиграет соперник — он: моет машину. Денег на кону нет: итог и «кто кому» не меняются.',
+    )
+    expect(promiseSummary('  ', 'моет машину')).toBe('Введите своё обещание — здесь появится, кто что сделает, если проиграет.')
+    expect(promiseSummary('везу шашлык', ' ')).toBe('Введите обещание соперника: что он сделает, если проиграет.')
   })
 })

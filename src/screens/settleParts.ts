@@ -1,10 +1,20 @@
 // Текст экрана «Расчёт» (этап 5, Р-32): числа с основанием, «вы должны / вам должны», состояние и
-// кнопки переводов, строка режима «кто кому». Считает сервер (свод в ответе комнаты, settle.ts), права
+// кнопки переводов, строка режима «кто кому», обещания (Р-44). Считает сервер (свод в ответе комнаты, settle.ts), права
 // на кнопки — те же проверки правил (checkAnswer, checkRevoke, checkSettleMode); здесь — только показ.
 // Чистые функции без DOM — с тестами (settleParts.test.ts)
 import { currency as currencyOf, formatAmount, isCurrencyCode, plural } from '../rules/currency'
-import type { EventView, OfferView, SettlementView, SettleModeView, SettleSumView, TransferStatusView, TransferView } from '../rules/protocol'
-import { checkAnswer, checkRevoke, checkSettleMode, MODE_LOCKED } from '../rules/settle'
+import type {
+  EventView,
+  OfferView,
+  PromiseStatusView,
+  PromiseView,
+  SettlementView,
+  SettleModeView,
+  SettleSumView,
+  TransferStatusView,
+  TransferView,
+} from '../rules/protocol'
+import { checkAnswer, checkKept, checkPromiseAnswer, checkRevoke, checkSettleMode, MODE_LOCKED } from '../rules/settle'
 
 // Комната на очки — «Таблица очков»: без переводов и подсказки
 export const POINTS = 'PTS'
@@ -134,6 +144,32 @@ export function transferButtons(t: TransferView, me: string, room: { currency: s
   const out: TransferButton[] = []
   if (checkAnswer(room, t, me) === null) out.push({ act: 'receive', label: 'Получил' }, { act: 'reject', label: 'Не получал' })
   if (checkRevoke(room, t, me) === null) out.push({ act: 'cancel', label: me === t.to ? 'Отменить отметку' : 'Отозвать' })
+  return out
+}
+
+// Обещания (Р-44): «Вы обещали» — где я проиграл, «Вам обещали» — где выиграл, по порядку пари; поля
+// promises нет (сервер старше) — оба пусто
+export function myPromises(settlement: SettlementView, me: string): { mine: PromiseView[]; owed: PromiseView[] } {
+  const all = settlement.promises ?? []
+  return { mine: all.filter((p) => p.from === me), owed: all.filter((p) => p.to === me) }
+}
+
+export const PROMISE_STATUS: Record<PromiseStatusView, string> = {
+  waiting: 'ждёт исполнения',
+  kept: '«Исполнил» — ждёт ответа',
+  received: 'получено',
+  rejected: 'не получено',
+}
+
+// Кнопки обещания для me — только те, что разрешают правила: проигравшему — «Исполнил» (checkKept);
+// выигравшему — «Получил» и, на «Исполнил», «Не получил» (checkPromiseAnswer)
+export type PromiseButton = { act: 'kept' | 'received' | 'rejected'; label: string }
+
+export function promiseButtons(p: PromiseView, me: string): PromiseButton[] {
+  const out: PromiseButton[] = []
+  if (checkKept(p, me) === null) out.push({ act: 'kept', label: 'Исполнил' })
+  if (checkPromiseAnswer(p, me, 'received') === null) out.push({ act: 'received', label: 'Получил' })
+  if (checkPromiseAnswer(p, me, 'rejected') === null) out.push({ act: 'rejected', label: 'Не получил' })
   return out
 }
 

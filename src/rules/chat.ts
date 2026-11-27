@@ -28,6 +28,8 @@ export type ChatNews =
       auction?: { start: number; best: number | null } // торг: лучшее встречное (null — ещё нет)
       taker?: string // принявший (у принятого)
       bank?: number // банк (у принятого)
+      // На обещание (Р-44): что сделает автор и соперник, если проиграет; суммы и кэфа тогда в тексте нет
+      promise?: { author: string; taker: string }
     }
   // Событие: банк; приём идёт — «ставьте», закрыт — «исход», отменено — так и пишем
   | { kind: 'event'; condition: string; bank: number; state: 'open' | 'closed' | 'cancelled' }
@@ -66,6 +68,16 @@ function chatText(n: ChatNews, currency: string): string {
   const sum = (units: number) => money(units, currency)
   switch (n.kind) {
     case 'offer': {
+      if (n.promise) {
+        const p = n.promise
+        if (n.state === 'open') {
+          return `${n.author} предлагает пари на обещание: „${n.condition}“ — проиграет ${n.author}: ${p.author}; проиграет соперник: ${p.taker}. Принять или встречное`
+        }
+        if (n.state === 'accepted' && n.taker !== undefined) {
+          return `Пари на обещание „${n.condition}“ принято: ${n.author} — ${n.taker}. Исход — по ссылке`
+        }
+        return `Пари на обещание „${n.condition}“ (${n.author}). Посмотрите`
+      }
       if (n.auction) {
         if (n.state === 'open') {
           const best = n.auction.best === null ? `встречные — от ${sum(n.auction.start)}` : `лучшее встречное — ${sum(n.auction.best)}`

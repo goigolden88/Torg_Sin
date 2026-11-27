@@ -1451,6 +1451,17 @@ h3 {
   overflow-wrap: anywhere;
 }
 
+/* «Обещания» (Р-44): «Вы обещали» и «Вам обещали» — карточками, как переводы */
+.settle-promises {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.settle-promises > * {
+  margin: 0;
+}
+
 /* Три числа с основанием: на телефоне — подпись над значением, от 600 px — подпись колонкой слева */
 .settle-numbers {
   list-style: none;

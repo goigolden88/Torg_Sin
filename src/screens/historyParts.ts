@@ -9,12 +9,12 @@
 // offer.ts), здесь — только выбор
 import type { LotOutcome } from '../rules/lot'
 import { offerNets, offerStatus, type OfferOutcome, type OfferSide } from '../rules/offer'
-import type { ChoiceView, EventView, LotView, OfferStatus, OfferView, OutcomeView } from '../rules/protocol'
+import type { ChoiceView, EventView, LotView, OfferStatus, OfferView, OutcomeView, PromiseView } from '../rules/protocol'
 import type { SavedRoom } from '../store/db'
 import { choiceMine, choiceOutcomeOf, choiceOutcomeWords, choicePastAt } from './choiceParts'
 import { lotMine, lotOutcomeOf, lotOutcomeWords, lotPastAt } from './lotParts'
-import { offerOutcomeOf, offerState, stakesOf } from './offerParts'
-import { signedSum, sumText } from './settleParts'
+import { offerOutcomeOf, offerState, promiseResultText, stakesOf } from './offerParts'
+import { PROMISE_STATUS, signedSum, sumText } from './settleParts'
 
 // Адрес экрана «История» комнаты
 export function historyHref(roomId: string): string {
@@ -67,8 +67,9 @@ export function offerPastNow(room: SavedRoom, o: OfferView, now: number): number
 }
 
 // Мой результат: участвовал — итог со знаком (у отменённого и не состоявшегося — ноль; refund — сколько
-// вернулось); не участвовал — none
-export type MyResult = { kind: 'none' } | { kind: 'net'; amount: number; refund: number }
+// вернулось); не участвовал — none; пари на обещание (Р-44) — promise: выиграл, проиграл или null (не
+// состоялось, отменено судом)
+export type MyResult = { kind: 'none' } | { kind: 'net'; amount: number; refund: number } | { kind: 'promise'; won: boolean | null }
 
 // Строка «Истории»: событие, пари, лот или выбор, что и когда, исход словами, мой результат
 export type HistoryItem = {
@@ -119,21 +120,36 @@ const NOT_HAPPENED: Partial<Record<OfferStatus, string>> = {
 
 // Строка пари: исход — «Сбылось» / «Не сбылось», «отменено судом», «не состоялось — …»; мой результат —
 // итог моей стороны (offerNets), у отменённого судом — возврат моей ставки, у не состоявшегося — ноль.
-// Участник — автор или принявший. status и out — как у offerPastAt
-export function offerItem(o: OfferView, me: string, status: OfferStatus, out: OfferPhaseNow | null): HistoryItem | null {
+// Участник — автор или принявший. status и out — как у offerPastAt. На обещание (Р-44; promised — комната и
+// обещания «Расчёта»): исход — «Сбылось. Боря проиграл(а): везёт шашлык — получено», мой результат —
+// выиграл / проиграл без суммы
+export function offerItem(
+  o: OfferView,
+  me: string,
+  status: OfferStatus,
+  out: OfferPhaseNow | null,
+  promised?: { room: SavedRoom; promises: readonly PromiseView[] },
+): HistoryItem | null {
   const at = offerPastAt(o, status, out)
   if (at === null) return null
   const side = sideOf(o, me)
   const base = { kind: 'offer' as const, id: o.id, condition: o.condition, at }
   const none = { kind: 'none' } as const
   const notHappened = NOT_HAPPENED[status]
-  if (notHappened) return { ...base, outcome: notHappened, mine: side ? { kind: 'net', amount: 0, refund: 0 } : none }
+  if (notHappened) return { ...base, outcome: notHappened, mine: side ? (o.promise ? { kind: 'promise', won: null } : { kind: 'net', amount: 0, refund: 0 }) : none }
   const stakes = stakesOf(o)
   if (out?.phase === 'cancelled') {
     const refund = side && stakes ? stakes[side] : 0
-    return { ...base, outcome: 'отменено судом', mine: side ? { kind: 'net', amount: 0, refund } : none }
+    return { ...base, outcome: 'отменено судом', mine: side ? (o.promise ? { kind: 'promise', won: null } : { kind: 'net', amount: 0, refund }) : none }
   }
   const winner = out?.approved?.winner ?? 'author'
+  // На обещание (Р-44): кто проиграл, что обещал и как с исполнением («Расчёт»); денег нет
+  if (o.promise) {
+    const p = promised?.promises.find((x) => x.offer === o.id)
+    const result = promised ? `. ${promiseResultText(promised.room, o, winner)}${p ? ' — ' + PROMISE_STATUS[p.status] : ''}` : ''
+    const outcome = offerVerdict(o, winner) + result
+    return { ...base, outcome, mine: side ? { kind: 'promise', won: side === winner } : none }
+  }
   const net = side && stakes ? offerNets(stakes, winner)[side] : 0
   return { ...base, outcome: offerVerdict(o, winner), mine: side ? { kind: 'net', amount: net, refund: 0 } : none }
 }
@@ -176,7 +192,8 @@ export function choiceItem(room: SavedRoom, v: ChoiceView, now: number): History
 }
 
 // Всё прошедшее комнаты, новое сверху (по мигу, когда стало прошедшим; равные — по номеру, новый выше);
-// lots — лоты комнаты (Р-38; нет — без лотов), choices — выборы (Р-39; нет — без выборов)
+// lots — лоты комнаты (Р-38; нет — без лотов), choices — выборы (Р-39; нет — без выборов), promises —
+// обещания «Расчёта» (Р-44; нет — у пари на обещание без отметки исполнения)
 export function historyItems(
   room: SavedRoom,
   events: readonly EventView[],
@@ -184,11 +201,12 @@ export function historyItems(
   now: number,
   lots: readonly LotView[] = [],
   choices: readonly ChoiceView[] = [],
+  promises: readonly PromiseView[] = [],
 ): HistoryItem[] {
   const me = room.memberId
   const items = [
     ...events.map((e) => eventItem(e, me, now)),
-    ...offers.map((o) => offerItem(o, me, offerStatus(offerState(o), now), offerOutcomeOf(room, o, now))),
+    ...offers.map((o) => offerItem(o, me, offerStatus(offerState(o), now), offerOutcomeOf(room, o, now), { room, promises })),
     ...lots.map((l) => lotItem(room, l, lotOutcomeOf(room, l, now))),
     ...choices.map((c) => choiceItem(room, c, now)),
   ].filter((x): x is HistoryItem => x !== null)
@@ -203,6 +221,7 @@ export function onlyMine(items: readonly HistoryItem[], mine: boolean): HistoryI
 // Мой результат словами: «+300 ₽», «−100 ₽», «0 ₽ — вернулось 300 ₽», «вы не участвовали» (без рода)
 export function myResultText(mine: MyResult, currency: string): string {
   if (mine.kind === 'none') return 'вы не участвовали'
+  if (mine.kind === 'promise') return mine.won === null ? 'на обещание — без денег' : mine.won ? 'выиграли — обещание вам' : 'проиграли — обещание за вами'
   const text = signedSum(mine.amount, currency)
   return mine.refund > 0 ? `${text} — вернулось ${sumText(mine.refund, currency)}` : text
 }

@@ -212,6 +212,41 @@ describe('прошедшее пари', () => {
   })
 })
 
+describe('строка пари на обещание (Р-44)', () => {
+  const final = (winner: 'author' | 'taker') => phase('final', { finalAt: 700, approved: { winner, at: 700, how: 'agreement', by: null } })
+  // Аня — автор на «сбудется», Боря принял; проиграет Аня — печёт пирог, Боря — везёт шашлык
+  const promised = offer({ status: 'accepted', accepted: { by: 'B', at: 30 }, odds: { a: 1, b: 1 }, amount: 0, takerAmount: 0, promise: { author: 'печёт пирог', taker: 'везёт шашлык' } })
+  const due = { offer: 'O1', at: 700, from: 'B', to: 'A', text: 'везёт шашлык', status: 'received' as const, changedAt: 800 }
+
+  it('исход — кто проиграл, что обещал и исполнение из «Расчёта»; мой результат — без суммы', () => {
+    expect(offerItem(promised, 'A', 'accepted', final('author'), { room, promises: [due] })).toMatchObject({
+      outcome: 'Сбылось. Боря проиграл(а): везёт шашлык — получено',
+      mine: { kind: 'promise', won: true },
+    })
+    expect(offerItem(promised, 'B', 'accepted', final('author'), { room, promises: [due] })?.mine).toEqual({ kind: 'promise', won: false })
+    expect(offerItem(promised, 'V', 'accepted', final('author'), { room, promises: [due] })?.mine).toEqual({ kind: 'none' })
+    // Отметок ещё нет в «Расчёте» — без исполнения; проиграла Аня — её обещание
+    expect(offerItem(promised, 'A', 'accepted', final('taker'), { room, promises: [] })?.outcome).toBe('Не сбылось. Аня проиграл(а): печёт пирог')
+  })
+
+  it('не состоялось и отменено судом — без денег', () => {
+    expect(offerItem({ ...promised, accepted: null }, 'A', 'expired', null)?.mine).toEqual({ kind: 'promise', won: null })
+    expect(offerItem(promised, 'B', 'accepted', phase('cancelled', { court: decided(800) }))).toMatchObject({ outcome: 'отменено судом', mine: { kind: 'promise', won: null } })
+  })
+
+  it('мой результат словами', () => {
+    expect(myResultText({ kind: 'promise', won: true }, 'RUB')).toBe('выиграли — обещание вам')
+    expect(myResultText({ kind: 'promise', won: false }, 'RUB')).toBe('проиграли — обещание за вами')
+    expect(myResultText({ kind: 'promise', won: null }, 'RUB')).toBe('на обещание — без денег')
+  })
+
+  it('«История» комнаты берёт исполнение из обещаний «Расчёта»', () => {
+    const items = historyItems(room, [], [{ ...promised, outcome: null }], 1000, [], [], [due])
+    // Исход из ответа не пришёл — пари не прошедшее; строки нет
+    expect(items).toEqual([])
+  })
+})
+
 describe('строка пари', () => {
   const final = (winner: 'author' | 'taker') => phase('final', { finalAt: 700, approved: { winner, at: 700, how: 'agreement', by: null } })
 
