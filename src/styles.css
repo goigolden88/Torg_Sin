@@ -5,19 +5,89 @@
    открытое — остаток), от 1280 — событие и «Новое событие» в две колонки. Проверка каждого
    экрана — на 390 и 1280 px, раскладка компьютера — ещё и на 1920. */
 
+/* Тема (Р-50, #166): цвета — только переменными ниже, в правилах — var(--…), жёстких цветов нет
+   (кроме графика --series-*). Светлая — по умолчанию и [data-theme='light']; тёмная — по системе
+   (prefers-color-scheme), если не выбрана светлая, и [data-theme='dark']. Выбор — в «Настройках»,
+   data-theme на <html> ставит index.html до первой отрисовки (src/theme.ts). Два блока тёмной — одни
+   и те же значения: правите один — правьте и второй */
+:root,
+:root[data-theme='light'] {
+  --bg: #ffffff; /* фон страницы */
+  --surface: #ffffff; /* поверхность: карточка, меню, окно, поле */
+  --surface-2: #f4f5f7; /* приглушённая поверхность: строка в карточке, вторичная кнопка, чип */
+  --surface-3: #eceef2; /* дорожка полосы, плашка внутри приглушённого */
+  --line: #e5e7ec; /* линия: рамка, разделитель */
+  --text: #0d1117;
+  --muted: #697184; /* приглушённый текст: подсказка, подпись */
+  --yes: #12a150; /* «да», выигрыш, удалось */
+  --yes-soft: #e5f5eb;
+  --no: #e5484d; /* «нет», проигрыш, ошибка, необратимое */
+  --no-soft: #fdeced;
+  --accent: #1f5bff; /* акцент: ссылка, выбранное в меню, фокус, полоса банка */
+  --accent-soft: #e8efff;
+  --warn: #a86400; /* предупреждение: ждут вас, срок, пометка */
+  --warn-soft: #fff1d9;
+  --button: #0d1117; /* главная кнопка, выбранный чип */
+  --button-text: #ffffff;
+  --on-color: #ffffff; /* текст на «да», «нет» и акценте */
+  --shadow: rgb(15 20 30 / 0.07);
+  --overlay: rgb(0 0 0 / 0.45); /* затемнение под окном */
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --bg: #0f1217;
+    --surface: #0f1217;
+    --surface-2: #181c24;
+    --surface-3: #212631;
+    --line: #262b36;
+    --text: #eef1f6;
+    --muted: #8e97a9;
+    --yes: #34c77b;
+    --yes-soft: rgb(52 199 123 / 0.14);
+    --no: #f2686d;
+    --no-soft: rgb(242 104 109 / 0.14);
+    --accent: #6b96ff;
+    --accent-soft: rgb(107 150 255 / 0.15);
+    --warn: #f0b35a;
+    --warn-soft: rgb(240 179 90 / 0.14);
+    --button: #eef1f6;
+    --button-text: #0f1217;
+    --on-color: #0f1217;
+    --shadow: rgb(0 0 0 / 0.35);
+    --overlay: rgb(0 0 0 / 0.6);
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme='dark'] {
+  --bg: #0f1217;
+  --surface: #0f1217;
+  --surface-2: #181c24;
+  --surface-3: #212631;
+  --line: #262b36;
+  --text: #eef1f6;
+  --muted: #8e97a9;
+  --yes: #34c77b;
+  --yes-soft: rgb(52 199 123 / 0.14);
+  --no: #f2686d;
+  --no-soft: rgb(242 104 109 / 0.14);
+  --accent: #6b96ff;
+  --accent-soft: rgb(107 150 255 / 0.15);
+  --warn: #f0b35a;
+  --warn-soft: rgb(240 179 90 / 0.14);
+  --button: #eef1f6;
+  --button-text: #0f1217;
+  --on-color: #0f1217;
+  --shadow: rgb(0 0 0 / 0.35);
+  --overlay: rgb(0 0 0 / 0.6);
+  color-scheme: dark;
+}
+
 :root {
-  --bg: #11141c;
-  --surface: #1b2030;
-  --surface-2: #252b3e;
-  --line: #313852;
-  --text: #eef0f6;
-  --muted: #9aa2b8;
-  --gold: #e3b341;
-  --gold-text: #1a1408;
-  --ok: #5cc88a;
-  --error: #ff7a7a;
   /* Исходы на графике — по порядку исходов события, не по месту; тёмные ступени палитры, где
-     соседние цвета различимы и при нарушениях цветового зрения */
+     соседние цвета различимы и при нарушениях цветового зрения; одни на обе темы */
   --series-1: #3987e5;
   --series-2: #d95926;
   --series-3: #199e70;
@@ -25,11 +95,12 @@
   --series-5: #d55181;
   --series-6: #008300;
   --series-7: #9085e9;
-  --radius: 14px;
+  --radius: 14px; /* карточка */
+  --radius-s: 10px; /* кнопка, поле, строка в карточке */
   --tap: 44px; /* меньше кнопки на телефоне не бывает */
   --nav-h: 64px;
   --pad: 16px;
-  color-scheme: dark;
+  /* шрифт — системный, без загрузки из сети (Р-50) */
   font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
   font-size: 16px;
   line-height: 1.45;
@@ -49,16 +120,25 @@ body {
 
 h1 {
   font-size: 1.5rem;
+  font-weight: 800;
+  letter-spacing: -0.01em;
   margin: 0; /* отступ до содержимого — gap у .screen */
 }
 
 h2 {
   font-size: 1.1rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
   margin: 0 0 8px;
 }
 
 p {
   margin: 0 0 8px;
+}
+
+/* Ссылка в тексте — цветом акцента темы, не синим браузера */
+a {
+  color: var(--accent);
 }
 
 /* ─── Каркас: телефон ─────────────────────────────────────────────────────── */
@@ -104,7 +184,8 @@ p {
 }
 
 .nav-item[aria-current='page'] {
-  color: var(--gold);
+  color: var(--text);
+  font-weight: 600;
 }
 
 .nav-icon {
@@ -153,7 +234,7 @@ p {
   align-items: center;
   min-height: var(--tap);
   margin: -0.5rem 0 0.25rem;
-  color: var(--gold);
+  color: var(--accent);
   text-decoration: none;
 }
 
@@ -188,7 +269,7 @@ a.button {
 }
 
 .room-item[aria-current='page'] {
-  border-color: var(--gold);
+  border-color: var(--accent);
 }
 
 .room-item .hint {
@@ -218,29 +299,41 @@ h3 {
   gap: 0.5rem;
   min-height: var(--tap);
   padding: 0 0.75rem;
-  border-radius: 10px;
+  border-radius: var(--radius-s);
   background: var(--surface-2);
   overflow-wrap: anywhere;
 }
 
-.badge {
-  padding: 0.1rem 0.5rem;
+/* Значок-«пилюля» (макет Р-50): «вы», «ведущий», «вы в суде», срок. Обычная — акцентом;
+   .muted — приглушённая; .warn — срок и «ждут вас» */
+.badge,
+.pill {
+  display: inline-block;
+  padding: 0.1rem 0.55rem;
   border-radius: 999px;
-  background: var(--gold);
-  color: var(--gold-text);
+  background: var(--accent-soft);
+  color: var(--accent);
   font-size: 0.8rem;
-  font-weight: 600;
+  font-weight: 700;
+  white-space: nowrap;
 }
 
-.badge.muted {
-  background: var(--line);
-  color: var(--text);
+.badge.muted,
+.pill {
+  background: var(--surface-2);
+  color: var(--muted);
+}
+
+.badge.warn,
+.pill.warn {
+  background: var(--warn-soft);
+  color: var(--warn);
 }
 
 .panel {
   margin: 0.5rem 0;
   padding: var(--pad);
-  border: 1px solid var(--gold);
+  border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--surface-2);
 }
@@ -254,7 +347,7 @@ h3 {
 .confirm {
   margin: 0.5rem 0;
   padding: 0.75rem;
-  border: 1px solid var(--error);
+  border: 1px solid var(--no);
   border-radius: 10px;
 }
 
@@ -273,7 +366,7 @@ h3 {
   width: 1.4rem;
   height: 1.4rem;
   margin: 0;
-  accent-color: var(--gold);
+  accent-color: var(--accent);
 }
 
 /* Заявки у ведущего: на телефоне — карточка «имя, когда» и кнопки под ней; шире — в строку */
@@ -290,9 +383,9 @@ h3 {
   display: flex;
   flex-direction: column;
   padding: 0.5rem 0.75rem;
-  border: 1px solid var(--gold);
-  border-radius: 10px;
-  background: var(--surface-2);
+  border: 1px solid var(--warn); /* ждёт ведущего — как «ждут вас» */
+  border-radius: var(--radius-s);
+  background: var(--surface);
 }
 
 .request .row {
@@ -330,7 +423,7 @@ h3 {
   width: 0.75rem;
   height: 0.75rem;
   border-radius: 50%;
-  background: var(--gold);
+  background: var(--accent);
   animation: pulse 1.4s ease-in-out infinite;
 }
 
@@ -406,28 +499,36 @@ h3 {
   cursor: pointer;
 }
 
+/* Чип (макет Р-50): обычный — приглушённая поверхность; выбранный — цветом главной кнопки;
+   .hot — «ждут вас», цветом предупреждения. Скругление — «пилюлей» в одну строку */
 .chip span {
   flex: 1;
   display: flex;
   align-items: center;
   justify-content: center;
   min-height: var(--tap);
-  padding: 0 0.5rem;
-  border: 1px solid var(--line);
-  border-radius: 10px;
+  padding: 0 0.75rem;
+  border: 1px solid transparent;
+  border-radius: calc(var(--tap) / 2);
   background: var(--surface-2);
+  color: var(--text);
+  font-weight: 600;
   text-align: center;
 }
 
+.chip.hot span {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
 .chip input:checked + span {
-  border-color: var(--gold);
-  background: var(--gold);
-  color: var(--gold-text);
-  font-weight: 600;
+  border-color: var(--button);
+  background: var(--button);
+  color: var(--button-text);
 }
 
 .chip input:focus-visible + span {
-  outline: 2px solid var(--gold);
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 
@@ -438,6 +539,7 @@ h3 {
 
 .chip input:disabled + span {
   opacity: 0.5;
+  border-color: var(--line);
   border-style: dashed;
 }
 
@@ -453,29 +555,55 @@ h3 {
   min-width: 0;
   min-height: var(--tap);
   padding: 0 12px;
-  border-radius: 10px;
+  border-radius: var(--radius-s);
   border: 1px solid var(--line);
-  background: var(--surface-2);
+  background: var(--surface);
   color: var(--text);
   font: inherit;
 }
 
+.input::placeholder {
+  color: var(--muted);
+}
+
+/* Кнопки (макет Р-50): главная — тёмная на светлой теме и светлая на тёмной; .secondary —
+   приглушённая; .yes / .no — «да» и «нет» мягким цветом, нажатая (aria-pressed) — полным */
 .button {
   min-height: var(--tap);
   padding: 0 18px;
-  border: 0;
-  border-radius: 10px;
-  background: var(--gold);
-  color: var(--gold-text);
+  border: 1px solid transparent;
+  border-radius: var(--radius-s);
+  background: var(--button);
+  color: var(--button-text);
   font: inherit;
-  font-weight: 600;
+  font-weight: 700;
   cursor: pointer;
 }
 
 .button.secondary {
   background: var(--surface-2);
   color: var(--text);
-  border: 1px solid var(--line);
+  border-color: var(--line);
+}
+
+.button.yes {
+  background: var(--yes-soft);
+  color: var(--yes);
+}
+
+.button.no {
+  background: var(--no-soft);
+  color: var(--no);
+}
+
+.button.yes[aria-pressed='true'] {
+  background: var(--yes);
+  color: var(--on-color);
+}
+
+.button.no[aria-pressed='true'] {
+  background: var(--no);
+  color: var(--on-color);
 }
 
 .button:disabled {
@@ -483,12 +611,47 @@ h3 {
   cursor: default;
 }
 
+/* Переключатель в несколько кнопок (тема в «Настройках»): выбранная — поверхностью с тенью */
+.seg {
+  display: grid;
+  grid-auto-columns: minmax(0, 1fr);
+  grid-auto-flow: column;
+  gap: 0.2rem;
+  margin: 0 0 8px;
+  padding: 0.2rem;
+  border-radius: calc(var(--radius-s) + 0.2rem);
+  background: var(--surface-2);
+}
+
+.seg-button {
+  min-height: var(--tap);
+  padding: 0.25rem 0.5rem;
+  border: 0;
+  border-radius: var(--radius-s);
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-weight: 600;
+  line-height: 1.2;
+  cursor: pointer;
+}
+
+.seg-button[aria-pressed='true'] {
+  background: var(--surface);
+  color: var(--text);
+  /* рамка — чтобы выбранная читалась и на тёмной, где тени не видно */
+  box-shadow:
+    0 1px 3px var(--shadow),
+    inset 0 0 0 1px var(--line);
+}
+
 .button:focus-visible,
+.seg-button:focus-visible,
 .input:focus-visible,
 .back:focus-visible,
 .room-item:focus-visible,
 .nav-item:focus-visible {
-  outline: 2px solid var(--gold);
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 
@@ -502,11 +665,11 @@ h3 {
 }
 
 .ok {
-  color: var(--ok);
+  color: var(--yes);
 }
 
 .error {
-  color: var(--error);
+  color: var(--no);
 }
 
 .textarea {
@@ -565,13 +728,13 @@ h3 {
   padding: 0.75rem var(--pad);
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  background: var(--surface-2);
+  background: var(--surface);
   color: var(--text);
   text-decoration: none;
 }
 
 .event-item:focus-visible {
-  outline: 2px solid var(--gold);
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 
@@ -590,7 +753,7 @@ h3 {
 }
 
 .status.open {
-  color: var(--gold);
+  color: var(--yes);
 }
 
 .status.closed {
@@ -598,7 +761,7 @@ h3 {
 }
 
 .status.cancelled {
-  color: var(--error);
+  color: var(--no);
 }
 
 /* Пометка «предмет спора ставит на себя» (Р-26): заметно всем — жирным, с рамкой предупреждения */
@@ -606,9 +769,10 @@ h3 {
   display: inline-block;
   max-width: 100%;
   padding: 0.3rem 0.6rem;
-  border: 1px solid var(--gold);
+  border: 1px solid var(--warn);
   border-radius: 0.5rem;
-  color: var(--gold);
+  background: var(--warn-soft);
+  color: var(--warn);
   font-weight: 700;
   overflow-wrap: anywhere;
 }
@@ -617,7 +781,7 @@ h3 {
 
 /* Открытое пари в списке рядом с ним (экран пари) */
 .event-item[aria-current='page'] {
-  border-color: var(--gold);
+  border-color: var(--accent);
 }
 
 /* Кэф «a к b»: два поля в строку, «к» между ними; поля делят ширину поровну */
@@ -643,7 +807,7 @@ h3 {
 /* Сколько ставит каждая сторона — по ходу ввода */
 .offer-summary {
   padding: 0.6rem 0.75rem;
-  border-left: 3px solid var(--gold);
+  border-left: 3px solid var(--accent);
   background: var(--surface-2);
   border-radius: 0 10px 10px 0;
   overflow-wrap: anywhere;
@@ -677,7 +841,7 @@ h3 {
 .auction-result {
   margin: 0.5rem 0;
   padding: 0.6rem 0.75rem;
-  border-left: 3px solid var(--ok);
+  border-left: 3px solid var(--yes);
   background: var(--surface-2);
   border-radius: 0 10px 10px 0;
   font-weight: 600;
@@ -691,21 +855,21 @@ h3 {
 .outbid {
   margin: 0.5rem 0;
   padding: 0.6rem 0.75rem;
-  border: 1px solid var(--error);
+  border: 1px solid var(--no);
   border-radius: 10px;
-  color: var(--error);
+  color: var(--no);
   font-weight: 600;
   overflow-wrap: anywhere;
 }
 
 .outbid-badge {
   align-self: flex-start;
-  background: var(--error);
-  color: var(--gold-text);
+  background: var(--no);
+  color: var(--on-color);
 }
 
 .modal .warn {
-  color: var(--error);
+  color: var(--no);
   font-weight: 600;
 }
 
@@ -731,7 +895,7 @@ h3 {
 }
 
 .bid.best {
-  border-color: var(--gold);
+  border-color: var(--accent);
 }
 
 .bid-sum {
@@ -768,11 +932,11 @@ h3 {
 }
 
 .choice-option.mine {
-  border-color: var(--gold);
+  border-color: var(--accent);
 }
 
 .choice-option.won {
-  border-left: 3px solid var(--ok);
+  border-left: 3px solid var(--yes);
 }
 
 .choice-total {
@@ -815,7 +979,7 @@ h3 {
 
 .clarifications li {
   padding: 0.5rem 0.75rem;
-  border-left: 3px solid var(--gold);
+  border-left: 3px solid var(--accent);
   background: var(--surface-2);
   border-radius: 0 10px 10px 0;
 }
@@ -841,20 +1005,19 @@ h3 {
 
 .bar-chance {
   flex: none;
-  color: var(--gold);
+  color: var(--accent);
 }
 
 .bar {
   height: 0.75rem;
   border-radius: 999px;
-  background: var(--surface-2);
-  border: 1px solid var(--line);
+  background: var(--surface-3);
   overflow: hidden;
 }
 
 .bar-fill {
   height: 100%;
-  background: var(--gold);
+  background: var(--accent);
 }
 
 .bar-row .hint {
@@ -864,9 +1027,10 @@ h3 {
 .bet-form {
   margin: 1rem 0 0.5rem;
   padding: var(--pad);
-  border: 1px solid var(--gold);
+  border: 1px solid var(--line);
   border-radius: var(--radius);
-  background: var(--surface-2);
+  background: var(--surface);
+  box-shadow: 0 0.5rem 1.5rem var(--shadow); /* «билет ставки» макета — над страницей */
   gap: 0.75rem;
 }
 
@@ -875,7 +1039,7 @@ h3 {
 }
 
 .bet-form .chip span {
-  background: var(--surface);
+  background: var(--surface-2);
 }
 
 /* Лента ставок и позиция: на телефоне — карточки; шире — строками */
@@ -980,7 +1144,7 @@ h3 {
 }
 
 .chart-plot:focus-visible {
-  outline: 2px solid var(--gold);
+  outline: 2px solid var(--accent);
   outline-offset: 4px;
 }
 
@@ -1080,15 +1244,15 @@ h3 {
 
 .outcome-head.approved,
 .final {
-  color: var(--ok);
+  color: var(--yes);
 }
 
 .outcome-head.cancelled {
-  color: var(--error);
+  color: var(--no);
 }
 
 .outcome-head.court {
-  color: var(--gold);
+  color: var(--warn);
 }
 
 .outcome-log,
@@ -1102,16 +1266,16 @@ h3 {
 }
 
 .voters .voted {
-  color: var(--ok);
+  color: var(--yes);
 }
 
-/* Ставки за сутки до досрочного предложения (Р-27): ставка предложившего — золотом */
+/* Ставки за сутки до досрочного предложения (Р-27): ставка предложившего — цветом предупреждения */
 .late-bets {
   display: flex;
   flex-direction: column;
   gap: 0.3rem;
   padding: 0.5rem 0.75rem;
-  border: 1px solid var(--gold);
+  border: 1px solid var(--warn);
   border-radius: 0.5rem;
 }
 
@@ -1120,7 +1284,7 @@ h3 {
 }
 
 .late-bets .proposer {
-  color: var(--gold);
+  color: var(--warn);
   font-weight: 600;
 }
 
@@ -1197,7 +1361,7 @@ h3 {
 }
 
 .seats > li.voted {
-  border-color: var(--ok);
+  border-color: var(--yes);
 }
 
 .seat-who {
@@ -1213,10 +1377,13 @@ h3 {
   word-break: break-all;
 }
 
+/* «вы в суде» — ждут вас: цветом предупреждения */
 .court-badge {
   display: inline-block;
   margin-left: 0.5rem;
   vertical-align: middle;
+  background: var(--warn-soft);
+  color: var(--warn);
 }
 
 @media (min-width: 600px) {
@@ -1269,7 +1436,7 @@ h3 {
 }
 
 .payouts tr.mine {
-  outline: 1px solid var(--gold);
+  outline: 1px solid var(--accent);
 }
 
 .payouts th[scope='row'] {
@@ -1294,14 +1461,14 @@ h3 {
 .payouts .win,
 .offer-result .win,
 .position-total .win {
-  color: var(--ok);
+  color: var(--yes);
   font-weight: 600;
 }
 
 .payouts .loss,
 .offer-result .loss,
 .position-total .loss {
-  color: var(--error);
+  color: var(--no);
   font-weight: 600;
 }
 
@@ -1317,7 +1484,7 @@ h3 {
 .settle-block .win,
 .settle-numbers .win,
 .transfer-status.received {
-  color: var(--ok);
+  color: var(--yes);
 }
 
 .room-balance.loss,
@@ -1325,7 +1492,7 @@ h3 {
 .settle-numbers .loss,
 .transfer-status.rejected,
 .transfer-status.cancelled {
-  color: var(--error);
+  color: var(--no);
 }
 
 .settle-block {
@@ -1379,12 +1546,12 @@ h3 {
 }
 
 .history .win {
-  color: var(--ok);
+  color: var(--yes);
   font-weight: 600;
 }
 
 .history .loss {
-  color: var(--error);
+  color: var(--no);
   font-weight: 600;
 }
 
@@ -1444,7 +1611,7 @@ h3 {
 }
 
 .settle-lots .event-item.mine {
-  outline: 1px solid var(--gold);
+  outline: 1px solid var(--accent);
 }
 
 .settle-lots .event-name {
@@ -1537,7 +1704,7 @@ h3 {
 }
 
 .transfer.pending {
-  border-color: var(--gold);
+  border-color: var(--warn);
 }
 
 .transfer .row {
@@ -1549,7 +1716,7 @@ h3 {
 }
 
 .transfer-status.pending {
-  color: var(--gold);
+  color: var(--warn);
 }
 
 /* Все участники: на телефоне — карточка в две колонки чисел (имя — во всю ширину) */
@@ -1628,7 +1795,7 @@ h3 {
   display: grid;
   place-items: center;
   padding: var(--pad);
-  background: rgb(0 0 0 / 0.6);
+  background: var(--overlay);
 }
 
 .modal {
@@ -1636,9 +1803,10 @@ h3 {
   max-height: 100%;
   overflow-y: auto;
   padding: 1.25rem;
-  border: 1px solid var(--gold);
+  border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--surface);
+  box-shadow: 0 0.75rem 2rem var(--shadow);
 }
 
 .modal-question {
@@ -1800,8 +1968,8 @@ h3 {
 
   .brand {
     font-size: 1.3rem;
-    font-weight: 700;
-    color: var(--gold);
+    font-weight: 800;
+    color: var(--text);
     white-space: nowrap;
     overflow: hidden;
   }
@@ -1830,7 +1998,7 @@ h3 {
   }
 
   .nav-toggle:focus-visible {
-    outline: 2px solid var(--gold);
+    outline: 2px solid var(--accent);
     outline-offset: 2px;
   }
 

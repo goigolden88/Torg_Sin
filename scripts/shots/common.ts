@@ -1,11 +1,27 @@
 // Общее для сценариев снимков (scripts/shots.ts — вход): адреса и ширины, DevTools-протокол,
 // Chrome без окна, «устройство» со своим хранилищем и помощники, которыми пользуются несколько
 // сценариев. Chrome — google-chrome, google-chrome-stable или chromium; свой путь — переменная CHROME
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
 export const OUT = 'shots'
+
+// Тема снимков — параметр сценария (Р-50, #166): шаг очереди идёт в своей теме (withTheme), каждое
+// его устройство открывается с темой системы в ней (prefers-color-scheme) — выбора в «Настройках» нет,
+// значит, «как в системе». Имя снимка — <ширина>-<тема>-<имя>.png
+export type Theme = 'light' | 'dark'
+export const THEMES: Theme[] = ['light', 'dark']
+const themeOfJob = new AsyncLocalStorage<Theme>()
+
+export function withTheme<T>(theme: Theme, run: () => Promise<T>): Promise<T> {
+  return themeOfJob.run(theme, run)
+}
+
+export function currentTheme(): Theme {
+  return themeOfJob.getStore() ?? 'light'
+}
 export const PORT = 4173
 export const SITE = `http://localhost:${PORT}/Torg_Sin/`
 export const PASSWORD = 'demo-password' // выдуманный: сервер живёт только на время снимков
@@ -138,12 +154,14 @@ export class Device {
   private session: string
   private size: Size
   readonly name: string
+  readonly theme: Theme
 
-  private constructor(cdp: Cdp, session: string, size: Size, name: string) {
+  private constructor(cdp: Cdp, session: string, size: Size, name: string, theme: Theme) {
     this.cdp = cdp
     this.session = session
     this.size = size
     this.name = name
+    this.theme = theme
   }
 
   // options: userAgent — чужой браузер (iPhone, Android); standalone — открыто с экрана «Домой»
@@ -158,6 +176,8 @@ export class Device {
     const { targetId } = await cdp.send<{ targetId: string }>('Target.createTarget', { url: 'about:blank', browserContextId })
     const { sessionId } = await cdp.send<{ sessionId: string }>('Target.attachToTarget', { targetId, flatten: true })
     await cdp.send('Page.enable', {}, sessionId)
+    const theme = currentTheme()
+    await cdp.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: theme }] }, sessionId)
     if (options.userAgent) await cdp.send('Emulation.setUserAgentOverride', { userAgent: options.userAgent }, sessionId)
     if (options.standalone) {
       await cdp.send(
@@ -173,9 +193,14 @@ export class Device {
         browserContextId,
       })
     }
-    const device = new Device(cdp, sessionId, size, name)
+    const device = new Device(cdp, sessionId, size, name, theme)
     await device.metrics(size.height)
     return device
+  }
+
+  // Скрипт до любых скриптов страницы при каждой загрузке (что было на экране до первой отрисовки)
+  async onNewDocument(source: string): Promise<void> {
+    await this.cdp.send('Page.addScriptToEvaluateOnNewDocument', { source }, this.session)
   }
 
   async goto(url: string): Promise<void> {
@@ -336,7 +361,7 @@ export class Device {
     }
     const { data } = await this.cdp.send<{ data: string }>('Page.captureScreenshot', { format: 'png' }, this.session)
     if (height > this.size.height) await this.metrics(this.size.height)
-    const path = join(OUT, `${this.size.name}-${file}.png`)
+    const path = join(OUT, `${this.size.name}-${this.theme}-${file}.png`)
     await writeFile(path, Buffer.from(data, 'base64'))
     console.log('  снимок', path)
   }

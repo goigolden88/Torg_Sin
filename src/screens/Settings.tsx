@@ -1,8 +1,10 @@
-// «Настройки»: адрес сервера комнат и проверка связи (Р-02); пароль компании на устройстве
+// «Настройки»: внешний вид — тема (Р-50); адрес сервера комнат и проверка связи (Р-02); пароль
+// компании на устройстве
 import { useState, type FormEvent } from 'react'
 import { DEFAULT_SERVER, healthUrl } from '../rules/address'
 import { isHealth, PROTOCOL_VERSION } from '../rules/protocol'
 import { getPassword, getServer, setPassword, setServer } from '../settings'
+import { getTheme, setTheme, THEME_CHOICES, type ThemeChoice } from '../theme'
 
 type Check = { state: 'idle' } | { state: 'busy' } | { state: 'ok'; text: string } | { state: 'fail'; text: string }
 
@@ -12,6 +14,12 @@ export function Settings() {
   const [error, setError] = useState('')
   const [check, setCheck] = useState<Check>({ state: 'idle' })
   const [password, setPasswordState] = useState(getPassword)
+  const [theme, setThemeState] = useState(getTheme)
+
+  function chooseTheme(choice: ThemeChoice) {
+    setTheme(choice)
+    setThemeState(choice)
+  }
 
   function forgetPassword() {
     setPassword('')
@@ -52,6 +60,17 @@ export function Settings() {
   return (
     <div className="screen">
       <h1>Настройки</h1>
+      <section className="card">
+        <h2>Внешний вид</h2>
+        <div className="seg" role="group" aria-label="Тема">
+          {THEME_CHOICES.map((c) => (
+            <button key={c.value} className="seg-button" type="button" aria-pressed={theme === c.value} onClick={() => chooseTheme(c.value)}>
+              {c.label}
+            </button>
+          ))}
+        </div>
+        <p className="hint">Тема — на этом устройстве. «Как в системе» — как на телефоне или компьютере: сменится там — сменится и здесь.</p>
+      </section>
       <section className="card">
         <h2>Сервер комнат</h2>
         <p className="hint">Сейчас: {server}</p>
