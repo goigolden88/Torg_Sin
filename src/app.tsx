@@ -90,7 +90,8 @@ function placeOf(route: Route): MenuPlace {
 function titleOf(route: Route, rooms: SavedRoom[] | null): string {
   if (route.tab === 'settings') return 'Настройки'
   const { view } = route
-  if (view.kind === 'list') return 'Мои комнаты'
+  // Главный экран: «Сводка» над «Моими комнатами» (#168); комнат нет — «Сводки» нет, только список
+  if (view.kind === 'list') return rooms && rooms.length > 0 ? 'Сводка' : 'Мои комнаты'
   if (view.kind === 'new') return 'Новая комната'
   if (view.kind === 'paste') return 'Вставить ссылку'
   if (view.kind === 'join' || view.kind === 'device' || view.kind === 'bad-link') return 'Вход в комнату'

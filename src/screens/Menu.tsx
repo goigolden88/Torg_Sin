@@ -1,15 +1,15 @@
 // Меню (Р-50, #167): одна разметка, раскладку меняет CSS (Р-10). До 1024 px — выезжает слева поверх
 // экрана по ☰ в шапке, с затемнением; закрывается ✕, Esc, нажатием мимо и переходом по пункту. От
 // 1024 px — колонка слева, ««» сворачивает её в значки (положение — настройка устройства).
-// Пункты: «Сводка» (пока ведёт на «Мои комнаты» — экран «Сводки» своей задачей), комнаты устройства
-// (значок-буква, название, баланс одной строкой, счётчик «ждут вас» — пока только суды без вашего голоса),
+// Пункты: «Сводка» (#/ — «Сводка» над «Моими комнатами», #168) со счётчиком всех дел, комнаты устройства
+// (значок-буква, название, баланс одной строкой, счётчик «ждут вас» — дела комнаты по её копии, summaryParts),
 // «Новая комната», «Вставить ссылку»; внизу — «Настройки» («Справка» и «Что нового» — своей задачей)
 import { useEffect, useRef } from 'react'
-import { savedEvents, savedLots, savedOffers, savedSettlement, type SavedRoom } from '../store/db'
+import { savedSettlement, type SavedRoom } from '../store/db'
 import { useEscape } from './BackLink'
-import { myVotesAwaited } from './courtParts'
 import { closedLast, roomClosed, roomLetter } from './memberParts'
 import { balanceNote } from './settleParts'
+import { roomTasks } from './summaryParts'
 
 // Где пользователь сейчас: пункт меню выделен (aria-current)
 export type MenuPlace = 'summary' | 'new' | 'paste' | 'settings' | { room: string } | null
@@ -33,14 +33,26 @@ export function Menu({ rooms, place, open, collapsed, onClose, onToggle }: Props
 
   const toggleLabel = collapsed ? 'Развернуть меню' : 'Свернуть меню'
   const openRoom = typeof place === 'object' && place ? place.room : null
-  const item = (href: string, label: string, icon: string, current: boolean) => (
-    <a className="nav-item" href={href} aria-current={current ? 'page' : undefined} aria-label={label} title={collapsed ? label : undefined}>
-      <span className="nav-icon" aria-hidden="true">
-        {icon}
-      </span>
-      <span className="nav-label">{label}</span>
-    </a>
-  )
+  // Дела «Сводки» — по копиям комнат (summaryParts), на «сейчас» устройства; у комнаты — её дела
+  const now = Date.now()
+  const counts = new Map((rooms ?? []).map((r) => [r.id, roomTasks(r, now).length]))
+  const total = [...counts.values()].reduce((s, n) => s + n, 0)
+  const item = (href: string, label: string, icon: string, current: boolean, count = 0) => {
+    const full = count ? `${label}, ждут вас: ${count}` : label
+    return (
+      <a className="nav-item" href={href} aria-current={current ? 'page' : undefined} aria-label={full} title={collapsed ? full : undefined}>
+        <span className="nav-icon" aria-hidden="true">
+          {icon}
+        </span>
+        <span className="nav-label">{label}</span>
+        {count > 0 && (
+          <span className="nav-count" aria-hidden="true" title="ждут вас">
+            {count}
+          </span>
+        )}
+      </a>
+    )
+  }
 
   return (
     <nav
@@ -61,13 +73,13 @@ export function Menu({ rooms, place, open, collapsed, onClose, onToggle }: Props
           <span aria-hidden="true">✕</span>
         </button>
       </div>
-      {item('#/', 'Сводка', '⚑', place === 'summary')}
+      {item('#/', 'Сводка', '⚑', place === 'summary', total)}
       <div className="nav-section">Комнаты</div>
       {rooms && rooms.length > 0 && (
         <ul className="nav-rooms">
           {closedLast(rooms).map((r) => (
             <li key={r.id}>
-              <MenuRoom room={r} current={r.id === openRoom} collapsed={collapsed} />
+              <MenuRoom room={r} current={r.id === openRoom} collapsed={collapsed} waiting={counts.get(r.id) ?? 0} />
             </li>
           ))}
         </ul>
@@ -80,12 +92,11 @@ export function Menu({ rooms, place, open, collapsed, onClose, onToggle }: Props
 }
 
 // Комната в меню: буква, название, под ним баланс (или «закрыта»), справа — счётчик «ждут вас»
-function MenuRoom({ room, current, collapsed }: { room: SavedRoom; current: boolean; collapsed: boolean }) {
+function MenuRoom({ room, current, collapsed, waiting }: { room: SavedRoom; current: boolean; collapsed: boolean; waiting: number }) {
   const name = String(room.name ?? '')
   const closed = roomClosed(room)
   const note = balanceNote(savedSettlement(room), room.memberId, room.currency)
   const sub = closed ? 'закрыта' : note
-  const waiting = myVotesAwaited(room, savedEvents(room), savedOffers(room), savedLots(room))
   const label = [name, sub, waiting ? `ждут вас: ${waiting}` : ''].filter(Boolean).join(', ')
   return (
     <a

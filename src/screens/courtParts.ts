@@ -93,8 +93,8 @@ export function roomAwaitsMyVote(room: SavedRoom, events: readonly EventView[], 
   return myVotesAwaited(room, events, offers, lots) > 0
 }
 
-// Сколько судов комнаты ждут голоса участника — счётчик «ждут вас» у комнаты в меню (#167; полный
-// счётчик «ждут вас» — своей задачей)
+// Сколько судов комнаты ждут голоса участника — для значка «вы в суде» в «Моих комнатах» (счётчик всех дел
+// «ждут вас» в меню — summaryParts, #168)
 export function myVotesAwaited(room: SavedRoom, events: readonly EventView[], offers: readonly OfferView[], lots: readonly LotView[] = []): number {
   const me = room.memberId
   return (

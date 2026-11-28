@@ -1,7 +1,9 @@
-// «Мои комнаты»: список своих комнат и открытое — создание или комната. У комнаты, где участник —
+// «Мои комнаты»: список своих комнат и открытое — создание или комната. Над списком — «Сводка» (Р-50,
+// #168): что ждёт вас во всех комнатах, по копиям на устройстве. У комнаты, где участник —
 // член суда и ещё не голосовал, — значок «вы в суде» (по последнему ответу комнаты; копии старше
-// 5 минут при открытии спрашиваются у сервера один раз — useSavedRooms). Закрытая комната (Р-43) — с
-// пометкой «закрыта», внизу списка.
+// 5 минут при открытии спрашиваются у сервера один раз — useSavedRooms); время копии, копия старше недели —
+// подсвечена «данные от … — откройте, чтобы обновить». Закрытая комната (Р-43) — с пометкой «закрыта»,
+// внизу списка.
 // Список или открытое — на любой ширине одно из двух (класс .open у .rooms): комнаты на компьютере —
 // в меню слева (#167, Р-50), рядом с открытым списка нет. Под списком — «Вставить ссылку» (PasteLink):
 // у приложения с экрана «Домой» адресной строки нет; она же — своим экраном #/paste из меню
@@ -27,6 +29,8 @@ import { PasteLink } from './PasteLink'
 import { RoomView } from './RoomView'
 import { balanceNote } from './settleParts'
 import { SettleScreen } from './SettleScreen'
+import { Summary } from './Summary'
+import { copyNote } from './summaryParts'
 import type { SavedRooms } from './useSavedRooms'
 
 export type RoomsView =
@@ -73,11 +77,16 @@ export function Rooms({ view, saved }: { view: RoomsView; saved: SavedRooms }) {
   // Событие, пари, лот, выбор, их формы, «Расчёт» и «История» (.wide) — «Назад» ведёт в комнату и виден и на
   // компьютере; у самой комнаты и форм входа на компьютере «Назад» не нужен — комнаты в меню слева
 
+  // «Сейчас» устройства для «Сводки» и свежести копий: экран перерисовывается при каждом обновлении
+  // комнат, отдельного опроса нет (Р-50)
+  const now = Date.now()
+
   return (
     <div className={'screen rooms' + (view.kind === 'list' ? '' : ' open') + (wide ? ' wide' : '')}>
+      {view.kind === 'list' && rooms && rooms.length > 0 && <Summary rooms={rooms} now={now} />}
       <div className="split">
         <section className="list">
-          <h1>Мои комнаты</h1>
+          <h2 className="list-head">Мои комнаты</h2>
           {storeError && <p className="error">{storeError}</p>}
           <a className="button" href="#/new" aria-current={view.kind === 'new' ? 'page' : undefined}>
             Создать комнату
@@ -94,22 +103,27 @@ export function Rooms({ view, saved }: { view: RoomsView; saved: SavedRooms }) {
             </div>
           ) : (
             <ul className="room-list">
-              {closedLast(rooms).map((r) => (
-                <li key={r.id}>
-                  <a className="room-item" href={'#/room/' + r.id} aria-current={r.id === openId ? 'page' : undefined}>
-                    <span className="room-name">
-                      {r.name}
-                      {roomAwaitsMyVote(r, savedEvents(r), savedOffers(r), savedLots(r)) && <span className="badge court-badge">вы в суде</span>}
-                      {roomClosed(r) && <span className="badge muted">закрыта</span>}
-                    </span>
-                    <span className="hint">
-                      {currencyLabel(r.currency)} · {participants(r.members.length)}
-                      {r.hostId === r.memberId ? ' · вы ведущий' : ''}
-                    </span>
-                    <RoomBalance room={r} />
-                  </a>
-                </li>
-              ))}
+              {closedLast(rooms).map((r) => {
+                const copy = copyNote(r, now)
+                return (
+                  <li key={r.id}>
+                    <a className={'room-item' + (copy.stale ? ' stale' : '')} href={'#/room/' + r.id} aria-current={r.id === openId ? 'page' : undefined}>
+                      <span className="room-name">
+                        {r.name}
+                        {roomAwaitsMyVote(r, savedEvents(r), savedOffers(r), savedLots(r)) && <span className="badge court-badge">вы в суде</span>}
+                        {roomClosed(r) && <span className="badge muted">закрыта</span>}
+                      </span>
+                      <span className="hint">
+                        {currencyLabel(r.currency)} · {participants(r.members.length)}
+                        {r.hostId === r.memberId ? ' · вы ведущий' : ''}
+                        {copy.stale ? '' : ' · ' + copy.text}
+                      </span>
+                      <RoomBalance room={r} />
+                      {copy.stale && <span className="room-stale">{copy.text}</span>}
+                    </a>
+                  </li>
+                )
+              })}
             </ul>
           )}
           {view.kind === 'list' && <PasteLink roomIds={rooms?.map((r) => r.id) ?? []} />}
