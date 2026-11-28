@@ -1,0 +1,483 @@
+<!doctype html>
+<html lang="ru">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ТоргСин · внешний вид</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Onest:wght@500;600;700;800&display=swap">
+<style>
+/* Страница-рамка: светлая/тёмная по системе. Макеты — свой набор переменных, переключается кнопкой «Светлая / Тёмная» */
+:root {
+  --bg: #f2f3f5; --panel: #ffffff; --line: #e1e3e8; --fg: #13161d; --muted: #626979; --soft: #e9ebef; --rec: #0b8a5c;
+  --display: 'Onest', 'Inter', system-ui, sans-serif;
+  --text: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #0b0d11; --panel: #15181f; --line: #262a34; --fg: #eef0f5; --muted: #9aa1b2; --soft: #20242d; --rec: #3ccf91; color-scheme: dark } }
+:root[data-theme="dark"] { --bg: #0b0d11; --panel: #15181f; --line: #262a34; --fg: #eef0f5; --muted: #9aa1b2; --soft: #20242d; --rec: #3ccf91; color-scheme: dark }
+[hidden] { display: none !important; }
+body { background: var(--bg); color: var(--fg); font-family: var(--text); font-size: 16px; line-height: 1.5;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 24px 72px; }
+.wrap { max-width: 1240px; margin: 0 auto; display: flex; flex-direction: column; gap: 34px; }
+h1, h2, h3 { font-family: var(--display); text-wrap: balance; margin: 0; letter-spacing: -0.01em; }
+h1 { font-size: clamp(1.8rem, 4vw, 2.5rem); font-weight: 800; }
+h2 { font-size: 1.45rem; font-weight: 700; }
+h3 { font-size: 1.05rem; font-weight: 700; }
+p { margin: 0; }
+.lead { max-width: 72ch; color: var(--muted); font-size: 1.05rem; }
+.eyebrow { font-size: .76rem; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+section { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 16px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.grid3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+@media (max-width: 860px) { .grid3 { grid-template-columns: minmax(0, 1fr); } }
+.card ul { margin: 0; padding-left: 1.15em; display: flex; flex-direction: column; gap: 5px; font-size: .94rem; }
+.bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5; background: var(--bg); padding-block: 8px; }
+.seg { display: inline-flex; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 3px; }
+.seg button { all: unset; cursor: pointer; padding: 8px 14px; border-radius: 9px; font-weight: 600; font-size: .92rem; color: var(--muted); }
+.seg button[aria-pressed="true"] { background: var(--fg); color: var(--bg); }
+.seg button:focus-visible { outline: 2px solid var(--fg); outline-offset: 2px; }
+.strip { display: flex; gap: 18px; overflow-x: auto; padding: 4px 2px 14px; scroll-snap-type: x proximity; }
+.ph { flex: 0 0 auto; width: 360px; max-width: calc(100vw - 48px); display: flex; flex-direction: column; gap: 8px; scroll-snap-align: start; margin: 0; }
+.ph figcaption, .dk figcaption { font-size: .86rem; color: var(--muted); }
+.ph figcaption { min-height: 3.9em; }
+.ph figcaption b, .dk figcaption b { color: var(--fg); }
+.scr { height: 740px; border-radius: 34px; border: 8px solid #1c1e24; overflow: hidden; position: relative; display: flex; flex-direction: column; box-shadow: 0 10px 30px rgb(0 0 0 / .12); }
+.body { flex: 1; overflow-y: auto; overflow-x: hidden; }
+.dk { margin: 0; display: flex; flex-direction: column; gap: 8px; }
+.desk-box { width: 100%; overflow: hidden; border-radius: 14px; border: 1px solid var(--line); box-shadow: 0 10px 30px rgb(0 0 0 / .10); }
+.desk { width: 1280px; height: 760px; transform-origin: 0 0; display: grid; }
+.todo-list { counter-reset: t; display: flex; flex-direction: column; gap: 8px; }
+.todo-list .card { flex-direction: row; gap: 12px; align-items: flex-start; }
+.todo-list .card::before { counter-increment: t; content: counter(t); font-family: var(--display); font-weight: 800; font-size: 1.2rem; color: var(--muted); min-width: 1.4em; }
+.todo-list .card div { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.todo-list small { color: var(--muted); font-size: .88rem; }
+
+/* ═══ Макет: переменные светлой и тёмной темы ═══ */
+.mock { --k-bg: #ffffff; --k-s: #f4f5f7; --k-s2: #eceef2; --k-line: #e5e7ec; --k-fg: #0d1117; --k-mu: #697184;
+  --k-yes: #12a150; --k-yes-s: #e5f5eb; --k-no: #e5484d; --k-no-s: #fdeced; --k-ac: #1f5bff; --k-ac-s: #e8efff;
+  --k-warn: #a86400; --k-warn-s: #fff1d9; --k-btn: #0d1117; --k-btn-fg: #ffffff; --k-shadow: rgb(15 20 30 / .07); }
+.dark .mock { --k-bg: #0f1217; --k-s: #181c24; --k-s2: #212631; --k-line: #262b36; --k-fg: #eef1f6; --k-mu: #8e97a9;
+  --k-yes: #34c77b; --k-yes-s: rgb(52 199 123 / .14); --k-no: #f2686d; --k-no-s: rgb(242 104 109 / .14); --k-ac: #6b96ff; --k-ac-s: rgb(107 150 255 / .15);
+  --k-warn: #f0b35a; --k-warn-s: rgb(240 179 90 / .14); --k-btn: #eef1f6; --k-btn-fg: #0f1217; --k-shadow: rgb(0 0 0 / .35); }
+.mock { background: var(--k-bg); color: var(--k-fg); font-family: var(--text); font-size: 14px; line-height: 1.4; }
+.mock * { box-sizing: border-box; }
+.mock svg { display: block; }
+.row { display: flex; align-items: center; gap: 8px; } .sp { justify-content: space-between; } .col { display: flex; flex-direction: column; }
+.num { font-variant-numeric: tabular-nums; }
+.av { width: 24px; height: 24px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; color: #fff; flex: 0 0 auto; }
+.av.a { background: #7c5cff; } .av.b { background: #f08a24; } .av.v { background: #e0457b; } .av.g { background: #1aa59a; } .av.d { background: #4a7bd6; }
+.stack { display: flex; } .stack .av { border: 2px solid var(--k-bg); margin-left: -7px; } .stack .av:first-child { margin-left: 0; }
+.top { padding: 12px 14px 10px; display: flex; flex-direction: column; gap: 8px; border-bottom: 1px solid var(--k-line); }
+.back { color: var(--k-mu); font-size: 13px; }
+.ttl { font-family: var(--display); font-weight: 700; font-size: 19px; line-height: 1.25; }
+.sub { color: var(--k-mu); font-size: 12px; }
+.icon { width: 34px; height: 34px; border-radius: 10px; background: var(--k-s); display: inline-flex; align-items: center; justify-content: center; font-weight: 800; color: var(--k-mu); font-size: 15px; flex: 0 0 auto; }
+.chips { display: flex; gap: 6px; overflow: hidden; }
+.chip { padding: 5px 10px; border-radius: 999px; background: var(--k-s); font-size: 12.5px; font-weight: 600; white-space: nowrap; color: var(--k-mu); }
+.chip.on { background: var(--k-btn); color: var(--k-btn-fg); }
+.chip.hot { background: var(--k-warn-s); color: var(--k-warn); }
+.feed { padding: 10px 12px 84px; display: flex; flex-direction: column; gap: 10px; }
+.mk { border: 1px solid var(--k-line); border-radius: 14px; padding: 12px; display: flex; flex-direction: column; gap: 8px; background: var(--k-bg); }
+.mk.me { border-color: var(--k-warn); box-shadow: 0 0 0 1px var(--k-warn-s); }
+.tag { font-size: 11.5px; color: var(--k-mu); font-weight: 600; display: flex; gap: 6px; align-items: center; }
+.tag .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--k-yes); flex: 0 0 auto; }
+.tag.warn .dot { background: var(--k-warn); } .tag.warn { color: var(--k-warn); }
+.q { font-weight: 650; font-size: 15px; line-height: 1.3; }
+.big { font-family: var(--display); font-size: 26px; font-weight: 800; line-height: 1.1; }
+.yn { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.y, .n { border-radius: 10px; padding: 10px 0; text-align: center; font-weight: 700; font-size: 13.5px; }
+.y { background: var(--k-yes-s); color: var(--k-yes); } .n { background: var(--k-no-s); color: var(--k-no); }
+.foot { color: var(--k-mu); font-size: 12px; display: flex; justify-content: space-between; gap: 8px; }
+.btn { background: var(--k-btn); color: var(--k-btn-fg); border-radius: 11px; padding: 11px; text-align: center; font-weight: 700; font-size: 13.5px; }
+.btn.alt { background: var(--k-s); color: var(--k-fg); }
+.btn.go { background: var(--k-yes); color: #fff; }
+.ob { display: grid; grid-template-columns: 1fr auto; gap: 4px 8px; font-size: 13px; align-items: center; }
+.barx { grid-column: 1 / -1; height: 6px; border-radius: 4px; background: var(--k-s2); overflow: hidden; } .barx i { display: block; height: 100%; background: var(--k-ac); }
+.fab { position: absolute; right: 14px; bottom: 72px; background: var(--k-ac); color: #fff; border-radius: 999px; padding: 12px 16px; font-weight: 700; box-shadow: 0 6px 16px var(--k-shadow); }
+.tabbar { display: grid; grid-template-columns: repeat(4, 1fr); border-top: 1px solid var(--k-line); background: var(--k-bg); height: 58px; flex: 0 0 auto; }
+.tabbar div { display: flex; flex-direction: column; align-items: center; justify-content: center; font-size: 11px; color: var(--k-mu); gap: 4px; font-weight: 600; }
+.tabbar div.on { color: var(--k-fg); }
+.tabbar i { width: 18px; height: 3px; border-radius: 2px; background: currentColor; opacity: .45; } .tabbar div.on i { opacity: 1; }
+.sec { padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; }
+.h6 { font-size: 12.5px; font-weight: 700; display: flex; justify-content: space-between; align-items: center; color: var(--k-fg); }
+.ln { display: flex; gap: 2px; border-bottom: 1px solid var(--k-line); padding: 0 14px; }
+.ln span { padding: 9px 10px; font-size: 13px; font-weight: 600; color: var(--k-mu); }
+.ln span.on { color: var(--k-fg); box-shadow: inset 0 -2px 0 var(--k-fg); }
+.ticket { border-top: 1px solid var(--k-line); padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; background: var(--k-bg); box-shadow: 0 -8px 24px var(--k-shadow); border-radius: 18px 18px 0 0; flex: 0 0 auto; }
+.seg2 { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.seg2 div { border-radius: 10px; padding: 9px; text-align: center; font-weight: 700; background: var(--k-s); }
+.seg2 .y.on { background: var(--k-yes); color: #fff; }
+.amt { display: flex; justify-content: space-between; align-items: center; border: 1px solid var(--k-line); border-radius: 12px; padding: 8px 12px; }
+.amt b { font-family: var(--display); font-size: 22px; }
+.qk { display: flex; gap: 6px; } .qk span { flex: 1; text-align: center; padding: 6px 0; border-radius: 8px; background: var(--k-s); font-size: 12px; font-weight: 600; }
+.win { display: flex; justify-content: space-between; font-size: 13px; } .win b { color: var(--k-yes); }
+.steps { display: flex; gap: 4px; font-size: 10.5px; color: var(--k-mu); font-weight: 600; }
+.steps span { flex: 1; text-align: center; padding-top: 6px; border-top: 3px solid var(--k-line); }
+.steps span.done { border-color: var(--k-yes); color: var(--k-fg); } .steps span.now { border-color: var(--k-warn); color: var(--k-fg); }
+.box { border: 1px solid var(--k-line); border-radius: 12px; padding: 10px 12px; display: flex; flex-direction: column; gap: 7px; }
+.box.warn { border-color: var(--k-warn); }
+.lead-r { display: grid; grid-template-columns: 18px 1fr auto; align-items: center; gap: 8px; font-size: 13.5px; padding: 7px 0; border-bottom: 1px solid var(--k-line); }
+.types { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+.types div { border: 1px solid var(--k-line); border-radius: 10px; padding: 8px 4px; text-align: center; font-size: 12px; font-weight: 700; }
+.types div.on { border-color: var(--k-btn); background: var(--k-btn); color: var(--k-btn-fg); }
+.fld { display: flex; flex-direction: column; gap: 4px; } .fld label { font-size: 12px; font-weight: 600; color: var(--k-mu); }
+.in { border: 1px solid var(--k-line); border-radius: 10px; padding: 10px; background: var(--k-bg); }
+.more { display: flex; justify-content: space-between; align-items: center; padding: 10px 12px; border-radius: 12px; background: var(--k-s); font-size: 13px; gap: 8px; }
+.more small { color: var(--k-mu); display: block; font-size: 12px; }
+.pos { color: var(--k-yes); } .neg { color: var(--k-no); }
+.pill { font-size: 11px; font-weight: 700; border-radius: 999px; padding: 2px 8px; background: var(--k-s); color: var(--k-mu); white-space: nowrap; }
+.pill.w { background: var(--k-warn-s); color: var(--k-warn); }
+
+/* «Сводка» */
+.turn { display: flex; flex-direction: column; gap: 8px; }
+.turn-hd { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.turn-hd b { font-family: var(--display); font-size: 20px; font-weight: 800; }
+.balance { display: grid; grid-template-columns: 1fr auto; align-items: center; background: var(--k-btn); color: var(--k-btn-fg); border-radius: 16px; padding: 12px 14px; gap: 2px 8px; }
+.balance .l { font-size: 12px; opacity: .7; } .balance b { font-family: var(--display); font-size: 22px; font-weight: 800; }
+.do { border: 1px solid var(--k-line); border-radius: 14px; padding: 11px 12px; display: flex; flex-direction: column; gap: 7px; background: var(--k-bg); }
+.do .meta { display: flex; justify-content: space-between; gap: 8px; font-size: 11.5px; color: var(--k-mu); font-weight: 600; }
+.do p { font-size: 13.5px; } .do p b { font-weight: 650; }
+.do .acts { display: flex; gap: 6px; } .do .acts .btn { flex: 1; padding: 9px; }
+.silent { font-size: 11.5px; color: var(--k-mu); }
+.fresh { font-size: 11.5px; color: var(--k-mu); display: flex; align-items: center; gap: 6px; }
+.fresh i { width: 6px; height: 6px; border-radius: 50%; background: var(--k-yes); display: inline-block; }
+.room { display: grid; grid-template-columns: 34px 1fr auto; gap: 10px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--k-line); }
+.room .t { font-weight: 650; font-size: 14px; } .room .s { font-size: 12px; color: var(--k-mu); }
+.room.stale { background: var(--k-warn-s); border-radius: 12px; padding: 10px; border: 0; margin-top: 4px; }
+.room.stale .s { color: var(--k-warn); }
+
+/* Меню: на телефоне — выезжает поверх, на компьютере — колонка слева, сворачивается в значки */
+.drawer { position: absolute; inset: 0; display: grid; grid-template-columns: 290px 1fr; z-index: 3; }
+.drawer .shade { background: rgb(0 0 0 / .45); }
+.menu { background: var(--k-bg); border-right: 1px solid var(--k-line); display: flex; flex-direction: column; padding: 14px 10px; gap: 4px; overflow: hidden; }
+.menu .brand { font-family: var(--display); font-weight: 800; font-size: 19px; padding: 4px 8px 10px; display: flex; justify-content: space-between; align-items: center; }
+.menu .brand small { font-family: var(--text); font-size: 14px; color: var(--k-mu); font-weight: 600; }
+.mi { display: grid; grid-template-columns: 30px 1fr auto; align-items: center; gap: 10px; padding: 7px 8px; border-radius: 10px; font-size: 13.5px; }
+.mi.on { background: var(--k-s); font-weight: 650; }
+.mi .ic { width: 30px; height: 30px; border-radius: 9px; background: var(--k-s2); display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 800; color: var(--k-mu); }
+.mi .s { display: block; font-size: 11.5px; color: var(--k-mu); font-weight: 500; }
+.mi .s.w { color: var(--k-warn); }
+.cnt { background: var(--k-no); color: #fff; font-size: 11px; border-radius: 999px; padding: 1px 7px; font-weight: 700; }
+.newdot { width: 8px; height: 8px; border-radius: 50%; background: var(--k-ac); display: inline-block; }
+.menu .lbl { font-size: 11px; font-weight: 700; letter-spacing: .06em; color: var(--k-mu); padding: 12px 8px 4px; }
+.menu .foot-links { margin-top: auto; border-top: 1px solid var(--k-line); padding-top: 8px; display: flex; flex-direction: column; gap: 2px; }
+.rail .mi { grid-template-columns: 30px; padding: 0; position: relative; }
+.rail .mi .cnt { position: absolute; top: -6px; right: -10px; }
+
+/* Настройки, справка */
+.group { display: flex; flex-direction: column; }
+.group .gh { font-size: 11.5px; font-weight: 700; letter-spacing: .06em; color: var(--k-mu); padding: 0 4px 6px; text-transform: uppercase; }
+.group .gb { border: 1px solid var(--k-line); border-radius: 14px; overflow: hidden; }
+.set { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 11px 12px; border-bottom: 1px solid var(--k-line); font-size: 13.5px; }
+.set:last-child { border-bottom: 0; }
+.set .v { color: var(--k-mu); font-size: 13px; }
+.tseg { display: inline-flex; background: var(--k-s); border-radius: 9px; padding: 2px; } .tseg span { padding: 4px 7px; border-radius: 7px; font-size: 11.5px; font-weight: 600; color: var(--k-mu); } .tseg span.on { background: var(--k-bg); color: var(--k-fg); box-shadow: 0 1px 2px var(--k-shadow); }
+.help-card { border: 1px solid var(--k-line); border-radius: 14px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+.help-card h6 { margin: 0; font-family: var(--display); font-size: 15px; font-weight: 700; }
+.help-card ol { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+.example { background: var(--k-ac-s); border-radius: 10px; padding: 8px 10px; font-size: 12.5px; }
+.example b { color: var(--k-ac); font-size: 11px; letter-spacing: .05em; text-transform: uppercase; display: block; margin-bottom: 2px; }
+.acc { display: flex; justify-content: space-between; padding: 11px 12px; border: 1px solid var(--k-line); border-radius: 12px; font-size: 13.5px; font-weight: 600; }
+.acc span { color: var(--k-mu); font-weight: 500; }
+</style>
+
+<div class="wrap">
+  <header style="display:flex;flex-direction:column;gap:10px">
+    <span class="eyebrow">ТоргСин · этап «Внешний вид» · выбранный вариант · 28.11.2026</span>
+    <h1>«Рынок» с окном «Сводка»</h1>
+    <p class="lead">Основа — лента споров с крупным числом и быстрой ставкой. Из «Дел» взято окно «Сводка»: что ждёт вас во всех комнатах и к какому сроку. Оно собирается из копий комнат, которые уже лежат на устройстве, и пишет, на какое время эти данные. Меню слева со списком комнат на компьютере раскрывается и сворачивается в значки, а на телефоне выезжает поверх экрана. Внизу меню — «Настройки», «Справка», «Что нового». Тёмная тема — кнопкой ниже.</p>
+  </header>
+
+  <div class="bar">
+    <span class="eyebrow">Макеты</span>
+    <div class="seg" role="group" aria-label="Тема макетов"><button type="button" data-t="light" aria-pressed="true">Светлая</button><button type="button" data-t="dark" aria-pressed="false">Тёмная</button></div>
+  </div>
+
+  <div id="mocks" class="mocks">
+  <section>
+    <h2>Телефон</h2>
+    <div class="strip">
+
+      <figure class="ph"><figcaption><b>Главная.</b> Сверху «Сводка», под ним комнаты. У каждой комнаты видно, когда обновлялась; давно не открытая подсвечена</figcaption>
+        <div class="scr mock"><div class="body">
+          <div class="top" style="border:0;padding-bottom:4px"><div class="row sp"><span class="icon">☰</span><span class="ttl">ТоргСин</span><span class="icon">+</span></div></div>
+          <div class="sec turn">
+            <div class="turn-hd"><b>Сводка</b><span class="fresh"><i></i>по копиям комнат · 21:40</span></div>
+            <div class="balance"><span class="l">Всего по комнатам</span><span></span><b class="num">вам должны 200 ₽</b><span class="sub" style="color:inherit;opacity:.7">2 комнаты ›</span></div>
+            <div class="do"><div class="meta"><span>Шашлыки · суд</span><span class="pill w">до 01.12 · 3 дн</span></div><p><b>Пройдём весь маршрут за два дня</b> — вы в суде</p><div class="acts"><span class="btn">Голосовать</span></div><span class="silent">Не проголосуете — место перейдёт запасному</span></div>
+            <div class="do"><div class="meta"><span>Шашлыки · перевод</span><span class="pill w">сегодня</span></div><p>Вера отметила, что перевела вам <b>400 ₽</b></p><div class="acts"><span class="btn">Получил</span><span class="btn alt">Не получал</span></div></div>
+            <div class="do"><div class="meta"><span>Шашлыки · пари вам</span><span class="pill">до 29.11</span></div><p>Вера: <b>Гена не опоздает на электричку</b> — 200 ₽</p><div class="acts"><span class="btn">Открыть</span></div></div>
+          </div>
+          <div class="sec" style="gap:0">
+            <div class="h6" style="padding-bottom:4px">Мои комнаты</div>
+            <div class="room"><span class="icon">Ш</span><div><div class="t">Шашлыки на даче</div><div class="s">4 участника · вам должны 200 ₽ · 21:40</div></div><span class="pill w">3</span></div>
+            <div class="room stale"><span class="icon">Р</span><div><div class="t">Работа</div><div class="s">данные от 18.11 · не открывали 10 дней</div></div><span class="sub">›</span></div>
+          </div>
+        </div></div>
+      </figure>
+
+      <figure class="ph"><figcaption><b>Меню.</b> Кнопка ☰ открывает то же меню, что на компьютере стоит слева: «Сводка», комнаты, внизу настройки, справка и «Что нового»</figcaption>
+        <div class="scr mock"><div class="body" style="filter:blur(1px)">
+          <div class="top" style="border:0"><div class="row sp"><span class="icon">☰</span><span class="ttl">ТоргСин</span><span class="icon">+</span></div></div>
+          <div class="sec"><div class="balance"><span class="l">Всего по комнатам</span><span></span><b>вам должны 200 ₽</b><span></span></div></div></div>
+          <div class="drawer"><div class="menu">
+            <div class="brand">ТоргСин <small>✕</small></div>
+            <div class="mi on"><span class="ic">⚑</span><span>Сводка</span><span class="cnt">3</span></div>
+            <div class="lbl">КОМНАТЫ</div>
+            <div class="mi"><span class="ic">Ш</span><span>Шашлыки на даче<span class="s">вам должны 200 ₽</span></span><span class="cnt">3</span></div>
+            <div class="mi"><span class="ic">Р</span><span>Работа<span class="s w">данные от 18.11</span></span><span></span></div>
+            <div class="mi"><span class="ic">+</span><span>Новая комната</span><span></span></div>
+            <div class="mi"><span class="ic">⇲</span><span>Вставить ссылку</span><span></span></div>
+            <div class="foot-links">
+              <div class="mi"><span class="ic">⚙</span><span>Настройки</span><span></span></div>
+              <div class="mi"><span class="ic">?</span><span>Справка</span><span></span></div>
+              <div class="mi"><span class="ic">★</span><span>Что нового</span><span class="newdot"></span></div>
+            </div>
+          </div><div class="shade"></div></div>
+        </div>
+      </figure>
+
+      <figure class="ph"><figcaption><b>Комната.</b> Все споры одной лентой; «Ждут вас» — фильтром и рамкой у карточки. Число и действие — прямо в карточке</figcaption>
+        <div class="scr mock"><div class="body">
+          <div class="top">
+            <div class="row sp"><span class="back">‹ ☰</span><span class="stack"><span class="av a">А</span><span class="av b">Б</span><span class="av v">В</span><span class="av g">Г</span></span></div>
+            <div class="ttl">Шашлыки на даче</div>
+            <div class="chips"><span class="chip on">Все 6</span><span class="chip hot">Ждут вас 2</span><span class="chip">Пул 2</span><span class="chip">Пари 2</span><span class="chip">Лот 1</span><span class="chip">Выбор 1</span></div>
+          </div>
+          <div class="feed">
+            <div class="mk me"><div class="tag warn"><span class="dot"></span>Пул · суд · вы в суде · до 01.12</div><div class="q">Пройдём весь маршрут за два дня</div><div class="foot"><span>апелляция Веры: «срезал через протоку»</span><span>банк 1 000 ₽</span></div><span class="btn">Голосовать</span></div>
+            <div class="mk"><div class="tag"><span class="dot"></span>Пул · приём до 28.11, 19:00</div>
+              <div class="row sp" style="align-items:flex-start"><div class="q">В субботу на даче будет дождь</div><div class="col" style="align-items:flex-end"><span class="big num pos">40%</span><span class="sub">да</span></div></div>
+              <div class="yn"><div class="y">Да 40 %</div><div class="n">Нет 60 %</div></div><div class="foot"><span>банк 750 ₽ · 2 ставки</span><span>вы: 300 ₽ на «Да»</span></div></div>
+            <div class="mk me"><div class="tag warn"><span class="dot"></span>Пари · Вера → вам · до 29.11</div><div class="q">Гена не опоздает на электричку</div><div class="foot"><span>Вера 200 ₽ «сбудется» · 1 к 1</span><span>гарант Боря</span></div><div class="row"><span class="btn" style="flex:1">Принять 200 ₽</span><span class="btn alt" style="flex:1">Встречное</span></div></div>
+            <div class="mk"><div class="tag"><span class="dot"></span>Лот · торг ещё 3 ч</div><div class="row sp"><div class="q">Велосипед «Кама»</div><div class="col" style="align-items:flex-end"><span class="big num" style="font-size:20px">1 500 ₽</span><span class="sub">лучшая · Вера</span></div></div><span class="btn alt">Перебить: 1 650 ₽</span></div>
+            <div class="mk"><div class="tag"><span class="dot"></span>Выбор · вклады до 29.11</div><div class="q">Куда едем в мае?</div><div class="ob"><span>Ладога</span><span class="num">800 ₽</span><div class="barx"><i style="width:62%"></i></div><span>Карелия</span><span class="num">500 ₽</span><div class="barx"><i style="width:38%"></i></div></div></div>
+          </div>
+        </div>
+        <div class="fab">+ Спор</div>
+        <div class="tabbar"><div class="on"><i></i>Споры</div><div><i></i>Расчёт</div><div><i></i>Участники</div><div><i></i>История</div></div></div>
+      </figure>
+
+      <figure class="ph"><figcaption><b>Пул и ставка.</b> Вероятность и график крупно; снизу билет ставки — выигрыш виден до нажатия, ставка — с подтверждением</figcaption>
+        <div class="scr mock"><div class="body">
+          <div class="top" style="border:0"><span class="back">‹ Шашлыки на даче</span><div class="tag"><span class="dot"></span>Пул · приём до 28.11, 19:00 · ещё 1 дн</div><div class="ttl" style="font-size:18px">В субботу на даче будет дождь</div>
+            <div class="row" style="gap:16px"><div><span class="big num pos">40%</span> <span class="sub">Да</span></div><div><span class="big num neg" style="font-size:20px">60%</span> <span class="sub">Нет</span></div></div>
+            <svg viewBox="0 0 330 84" width="100%" height="84" aria-hidden="true"><line x1="0" y1="42" x2="330" y2="42" stroke="var(--k-line)"/><polyline points="0,8 110,8 130,52 330,52" fill="none" stroke="var(--k-yes)" stroke-width="2.5"/><polyline points="0,76 110,76 130,34 330,34" fill="none" stroke="var(--k-no)" stroke-width="2.5"/><circle cx="330" cy="52" r="4" fill="var(--k-yes)"/></svg>
+            <div class="sub">банк 750 ₽ · на «Да» 300 — коэф 2,5 · на «Нет» 450 — коэф 1,67</div>
+          </div>
+          <div class="ln"><span class="on">Ставки 2</span><span>Условия</span><span>Исход</span></div>
+          <div class="sec">
+            <div class="row sp" style="font-size:13px"><span class="row"><span class="av v">В</span>Вера · 450 ₽ на «Нет»</span><span class="sub">18:36</span></div>
+            <div class="row sp" style="font-size:13px"><span class="row"><span class="av a">А</span>Вы · 300 ₽ на «Да»</span><span class="sub">18:30</span></div>
+          </div>
+        </div>
+        <div class="ticket">
+          <div class="seg2"><div class="y on">Да · 2,5</div><div>Нет · 1,67</div></div>
+          <div class="amt"><span class="sub">Сумма</span><b class="num">300 ₽</b></div>
+          <div class="qk"><span>+100</span><span>+500</span><span>+1 000</span><span>Сброс</span></div>
+          <div class="win"><span>Если выиграет «Да»</span><b class="num">получите 750 ₽</b></div>
+          <span class="btn go">Поставить 300 ₽ на «Да»</span>
+        </div></div>
+      </figure>
+
+      <figure class="ph"><figcaption><b>Пари вам.</b> Условия крупно, сколько вы ставите и что получите; торг — «Встречное» с другим кэфом</figcaption>
+        <div class="scr mock"><div class="body">
+          <div class="top" style="border:0"><span class="back">‹ Шашлыки на даче</span><div class="tag warn"><span class="dot"></span>Пари · Вера предлагает вам · ответ до 29.11</div><div class="ttl" style="font-size:18px">Гена не опоздает на электричку</div>
+            <div class="steps"><span class="now">Торг</span><span>Исход</span><span>Апелляция</span><span>Окончательно</span></div></div>
+          <div class="sec">
+            <div class="box"><div class="row sp"><span class="row"><span class="av v">В</span>Вера — «сбудется»</span><b class="num">200 ₽</b></div><div class="row sp"><span class="row"><span class="av a">А</span>Вы — «не сбудется»</span><b class="num">200 ₽</b></div><div class="foot" style="border-top:1px solid var(--k-line);padding-top:7px"><span>кэф 1 к 1 · банк 400 ₽</span><span>выиграете — +200 ₽</span></div></div>
+            <div class="box"><div class="row sp" style="font-size:13px"><span>Гарант</span><b>Боря</b></div><div class="row sp" style="font-size:13px"><span>Исход</span><b>к 30.11, 09:00</b></div><div class="row sp" style="font-size:13px"><span>Проверка</span><b>Гена пишет в чат из вагона</b></div></div>
+            <div class="sub" style="font-size:12px">Не ответите до 29.11 — предложение снимется само.</div>
+          </div>
+        </div>
+        <div class="ticket"><div class="row"><span class="btn" style="flex:1">Принять 200 ₽</span><span class="btn alt" style="flex:1">Встречное</span></div><span class="btn alt" style="background:none;padding:6px">Не сейчас</span></div></div>
+      </figure>
+
+      <figure class="ph"><figcaption><b>Суд.</b> Полоса шагов наверху; на вкладке «Исход» — причина апелляции, места суда, жребий и ваш голос</figcaption>
+        <div class="scr mock"><div class="body">
+          <div class="top" style="border:0"><span class="back">‹ Шашлыки на даче</span><div class="ttl" style="font-size:18px">Пройдём весь маршрут за два дня</div>
+            <div class="steps"><span class="done">Приём</span><span class="done">Исход</span><span class="done">Апелляция</span><span class="now">Суд</span><span>Окончательно</span></div></div>
+          <div class="ln"><span>Ставки 3</span><span>Условия</span><span class="on">Исход</span></div>
+          <div class="sec">
+            <div class="box"><b>Утверждён «Да» — Вера оспорила</b><span class="sub" style="font-size:13px">«Боря срезал через протоку — по треку видно»</span></div>
+            <div class="box"><div class="row sp"><b>Суд · 3 места</b><span class="sub">голосов 1 из 3</span></div>
+              <div class="row" style="font-size:13px"><span class="av a">А</span><span style="flex:1">Вы</span><span class="pill w">до 01.12, 20:38</span></div>
+              <div class="row" style="font-size:13px"><span class="av g">Г</span><span style="flex:1">Гена</span><span class="pill">проголосовал</span></div>
+              <div class="row" style="font-size:13px"><span class="av d">Д</span><span style="flex:1">Дима</span><span class="pill">ещё нет</span></div>
+              <span class="sub" style="font-size:11.5px">Жребий: зерно 5eed0063… — проверить может любой ›</span></div>
+            <div class="box warn"><b>Как было на самом деле?</b><div class="yn"><div class="y">Было «Да»</div><div class="n">Было «Нет»</div></div><span class="sub" style="font-size:11.5px">Голос не изменить. Решает большинство.</span></div>
+            <div class="more"><span>Выплаты при «Да» и при «Нет»</span><span>›</span></div>
+          </div>
+        </div></div>
+      </figure>
+
+      <figure class="ph"><figcaption><b>Расчёт.</b> Как «портфель»: итог, что ждёт окончательности, деньги в игре, кто кому — с «Перевёл» и «Получил»</figcaption>
+        <div class="scr mock"><div class="body">
+          <div class="top"><span class="ttl">Расчёт</span><div><span class="big num pos">+600 ₽</span> <span class="sub">итог по 2 пари</span></div>
+            <div class="row" style="gap:14px;font-size:12.5px"><span>ждёт окончательности <b class="num">+200</b></span><span>в игре <b class="num">500</b></span></div></div>
+          <div class="sec"><div class="h6">Кто кому <span class="sub">по ставкам ›</span></div>
+            <div class="box"><div class="row sp"><span>Вы → Боря</span><b class="num">300 ₽</b></div><span class="btn">Перевёл</span></div>
+            <div class="box warn"><div class="row sp"><span>Вера → вам</span><b class="num">500 ₽</b></div><span class="sub">Вера отметила «Перевёл» 400 ₽ · 21:36</span><div class="row"><span class="btn" style="flex:1">Получил</span><span class="btn alt" style="flex:1">Не получал</span></div></div>
+            <div class="h6" style="margin-top:6px">Участники</div>
+            <div class="lead-r"><span class="sub">1</span><span class="row"><span class="av b">Б</span>Боря</span><b class="num pos">+300</b></div>
+            <div class="lead-r"><span class="sub">2</span><span class="row"><span class="av a">А</span>Вы</span><b class="num pos">+200</b></div>
+            <div class="lead-r"><span class="sub">3</span><span class="row"><span class="av g">Г</span>Гена</span><b class="num">0</b></div>
+            <div class="lead-r"><span class="sub">4</span><span class="row"><span class="av v">В</span>Вера</span><b class="num neg">−500</b></div>
+          </div>
+        </div>
+        <div class="tabbar"><div><i></i>Споры</div><div class="on"><i></i>Расчёт</div><div><i></i>Участники</div><div><i></i>История</div></div></div>
+      </figure>
+
+      <figure class="ph"><figcaption><b>Новый спор.</b> Одна кнопка «+ Спор», вид — переключателем. У пари короткая форма, остальное — под «Ещё условия»</figcaption>
+        <div class="scr mock"><div class="body">
+          <div class="top" style="border:0"><div class="row sp"><span class="ttl">Новый спор</span><span class="back">Закрыть</span></div>
+            <div class="types"><div>Пул</div><div class="on">Пари</div><div>Лот</div><div>Выбор</div></div>
+            <span class="sub">Пари — один на один, с любым кэфом</span></div>
+          <div class="sec" style="gap:10px">
+            <div class="fld"><label>Условие</label><div class="in">Боря подтянется 20 раз до конца месяца</div></div>
+            <div class="fld"><label>Ваша сторона</label><div class="seg2"><div class="y on">Сбудется</div><div>Не сбудется</div></div></div>
+            <div class="fld"><label>Ваша сумма</label><div class="amt"><span class="sub">₽</span><b class="num">300</b></div></div>
+            <div class="fld"><label>Кому</label><div class="chips"><span class="chip">Любой</span><span class="chip on">Боря</span><span class="chip">Вера</span><span class="chip">Гена</span></div></div>
+            <div class="more"><div><b>Ещё условия</b><small>кэф 3 к 1 · приём до 28.11 · исход к 29.11 · гарант Вера</small></div><span>›</span></div>
+          </div>
+        </div>
+        <div class="ticket"><div class="win"><span>Вы 300 ₽ · Боря 100 ₽</span><b class="num">банк 400 ₽</b></div><span class="btn">Предложить пари</span></div></div>
+      </figure>
+
+      <figure class="ph"><figcaption><b>Настройки.</b> По группам: внешний вид, это устройство, сервер (свёрнут), о приложении</figcaption>
+        <div class="scr mock"><div class="body">
+          <div class="top" style="border:0"><span class="back">‹ ☰</span><span class="ttl">Настройки</span></div>
+          <div class="sec" style="gap:16px">
+            <div class="group"><span class="gh">Внешний вид</span><div class="gb"><div class="set"><span>Тема</span><span class="tseg"><span>Как в системе</span><span class="on">Тёмная</span><span>Светлая</span></span></div></div></div>
+            <div class="group"><span class="gh">Это устройство</span><div class="gb"><div class="set"><span>Ссылка для другого устройства</span><span class="v">›</span></div><div class="set"><span>Копии комнат</span><span class="v">сохранить · загрузить ›</span></div></div></div>
+            <div class="group"><span class="gh">Сервер</span><div class="gb"><div class="set"><span>Адрес и пароль компании</span><span class="v">свёрнуто ›</span></div></div></div>
+            <div class="group"><span class="gh">О приложении</span><div class="gb"><div class="set"><span>Что нового</span><span class="v row">версия 1.4 <span class="newdot"></span></span></div><div class="set"><span>Справка</span><span class="v">›</span></div></div></div>
+          </div>
+        </div></div>
+      </figure>
+
+      <figure class="ph"><figcaption><b>Справка.</b> Разделы чипами; в разделе — короткое «что это», шаги по порядку и пример из выдуманной комнаты</figcaption>
+        <div class="scr mock"><div class="body">
+          <div class="top" style="border:0"><span class="back">‹ ☰</span><span class="ttl">Справка</span>
+            <div class="chips"><span class="chip">Комната</span><span class="chip">Пул</span><span class="chip on">Пари</span><span class="chip">Лот</span><span class="chip">Выбор</span><span class="chip">Суд</span></div></div>
+          <div class="sec" style="gap:10px">
+            <div class="help-card"><h6>Пари — один на один</h6><span class="sub" style="font-size:13px">Двое ставят на разные стороны одного условия. Кэф — любой, о нём можно поторговаться.</span>
+              <ol><li>Вы пишете условие, сторону и сумму, выбираете, кому предложить</li><li>Тот принимает, отказывает или шлёт встречное с другим кэфом</li><li>К сроку отмечается исход; гарант, если он есть, подтверждает</li><li>Сутки на возражение, потом неделя на апелляцию — и в расчёт</li></ol>
+              <div class="example"><b>Пример</b>Аня ставит 300 ₽, что Боря подтянется 20 раз, Боря — 100 ₽ против. Кэф 3 к 1, банк 400 ₽. Подтянулся — Аня получает 400.</div></div>
+            <div class="acc">Гарант <span>›</span></div>
+            <div class="acc">Торг и встречное предложение <span>›</span></div>
+            <div class="acc">Пари «на обещание» <span>›</span></div>
+          </div>
+        </div></div>
+      </figure>
+    </div>
+  </section>
+
+  <section>
+    <h2>Компьютер</h2>
+    <figure class="dk"><figcaption><b>Главная, 1280 px.</b> Меню раскрыто: «Сводка», комнаты с балансом и свежестью, внизу настройки, справка и «Что нового». Посередине — «Сводка» по всем комнатам</figcaption>
+      <div class="desk-box"><div class="desk mock" style="grid-template-columns:260px 1fr">
+        <div class="menu">
+          <div class="brand">ТоргСин <small>«</small></div>
+          <div class="mi on"><span class="ic">⚑</span><span>Сводка</span><span class="cnt">3</span></div>
+          <div class="lbl">КОМНАТЫ</div>
+          <div class="mi"><span class="ic">Ш</span><span>Шашлыки на даче<span class="s">вам должны 200 ₽ · 21:40</span></span><span class="cnt">3</span></div>
+          <div class="mi"><span class="ic">Р</span><span>Работа<span class="s w">данные от 18.11</span></span><span></span></div>
+          <div class="mi"><span class="ic">+</span><span>Новая комната</span><span></span></div>
+          <div class="mi"><span class="ic">⇲</span><span>Вставить ссылку</span><span></span></div>
+          <div class="foot-links"><div class="mi"><span class="ic">⚙</span><span>Настройки</span><span></span></div><div class="mi"><span class="ic">?</span><span>Справка</span><span></span></div><div class="mi"><span class="ic">★</span><span>Что нового</span><span class="newdot"></span></div></div>
+        </div>
+        <div style="overflow:hidden;padding:22px 28px;display:flex;flex-direction:column;gap:14px">
+          <div class="turn-hd"><b style="font-size:26px">Сводка</b><span class="fresh"><i></i>по копиям комнат · обновлено 21:40 · Работа — данные от 18.11</span></div>
+          <div class="balance" style="grid-template-columns:1fr auto auto;gap:4px 10px"><span class="l">Всего по комнатам</span><span></span><span></span><b class="num">вам должны 200 ₽</b><span class="pill" style="background:rgb(127 127 127 / .22);color:inherit">Шашлыки: +200 ₽</span><span class="pill" style="background:rgb(127 127 127 / .22);color:inherit">Работа: 0 ₽</span></div>
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">
+            <div class="do"><div class="meta"><span>Шашлыки · суд</span><span class="pill w">до 01.12</span></div><p><b>Пройдём весь маршрут за два дня</b> — вы в суде</p><div class="acts"><span class="btn">Голосовать</span></div><span class="silent">Не проголосуете — место перейдёт запасному</span></div>
+            <div class="do"><div class="meta"><span>Шашлыки · перевод</span><span class="pill w">сегодня</span></div><p>Вера перевела вам <b>400 ₽</b></p><div class="acts"><span class="btn">Получил</span><span class="btn alt">Не получал</span></div></div>
+            <div class="do"><div class="meta"><span>Шашлыки · пари вам</span><span class="pill">до 29.11</span></div><p>Вера: <b>Гена не опоздает на электричку</b> — 200 ₽</p><div class="acts"><span class="btn">Открыть</span></div></div>
+          </div>
+          <div class="h6" style="margin-top:6px">Скоро закроется</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+            <div class="mk"><div class="tag"><span class="dot"></span>Шашлыки · пул · приём до 28.11</div><div class="row sp"><div class="q">В субботу на даче будет дождь</div><span class="big num pos">40%</span></div><div class="foot"><span>вы: 300 ₽ на «Да»</span><span class="pill w">1 дн</span></div></div>
+            <div class="mk"><div class="tag"><span class="dot"></span>Шашлыки · лот · торг ещё 3 ч</div><div class="row sp"><div class="q">Велосипед «Кама»</div><span class="big num" style="font-size:20px">1 500 ₽</span></div><div class="foot"><span>лучшая — Вера</span><span class="pill w">3 ч</span></div></div>
+          </div>
+          <div class="room stale" style="max-width:560px"><span class="icon">Р</span><div><div class="t">Работа</div><div class="s">данные от 18.11 · не открывали 10 дней — откройте, чтобы обновить</div></div><span class="btn alt" style="padding:7px 12px">Открыть</span></div>
+        </div>
+      </div></div>
+    </figure>
+
+    <figure class="dk"><figcaption><b>Комната, 1280 px.</b> Меню свёрнуто в значки (кнопка «), лента посередине, открытый спор с билетом ставки справа</figcaption>
+      <div class="desk-box"><div class="desk mock" style="grid-template-columns:64px 1fr 400px">
+        <div class="menu rail" style="align-items:center;padding:14px 0;gap:12px">
+          <div class="mi"><span class="ic">»</span></div>
+          <div class="mi"><span class="ic">⚑</span><span class="cnt">3</span></div>
+          <div class="mi"><span class="ic" style="background:var(--k-btn);color:var(--k-btn-fg)">Ш</span></div>
+          <div class="mi"><span class="ic" style="box-shadow:0 0 0 2px var(--k-warn)">Р</span></div>
+          <div class="mi"><span class="ic">+</span></div>
+          <div style="margin-top:auto;display:flex;flex-direction:column;gap:12px"><div class="mi"><span class="ic">⚙</span></div><div class="mi"><span class="ic">?</span></div><div class="mi"><span class="ic">★</span></div></div>
+        </div>
+        <div style="overflow:hidden;border-right:1px solid var(--k-line)">
+          <div class="top"><div class="row sp"><div class="ttl" style="font-size:22px">Шашлыки на даче</div><div class="row"><span class="stack"><span class="av a">А</span><span class="av b">Б</span><span class="av v">В</span><span class="av g">Г</span></span><span class="btn" style="padding:8px 14px">+ Спор</span></div></div>
+            <div class="row sp"><div class="chips"><span class="chip on">Все 6</span><span class="chip hot">Ждут вас 2</span><span class="chip">Пул 2</span><span class="chip">Пари 2</span><span class="chip">Лот 1</span><span class="chip">Выбор 1</span></div><div class="chips"><span class="chip">Расчёт: +600 ₽</span><span class="chip">Участники</span><span class="chip">История</span></div></div></div>
+          <div class="feed" style="display:grid;grid-template-columns:1fr 1fr;padding:14px">
+            <div class="mk me"><div class="tag warn"><span class="dot"></span>Пул · суд · вы в суде</div><div class="q">Пройдём весь маршрут за два дня</div><div class="foot"><span>голос до 01.12</span><span>банк 1 000 ₽</span></div><span class="btn">Голосовать</span></div>
+            <div class="mk" style="border-color:var(--k-fg)"><div class="tag"><span class="dot"></span>Пул · приём до 28.11</div><div class="row sp"><div class="q">В субботу на даче будет дождь</div><span class="big num pos">40%</span></div><div class="yn"><div class="y">Да 40 %</div><div class="n">Нет 60 %</div></div></div>
+            <div class="mk me"><div class="tag warn"><span class="dot"></span>Пари · Вера → вам</div><div class="q">Гена не опоздает на электричку</div><div class="row"><span class="btn" style="flex:1">Принять 200 ₽</span><span class="btn alt" style="flex:1">Встречное</span></div></div>
+            <div class="mk"><div class="tag"><span class="dot"></span>Лот · торг ещё 3 ч</div><div class="row sp"><div class="q">Велосипед «Кама»</div><span class="big num" style="font-size:20px">1 500 ₽</span></div><span class="btn alt">Перебить: 1 650 ₽</span></div>
+            <div class="mk"><div class="tag"><span class="dot"></span>Пари · вы → Боря</div><div class="q">Боря подтянется 20 раз</div><div class="foot"><span>300 к 100 · ждёт ответа Бори</span></div></div>
+            <div class="mk"><div class="tag"><span class="dot"></span>Выбор · вклады до 29.11</div><div class="q">Куда едем в мае?</div><div class="ob"><span>Ладога</span><span class="num">800 ₽</span><div class="barx"><i style="width:62%"></i></div></div></div>
+          </div>
+        </div>
+        <div style="display:flex;flex-direction:column;overflow:hidden">
+          <div class="top" style="border:0"><div class="tag"><span class="dot"></span>Пул · приём до 28.11, 19:00</div><div class="ttl" style="font-size:18px">В субботу на даче будет дождь</div>
+            <div class="row" style="gap:16px"><div><span class="big num pos">40%</span> <span class="sub">Да</span></div><div><span class="big num neg" style="font-size:20px">60%</span> <span class="sub">Нет</span></div></div>
+            <svg viewBox="0 0 330 80" width="100%" height="80" aria-hidden="true"><polyline points="0,8 110,8 130,50 330,50" fill="none" stroke="var(--k-yes)" stroke-width="2.5"/><polyline points="0,74 110,74 130,32 330,32" fill="none" stroke="var(--k-no)" stroke-width="2.5"/></svg></div>
+          <div class="ln"><span class="on">Ставки 2</span><span>Условия</span><span>Исход</span></div>
+          <div class="sec" style="flex:1"><div class="row sp" style="font-size:13px"><span>Вера · 450 ₽ на «Нет»</span><span class="sub">18:36</span></div><div class="row sp" style="font-size:13px"><span>Вы · 300 ₽ на «Да»</span><span class="sub">18:30</span></div></div>
+          <div class="ticket" style="box-shadow:none;border-radius:0"><div class="seg2"><div class="y on">Да · 2,5</div><div>Нет · 1,67</div></div><div class="amt"><span class="sub">Сумма</span><b class="num">300 ₽</b></div><div class="win"><span>Если «Да»</span><b class="num">получите 750 ₽</b></div><span class="btn go">Поставить</span></div>
+        </div>
+      </div></div>
+    </figure>
+  </section>
+  </div>
+
+  <section>
+    <h2>Как устроено «Сводка»</h2>
+    <div class="grid3">
+      <div class="card"><span class="eyebrow">откуда данные</span><h3>Копии комнат на устройстве</h3><p style="font-size:.94rem">Копия каждой комнаты уже хранится на телефоне: споры, пари, лоты, выбор, расчёт и время последнего ответа сервера. «Сводка» читает эти копии, новый запрос серверу и новое хранилище не нужны. Копия обновляется, когда вы открываете комнату. Ещё «Мои комнаты» уже сейчас при открытии один раз переспрашивают сервер о копиях старше 5 минут, без постоянного опроса.</p></div>
+      <div class="card"><span class="eyebrow">свежесть</span><h3>«Данные на …»</h3><p style="font-size:.94rem">Сверху — время обновления, у каждой комнаты — своё. Не обновлялась больше недели — комната подсвечена: «данные от 18.11 — откройте, чтобы обновить». Срок дела по копии уже прошёл — карточка серая: «срок прошёл, откройте комнату».</p></div>
+      <div class="card"><span class="eyebrow">что попадает</span><h3>Только то, что ждёт вас</h3><ul><li>голос в суде</li><li>«Перевёл» вам — «Получил / Не получал»</li><li>пари вам — принять или ответить</li><li>отметить исход (автор, гарант), возражение</li><li>в лоте — «передал» / «получил»</li></ul><p style="font-size:.94rem">Ниже — «Скоро закроется»: споры с вашей ставкой, где приём кончается в ближайшие сутки.</p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Задачи после решения</h2>
+    <div class="todo-list">
+      <div class="card"><div><b>Основа</b><small>цвета, шрифт, отступы, кнопки, карточки, чипы — одним набором переменных; светлая и тёмная тема; тема в «Настройках»</small></div></div>
+      <div class="card"><div><b>Каркас и меню</b><small>меню слева на компьютере (раскрыто или значками), выезжающее на телефоне; комнаты, «Новая комната», «Вставить ссылку», внизу настройки, справка, «Что нового»</small></div></div>
+      <div class="card"><div><b>«Сводка» и главная</b><small>что ждёт вас — по копиям комнат, «данные на …», подсветка комнат старше недели, «Скоро закроется»</small></div></div>
+      <div class="card"><div><b>Комната — лента</b><small>все споры одной лентой, фильтры чипами с «Ждут вас», число и действие в карточке, «+ Спор», вкладки Споры · Расчёт · Участники · История</small></div></div>
+      <div class="card"><div><b>Пул, лот, выбор</b><small>крупная вероятность и график, вкладки «Ставки · Условия · Исход», билет ставки; лот и выбор — тем же устройством</small></div></div>
+      <div class="card"><div><b>Пари и новый спор</b><small>экран пари, торг, короткая форма; новый спор — одна кнопка, вид переключателем</small></div></div>
+      <div class="card"><div><b>Исход, апелляция, суд</b><small>полоса шагов у каждого спора, блок суда с местами, жребием и голосом</small></div></div>
+      <div class="card"><div><b>Расчёт, участники, история</b><small>«портфель»: итог, в игре, кто кому, таблица участников</small></div></div>
+      <div class="card"><div><b>Настройки, Справка, Что нового</b><small>группы настроек; справка разделами с шагами и примером; список изменений с отметкой «новое»</small></div></div>
+    </div>
+    <p style="color:var(--muted);font-size:.92rem">«Чат» (спор — переписка-хроника) не выброшен: он в «Потом» ТоргСина, как основа будущего бота в Telegram.</p>
+  </section>
+</div>
+
+<script>
+const mocks = document.getElementById('mocks')
+document.querySelectorAll('.seg button').forEach(b => b.addEventListener('click', () => {
+  document.querySelectorAll('.seg button').forEach(x => x.setAttribute('aria-pressed', x === b))
+  mocks.classList.toggle('dark', b.dataset.t === 'dark')
+}))
+function fit() {
+  document.querySelectorAll('.desk-box').forEach(box => {
+    const d = box.querySelector('.desk'); if (!box.clientWidth) return
+    const s = Math.min(1, box.clientWidth / 1280); d.style.transform = 'scale(' + s + ')'; box.style.height = (760 * s) + 'px'
+  })
+}
+addEventListener('resize', fit); fit()
+</script>
