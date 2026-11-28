@@ -1,25 +1,23 @@
-// Оболочка: разделы и раскладка (Р-10). Телефон — вкладки снизу, компьютер — меню слева;
-// раскладку меняет только CSS (styles.css), разметка одна
-import { useEffect, useState } from 'react'
+// Оболочка: шапка телефона, меню и экран (Р-10, Р-50, #167). До 1024 px — шапка (☰, название экрана,
+// «+») и меню, выезжающее поверх; от 1024 — меню колонкой слева, шапки нет. Раскладку меняет только CSS
+// (styles.css), разметка одна
+import { useCallback, useEffect, useState } from 'react'
 import { parseDeviceLink, parseInviteLink } from './rules/link'
+import type { SavedRoom } from './store/db'
 import { ErrorBoundary } from './screens/ErrorBoundary'
-import { Rooms, type RoomsView } from './screens/Rooms'
+import { Menu, type MenuPlace } from './screens/Menu'
+import { openRoomId, Rooms, type RoomsView } from './screens/Rooms'
 import { Settings } from './screens/Settings'
+import { useSavedRooms } from './screens/useSavedRooms'
 import { getNavCollapsed, setNavCollapsed } from './settings'
 
-type Tab = 'rooms' | 'settings'
 type Route = { tab: 'settings' } | { tab: 'rooms'; view: RoomsView }
-
-const TABS: { id: Tab; label: string; icon: string }[] = [
-  { id: 'rooms', label: 'Мои комнаты', icon: '🏠' },
-  { id: 'settings', label: 'Настройки', icon: '⚙️' },
-]
 
 const BAD_INVITE = 'Ссылка недействительна — попросите новую у ведущего'
 const BAD_DEVICE = 'Ссылка для другого устройства недействительна — попросите новую'
 
 // Хеш-роутинг: GitHub Pages отдаёт один index.html на любой адрес.
-// #/ — список, #/new — создать комнату, #/room/<номер> — открытая комната, #/settings;
+// #/ — список, #/new — создать комнату, #/paste — «Вставить ссылку», #/room/<номер> — открытая комната, #/settings;
 // #/room/<номер>/event/new — новое событие, #/room/<номер>/event/<номер события> — событие;
 // #/room/<номер>/offer/new — предложить пари, #/room/<номер>/offer/<номер пари> — пари;
 // #/room/<номер>/lot/new — выставить лот, #/room/<номер>/lot/<номер лота> — лот;
@@ -30,6 +28,7 @@ function routeFromHash(): Route {
   const hash = location.hash
   if (hash === '#/settings') return { tab: 'settings' }
   if (hash === '#/new') return { tab: 'rooms', view: { kind: 'new' } }
+  if (hash === '#/paste') return { tab: 'rooms', view: { kind: 'paste' } }
   if (hash.startsWith('#/join/')) {
     const link = parseInviteLink(hash)
     return { tab: 'rooms', view: link ? { kind: 'join', link } : { kind: 'bad-link', text: BAD_INVITE } }
@@ -76,13 +75,47 @@ function routeFromHash(): Route {
   return { tab: 'rooms', view: { kind: 'list' } }
 }
 
+// Пункт меню, который выделен на этом адресе
+function placeOf(route: Route): MenuPlace {
+  if (route.tab === 'settings') return 'settings'
+  const { view } = route
+  if (view.kind === 'list') return 'summary'
+  if (view.kind === 'new') return 'new'
+  if (view.kind === 'paste') return 'paste'
+  const room = openRoomId(view)
+  return room ? { room } : null
+}
+
+// Название экрана в шапке телефона: в комнате и её экранах — название комнаты
+function titleOf(route: Route, rooms: SavedRoom[] | null): string {
+  if (route.tab === 'settings') return 'Настройки'
+  const { view } = route
+  if (view.kind === 'list') return 'Мои комнаты'
+  if (view.kind === 'new') return 'Новая комната'
+  if (view.kind === 'paste') return 'Вставить ссылку'
+  if (view.kind === 'join' || view.kind === 'device' || view.kind === 'bad-link') return 'Вход в комнату'
+  const id = openRoomId(view)
+  const name = rooms?.find((r) => r.id === id)?.name
+  return typeof name === 'string' && name ? name : 'Комната'
+}
+
 export function App() {
   const [route, setRoute] = useState<Route>(routeFromHash)
+  // Меню на телефоне: выехало или нет; любой переход его закрывает
+  const [menuOpen, setMenuOpen] = useState(false)
   useEffect(() => {
-    const onHash = () => setRoute(routeFromHash())
+    const onHash = () => {
+      setRoute(routeFromHash())
+      setMenuOpen(false)
+    }
     window.addEventListener('hashchange', onHash)
     return () => window.removeEventListener('hashchange', onHash)
   }, [])
+  const closeMenu = useCallback(() => setMenuOpen(false), [])
+
+  // Комнаты устройства — одни для меню и «Моих комнат»; перечитываются при смене раздела, как раньше
+  // при каждом входе в «Мои комнаты»
+  const saved = useSavedRooms(route.tab)
 
   // Меню слева сворачивается до значков — только на компьютере (кнопку и свёрнутый вид
   // показывает CSS от 1024 px); положение — настройка устройства
@@ -91,36 +124,33 @@ export function App() {
     setNavCollapsed(!collapsed)
     setCollapsed(!collapsed)
   }
-  const toggleLabel = collapsed ? 'Развернуть меню' : 'Свернуть меню'
 
+  const title = titleOf(route, saved.rooms)
   return (
-    <div className={'app' + (collapsed ? ' nav-collapsed' : '')}>
-      <nav className="nav" aria-label="Разделы">
-        <div className="nav-head">
-          <span className="brand">ТоргСин</span>
-          <button className="nav-toggle" type="button" onClick={toggleNav} aria-expanded={!collapsed} aria-label={toggleLabel} title={toggleLabel}>
-            <span aria-hidden="true">{collapsed ? '»' : '«'}</span>
-          </button>
-        </div>
-        {TABS.map((t) => (
-          <a
-            key={t.id}
-            href={t.id === 'rooms' ? '#/' : '#/' + t.id}
-            className="nav-item"
-            aria-current={route.tab === t.id ? 'page' : undefined}
-            aria-label={t.label}
-            title={collapsed ? t.label : undefined}
-          >
-            <span className="nav-icon" aria-hidden="true">
-              {t.icon}
-            </span>
-            <span className="nav-label">{t.label}</span>
-          </a>
-        ))}
-      </nav>
+    <div className={'app' + (collapsed ? ' nav-collapsed' : '') + (menuOpen ? ' menu-open' : '')}>
+      <header className="topbar">
+        <button
+          className="topbar-button"
+          type="button"
+          onClick={() => setMenuOpen(true)}
+          aria-label="Меню"
+          aria-expanded={menuOpen}
+          aria-controls="menu"
+          title="Меню"
+        >
+          <span aria-hidden="true">☰</span>
+        </button>
+        <span className="topbar-title">{title}</span>
+        <a className="topbar-button" href="#/new" aria-label="Новая комната" title="Новая комната">
+          <span aria-hidden="true">+</span>
+        </a>
+      </header>
+      {/* Затемнение под выехавшим меню: нажатие мимо меню его закрывает */}
+      <div className="menu-shade" aria-hidden="true" onClick={closeMenu} />
+      <Menu rooms={saved.rooms} place={placeOf(route)} open={menuOpen} collapsed={collapsed} onClose={closeMenu} onToggle={toggleNav} />
       <main className="main">
         {/* Экран упал — меню на месте, вместо экрана «Что-то пошло не так»; другой адрес — снова экран */}
-        <ErrorBoundary resetKey={location.hash}>{route.tab === 'rooms' ? <Rooms view={route.view} /> : <Settings />}</ErrorBoundary>
+        <ErrorBoundary resetKey={location.hash}>{route.tab === 'rooms' ? <Rooms view={route.view} saved={saved} /> : <Settings />}</ErrorBoundary>
       </main>
     </div>
   )

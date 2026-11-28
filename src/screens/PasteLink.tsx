@@ -1,4 +1,4 @@
-// «Вставить ссылку» в «Моих комнатах»: у приложения с экрана «Домой» нет адресной строки, а на
+// «Вставить ссылку» в «Моих комнатах» и своим экраном из меню: у приложения с экрана «Домой» нет адресной строки, а на
 // iPhone у него своё хранилище — комнату из Safari сюда переносят ссылкой. Приглашение ведёт на
 // экран входа (#/join/…), ссылка для другого устройства — на её экран (#/device/…); сервер — из
 // ссылки (src/rules/link.ts, parsePastedLink). Приглашение в комнату, которой на устройстве нет, —
@@ -10,7 +10,8 @@ const NOT_A_LINK = 'Это не ссылка ТоргСина: нужна ссы
 const SECOND_MEMBER =
   'Уже вошли в эту комнату в браузере? Тогда нужна не эта ссылка, а „Ссылка для другого устройства“ — иначе появится второй участник с тем же именем'
 
-export function PasteLink({ roomIds }: { roomIds: string[] }) {
+// autoFocus — своим экраном из меню (#/paste): поле сразу готово к вставке
+export function PasteLink({ roomIds, autoFocus = false }: { roomIds: string[]; autoFocus?: boolean }) {
   const [text, setText] = useState('')
   const [error, setError] = useState('')
   const parsed = parsePastedLink(text)
@@ -40,6 +41,7 @@ export function PasteLink({ roomIds }: { roomIds: string[] }) {
           autoCapitalize="off"
           autoCorrect="off"
           spellCheck={false}
+          autoFocus={autoFocus}
         />
       </label>
       {secondMember && <p className="hint">{SECOND_MEMBER}</p>}
