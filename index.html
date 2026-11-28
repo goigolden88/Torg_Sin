@@ -3,7 +3,21 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
-    <meta name="theme-color" content="#11141c" />
+    <meta name="theme-color" content="#ffffff" />
+    <script>
+      // Тема до первой отрисовки (Р-50, #166) — без вспышки светлого: выбор устройства (localStorage
+      // torgsin.theme) — data-theme на <html>, цвет полосы браузера — фон темы. Ключ и цвета — как в src/theme.ts
+      ;(function () {
+        var choice = null
+        try {
+          choice = localStorage.getItem('torgsin.theme')
+        } catch (e) {}
+        if (choice !== 'dark' && choice !== 'light') choice = null
+        if (choice) document.documentElement.setAttribute('data-theme', choice)
+        var dark = choice ? choice === 'dark' : !!(window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches)
+        document.querySelector('meta[name="theme-color"]').setAttribute('content', dark ? '#0f1217' : '#ffffff')
+      })()
+    </script>
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />

@@ -13,9 +13,13 @@
 // он закончился. Упавший сценарий не останавливает другие: их снимки снимаются, сбои — в конце.
 // В конце — время каждой части, медленные — сверху.
 //
-// npm run shots — все сценарии, shots/ сначала очищается.
-// npm run shots -- outcomes courts — только названные (ширины — как во всём прогоне),
+// Тема — параметр прогона (Р-50, #166): каждый сценарий — в светлой и в тёмной теме системы,
+// снимок — shots/<ширина>-<тема>-<имя>.png (common.ts, withTheme).
+//
+// npm run shots — все сценарии в обеих темах, shots/ сначала очищается.
+// npm run shots -- outcomes courts — только названные (ширины и темы — как во всём прогоне),
 // shots/ не очищается: снимки других сценариев остаются. Имена — в списке SCENARIOS в конце файла.
+// npm run shots -- --theme=dark [имена] — только одна тема (light или dark); shots/ не очищается.
 import { AsyncLocalStorage } from 'node:async_hooks'
 import type { ChildProcess } from 'node:child_process'
 import { mkdir, mkdtemp, rm } from 'node:fs/promises'
@@ -23,7 +27,21 @@ import { availableParallelism, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { format } from 'node:util'
 import { build, preview, runnerImport } from 'vite'
-import { Cdp, launchChrome, OUT, PASSWORD, PORT, SIZES, WIDE, type RoomsServer, type ServerModule, type Size } from './shots/common.ts'
+import {
+  Cdp,
+  launchChrome,
+  OUT,
+  PASSWORD,
+  PORT,
+  SIZES,
+  THEMES,
+  WIDE,
+  withTheme,
+  type RoomsServer,
+  type ServerModule,
+  type Size,
+  type Theme,
+} from './shots/common.ts'
 import { auction } from './shots/auction.ts'
 import { backup } from './shots/backup.ts'
 import { choices } from './shots/choices.ts'
@@ -48,6 +66,7 @@ import { promises } from './shots/promises.ts'
 import { settle } from './shots/settle.ts'
 import { scenario } from './shots/start.ts'
 import { subjects } from './shots/subjects.ts'
+import { theme } from './shots/theme.ts'
 
 // Что нужно сценарию: Chrome, общий сервер снимков (его берут start и layout) и запуск своего
 type Context = { cdp: Cdp; server: RoomsServer; startServer: ServerModule['startServer'] }
@@ -68,6 +87,15 @@ function choose(names: string[]): Scenario[] {
   return names.length ? SCENARIOS.filter((s) => names.includes(s.name)) : SCENARIOS
 }
 
+// Темы прогона: --theme=light | --theme=dark — одна; нет флага — обе. Чужое значение — ошибка до сборки
+function chooseThemes(flags: string[]): Theme[] {
+  if (!flags.length) return THEMES
+  const picked = flags.map((f) => f.slice('--theme='.length))
+  const unknown = picked.filter((t) => !THEMES.includes(t as Theme))
+  if (unknown.length) throw new Error(`Нет такой темы: ${unknown.join(', ')}. Есть: ${THEMES.join(', ')}`)
+  return THEMES.filter((t) => picked.includes(t))
+}
+
 // Потоков — три, но не больше ядер: иначе Chrome'ы мешают друг другу и экраны не успевают за TIMEOUT
 const THREADS = Math.max(1, Math.min(3, availableParallelism()))
 
@@ -84,11 +112,15 @@ console.log = (...args: unknown[]) => {
   else print(...args)
 }
 
-function jobs(chosen: Scenario[]): Job[] {
+// Шаг — в своей теме: устройства сценария открываются в ней (withTheme, common.ts)
+function jobs(chosen: Scenario[], themes: Theme[]): Job[] {
   const list: Job[] = []
-  for (const size of SIZES)
-    for (const s of chosen) if ('perSize' in s) list.push({ name: s.name, label: `${s.name}, ${size.name} px`, run: (c) => s.perSize(c, size) })
-  for (const s of chosen) if ('once' in s) list.push({ name: s.name, label: s.name, run: s.once })
+  for (const theme of themes) {
+    for (const size of SIZES)
+      for (const s of chosen)
+        if ('perSize' in s) list.push({ name: s.name, label: `${s.name}, ${size.name} px, ${theme}`, run: (c) => withTheme(theme, () => s.perSize(c, size)) })
+    for (const s of chosen) if ('once' in s) list.push({ name: s.name, label: `${s.name}, ${theme}`, run: (c) => withTheme(theme, () => s.once(c)) })
+  }
   return list
 }
 
@@ -146,18 +178,22 @@ function timings(done: Done[]): void {
 
 async function main(): Promise<void> {
   const started = Date.now()
-  const names = process.argv.slice(2)
+  const args = process.argv.slice(2)
+  const flags = args.filter((a) => a.startsWith('--theme='))
+  const names = args.filter((a) => !a.startsWith('--theme='))
   const chosen = choose(names)
-  if (!names.length) await rm(OUT, { recursive: true, force: true })
+  const themes = chooseThemes(flags)
+  if (!names.length && !flags.length) await rm(OUT, { recursive: true, force: true })
   await mkdir(OUT, { recursive: true })
   console.log('Сценарии:', chosen.map((s) => s.name).join(', '))
+  console.log('Темы:', themes.join(', '))
   console.log('Сборка сайта…')
   await build({ logLevel: 'warn' })
 
   // Запасной сервер (server/node): тот же код, что у Worker'а; комнаты — в памяти
   const { module } = await runnerImport<ServerModule>('./server/node/app.ts', { configFile: false, logLevel: 'warn' })
   const site = await preview({ preview: { port: PORT, strictPort: true }, logLevel: 'warn' })
-  const queue = jobs(chosen)
+  const queue = jobs(chosen, themes)
   const threads = Math.min(THREADS, queue.length)
   const done: Done[] = []
   console.log(`Потоков: ${threads}, шагов: ${queue.length}`)
@@ -245,6 +281,11 @@ const SCENARIOS: Scenario[] = [
     name: 'promises',
     about: 'пари на обещание: до (на сумму) и после — форма, окно, пари, «Позвать в чат», список, встречное, «Принять», «Расчёт» у обеих сторон, «История» (210–221)',
     perSize: (c, size) => promises(c.cdp, size, c.startServer),
+  },
+  {
+    name: 'theme',
+    about: 'тема в «Настройках»: как в системе, другая тема сразу и после перезагрузки без вспышки, «Мои комнаты» в ней, снова как в системе (T1–T3)',
+    perSize: (c, size) => theme(c.cdp, size),
   },
   {
     name: 'layout',
