@@ -30,6 +30,18 @@ export function roomClosed(room: Pick<SavedRoom, 'closedAt'>): boolean {
   return typeof room.closedAt === 'number'
 }
 
+// Порядок комнат в «Моих комнатах» и в меню: закрытые (Р-43) — внизу; среди открытых и среди закрытых
+// порядок прежний
+export function closedLast<T extends Pick<SavedRoom, 'closedAt'>>(rooms: readonly T[]): T[] {
+  return [...rooms.filter((r) => !roomClosed(r)), ...rooms.filter(roomClosed)]
+}
+
+// Значок комнаты в меню — первая буква названия заглавной; пустое название — «•»
+export function roomLetter(name: string): string {
+  const first = [...name.trim()][0]
+  return first ? first.toLocaleUpperCase('ru') : '•'
+}
+
 // Начать новое (событие, пари, лот, «Выбор», ставку, вклад, встречное, «Повторить»): не помечен «выбыл» (Р-41)
 // и комната не закрыта (Р-43) — иначе кнопок нового нет
 export function mayStartNew(room: Pick<SavedRoom, 'members' | 'memberId' | 'closedAt'>): boolean {

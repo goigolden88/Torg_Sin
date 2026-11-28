@@ -1,15 +1,13 @@
 // «Мои комнаты»: список своих комнат и открытое — создание или комната. У комнаты, где участник —
 // член суда и ещё не голосовал, — значок «вы в суде» (по последнему ответу комнаты; копии старше
-// 5 минут при открытии спрашиваются у сервера один раз). Закрытая комната (Р-43) — с пометкой «закрыта», внизу
-// списка.
-// Раскладка «список + открытое» (.split): на компьютере — рядом; на телефоне открытое —
-// отдельным экраном с «Назад» (класс .open у .rooms), разметка одна. Под списком — «Вставить
-// ссылку» (PasteLink): у приложения с экрана «Домой» адресной строки нет
-import { useCallback, useEffect, useState } from 'react'
-import { fetchRoom } from '../api'
+// 5 минут при открытии спрашиваются у сервера один раз — useSavedRooms). Закрытая комната (Р-43) — с
+// пометкой «закрыта», внизу списка.
+// Список или открытое — на любой ширине одно из двух (класс .open у .rooms): комнаты на компьютере —
+// в меню слева (#167, Р-50), рядом с открытым списка нет. Под списком — «Вставить ссылку» (PasteLink):
+// у приложения с экрана «Домой» адресной строки нет; она же — своим экраном #/paste из меню
 import { currencyLabel } from '../rules/currency'
 import type { DeviceLink, InviteLink } from '../rules/link'
-import { savedEvents, savedLots, savedOffers, savedSettlement, store, withState, type SavedRoom } from '../store/db'
+import { savedEvents, savedLots, savedOffers, savedSettlement, type SavedRoom } from '../store/db'
 import { BackLink } from './BackLink'
 import { ChoiceScreen } from './ChoiceScreen'
 import { ClaimDevice } from './ClaimDevice'
@@ -19,7 +17,7 @@ import { EventScreen } from './EventScreen'
 import { HistoryScreen } from './HistoryScreen'
 import { JoinRoom } from './JoinRoom'
 import { LotScreen } from './LotScreen'
-import { roomClosed } from './memberParts'
+import { closedLast, roomClosed } from './memberParts'
 import { NewChoice } from './NewChoice'
 import { NewEvent } from './NewEvent'
 import { NewLot } from './NewLot'
@@ -29,10 +27,12 @@ import { PasteLink } from './PasteLink'
 import { RoomView } from './RoomView'
 import { balanceNote } from './settleParts'
 import { SettleScreen } from './SettleScreen'
+import type { SavedRooms } from './useSavedRooms'
 
 export type RoomsView =
   | { kind: 'list' }
   | { kind: 'new' }
+  | { kind: 'paste' } // «Вставить ссылку» из меню (#167)
   | { kind: 'room'; id: string }
   | { kind: 'new-event'; id: string } // новое событие в комнате id
   | { kind: 'event'; id: string; event: string } // событие комнаты id
@@ -48,39 +48,13 @@ export type RoomsView =
   | { kind: 'device'; link: DeviceLink } // по ссылке для другого устройства
   | { kind: 'bad-link'; text: string } // ссылка не разобралась
 
-const STORE_FAILED = 'Не открылось хранилище на этом устройстве — комнаты не сохранятся. Частный режим браузера?'
+// Открытая комната адреса (комната, её событие, пари, «Расчёт»…) — для меню и шапки; не в комнате — null
+export function openRoomId(view: RoomsView): string | null {
+  return 'id' in view ? view.id : null
+}
 
-export function Rooms({ view }: { view: RoomsView }) {
-  const [rooms, setRooms] = useState<SavedRoom[] | null>(null)
-  const [storeError, setStoreError] = useState('')
-
-  // Новая комната — сверху, обновлённая — на своём месте
-  const upsert = useCallback((room: SavedRoom) => {
-    setRooms((prev) => {
-      const list = prev ?? []
-      return list.some((r) => r.id === room.id) ? list.map((r) => (r.id === room.id ? room : r)) : [room, ...list]
-    })
-  }, [])
-
-  // Вышел из комнаты (Р-40): её больше нет в списке — запись на устройстве уже убрана
-  const remove = useCallback((id: string) => {
-    setRooms((prev) => (prev ?? []).filter((r) => r.id !== id))
-  }, [])
-
-  useEffect(() => {
-    store()
-      .listRooms()
-      .then(
-        (list) => {
-          setRooms(list)
-          refreshStale(list, upsert)
-        },
-        () => {
-          setRooms([])
-          setStoreError(STORE_FAILED)
-        },
-      )
-  }, [upsert])
+export function Rooms({ view, saved }: { view: RoomsView; saved: SavedRooms }) {
+  const { rooms, storeError, upsert, remove } = saved
 
   const wide =
     view.kind === 'event' ||
@@ -94,12 +68,10 @@ export function Rooms({ view }: { view: RoomsView }) {
     view.kind === 'settle' ||
     view.kind === 'history'
   const inRoom = view.kind === 'room' || wide
-  const openId = inRoom ? view.id : null
+  const openId = openRoomId(view)
   const open = rooms?.find((r) => r.id === openId)
-  // Событие, пари, лот, выбор, их формы, «Расчёт» и «История» — во всю ширину содержимого и на компьютере: список
-  // комнат прячется, «Назад» ведёт в комнату (экрану события нужно ≥ 640 px, рядом со списком на 1024–1279
-  // его нет; пари — как событие, Р-20: открытое пари и список пари комнаты рядом; «Расчёт» — таблица
-  // участников; «История» — чтобы «Назад» в комнату был виден и на компьютере)
+  // Событие, пари, лот, выбор, их формы, «Расчёт» и «История» (.wide) — «Назад» ведёт в комнату и виден и на
+  // компьютере; у самой комнаты и форм входа на компьютере «Назад» не нужен — комнаты в меню слева
 
   return (
     <div className={'screen rooms' + (view.kind === 'list' ? '' : ' open') + (wide ? ' wide' : '')}>
@@ -127,7 +99,7 @@ export function Rooms({ view }: { view: RoomsView }) {
                   <a className="room-item" href={'#/room/' + r.id} aria-current={r.id === openId ? 'page' : undefined}>
                     <span className="room-name">
                       {r.name}
-                      {roomAwaitsMyVote(r, savedEvents(r), savedOffers(r), savedLots(r)) &&<span className="badge court-badge">вы в суде</span>}
+                      {roomAwaitsMyVote(r, savedEvents(r), savedOffers(r), savedLots(r)) && <span className="badge court-badge">вы в суде</span>}
                       {roomClosed(r) && <span className="badge muted">закрыта</span>}
                     </span>
                     <span className="hint">
@@ -140,11 +112,16 @@ export function Rooms({ view }: { view: RoomsView }) {
               ))}
             </ul>
           )}
-          <PasteLink roomIds={rooms?.map((r) => r.id) ?? []} />
+          {view.kind === 'list' && <PasteLink roomIds={rooms?.map((r) => r.id) ?? []} />}
         </section>
         <section className="detail">
           {view.kind === 'new' ? (
             <CreateRoom onCreated={upsert} />
+          ) : view.kind === 'paste' ? (
+            <>
+              <BackLink />
+              <PasteLink roomIds={rooms?.map((r) => r.id) ?? []} autoFocus />
+            </>
           ) : view.kind === 'join' ? (
             <JoinRoom key={hashOf(view.link)} link={view.link} onJoined={upsert} />
           ) : view.kind === 'device' ? (
@@ -183,36 +160,11 @@ export function Rooms({ view }: { view: RoomsView }) {
             ) : (
               <RoomView key={open.id} room={open} onUpdate={upsert} onLeft={remove} />
             )
-          ) : (
-            <div className="card">
-              <p className="hint">Выберите комнату слева или создайте новую.</p>
-            </div>
-          )}
+          ) : null}
         </section>
       </div>
     </div>
   )
-}
-
-// Копии старше 5 минут (или без ответа сервера) — один раз при открытии «Моих комнат» спросить сервер:
-// «вы в суде» — по свежему ответу, без пушей. Не вышло (нет связи, нет доступа) — остаётся копия
-const STALE = 5 * 60 * 1000
-
-function refreshStale(rooms: readonly SavedRoom[], onUpdate: (room: SavedRoom) => void): void {
-  const now = Date.now()
-  for (const room of rooms) {
-    if (room.syncedAt !== null && now - room.syncedAt <= STALE) continue
-    void fetchRoom(room.server, room.id, room.key).then(async (res) => {
-      if (!res.ok) return
-      // Пока шёл запрос, комнату могли открыть — ответ ложится поверх записи на устройстве, как у опроса
-      const saved = (await store().getRoom(room.id).catch(() => undefined)) ?? room
-      const next = withState(saved, res.value, Date.now())
-      onUpdate(next)
-      await store()
-        .saveRoom(next)
-        .catch(() => undefined)
-    })
-  }
 }
 
 // «вы должны 300 ₽» / «вам должны 900 ₽» — по своду из последнего ответа комнаты; баланс ноль — ничего
@@ -220,11 +172,6 @@ function RoomBalance({ room }: { room: SavedRoom }) {
   const note = balanceNote(savedSettlement(room), room.memberId, room.currency)
   if (!note) return null
   return <span className={'room-balance ' + (note.startsWith('вы должны') ? 'loss' : 'win')}>{note}</span>
-}
-
-// Закрытые комнаты (Р-43) — внизу списка; среди открытых и среди закрытых порядок прежний
-function closedLast(rooms: readonly SavedRoom[]): SavedRoom[] {
-  return [...rooms.filter((r) => !roomClosed(r)), ...rooms.filter(roomClosed)]
 }
 
 // Другая ссылка — экран заново, со своим состоянием

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { formatDate } from '../rules/date'
 import type { LogEntry } from '../rules/room'
 import {
+  closedLast,
   closedNote,
   dropAction,
   mayCallChat,
@@ -16,6 +17,7 @@ import {
   passAction,
   passQuestion,
   returnLine,
+  roomLetter,
   seenLine,
   takeLine,
   takeQuestion,
@@ -51,6 +53,20 @@ describe('жизнь комнаты на сайте (Р-40, Р-41)', () => {
     expect(mayStartNew({ members, memberId: 'MG', closedAt })).toBe(false)
     expect(mayStartNew({ members, memberId: 'MA', closedAt })).toBe(false)
     expect(closedNote(closedAt)).toBe(`Комната закрыта ${formatDate(closedAt)}: только чтение и переводы`)
+  })
+
+  it('порядок комнат в меню и в «Моих комнатах»: закрытые внизу, остальное — как было', () => {
+    const closedAt = Date.UTC(2026, 10, 27, 9)
+    const rooms = [{ id: 'A', closedAt }, { id: 'B' }, { id: 'C', closedAt }, { id: 'D' }]
+    expect(closedLast(rooms).map((r) => r.id)).toEqual(['B', 'D', 'A', 'C'])
+    expect(closedLast([])).toEqual([])
+  })
+
+  it('значок комнаты в меню — первая буква заглавной', () => {
+    expect(roomLetter('шашлыки на даче')).toBe('Ш')
+    expect(roomLetter('  дача 2026')).toBe('Д')
+    expect(roomLetter('2026')).toBe('2')
+    expect(roomLetter('   ')).toBe('•')
   })
 
   it('«Позвать в чат» (#150): тому, кто в игре, и в закрытой комнате; вышедшему, «выбыл» и не участнику — нет', () => {

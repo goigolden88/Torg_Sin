@@ -129,6 +129,15 @@ export async function courts(cdp: Cdp, size: Size, startServer: ServerModule['st
     await j.reload()
     await j.waitIn('.room-list', 'вы в суде')
     await j.shot('83-moi-komnaty-vy-v-sude')
+    // Меню (#167): у комнаты — счётчик «ждут вас» (пока — суды без вашего голоса)
+    const counter = await j.eval<string | null>(`document.querySelector('.nav-rooms .nav-count')?.textContent ?? null`)
+    if (counter !== '1') throw new Error('В меню у комнаты нет счётчика «ждут вас»: ' + counter)
+    if (size.width < 1024) {
+      await j.press('☰')
+      await j.waitIn('.nav', 'Сплав')
+      await j.shot('83a-menu-zhdut-vas')
+      await j.press('✕')
+    }
     await j.press('Сплав')
     await j.waitIn('section[aria-label="События"]', 'вы в суде')
     await j.shot('84-komnata-vy-v-sude')

@@ -1,8 +1,8 @@
 /* ТоргСин — вёрстка «сначала телефон» (Р-10): базовые правила — для узкого экрана,
    шире — через min-width. Ступени: до 600 px — телефон, 600–1023 — планшет,
-   от 1024 — компьютер (меню слева, сворачивается до значков; область содержимого — от краёв
-   окна, не шире --content-max ≈ 1600 px, по центру; «список + открытое» рядом: список ≈ 340 px,
-   открытое — остаток), от 1280 — событие и «Новое событие» в две колонки. Проверка каждого
+   от 1024 — компьютер (меню с комнатами слева, сворачивается до значков; область содержимого — от
+   краёв окна, не шире --content-max ≈ 1600 px, по центру; открытое — во всю область, списка рядом
+   нет), от 1280 — событие и «Новое событие» в две колонки. Ниже 1024 меню выезжает по ☰. Проверка каждого
    экрана — на 390 и 1280 px, раскладка компьютера — ещё и на 1920. */
 
 /* Тема (Р-50, #166): цвета — только переменными ниже, в правилах — var(--…), жёстких цветов нет
@@ -98,7 +98,6 @@
   --radius: 14px; /* карточка */
   --radius-s: 10px; /* кнопка, поле, строка в карточке */
   --tap: 44px; /* меньше кнопки на телефоне не бывает */
-  --nav-h: 64px;
   --pad: 16px;
   /* шрифт — системный, без загрузки из сети (Р-50) */
   font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
@@ -143,54 +142,241 @@ a {
 
 /* ─── Каркас: телефон ─────────────────────────────────────────────────────── */
 
+/* Меню (Р-50, #167): одна разметка (.nav). До 1024 px — шапка (.topbar: ☰, название экрана, «+»), меню
+   выезжает слева поверх экрана по ☰ (.app.menu-open), под ним — затемнение (.menu-shade); закрывают
+   ✕ (.nav-close), Esc, нажатие мимо и переход. Закрытое — display: none: его пунктов нет ни на экране,
+   ни для Tab. От 1024 px — колонка слева (ниже, «Компьютер») */
 .app {
   min-height: 100dvh;
 }
 
 .main {
   padding: var(--pad);
-  padding-top: calc(var(--pad) + env(safe-area-inset-top));
-  /* место под вкладки снизу */
-  padding-bottom: calc(var(--nav-h) + var(--pad) + env(safe-area-inset-bottom));
+  padding-bottom: calc(var(--pad) + env(safe-area-inset-bottom));
+}
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: grid;
+  grid-template-columns: var(--tap) minmax(0, 1fr) var(--tap);
+  align-items: center;
+  gap: 0.5rem;
+  padding: calc(0.25rem + env(safe-area-inset-top)) calc(var(--pad) - 0.25rem) 0.25rem;
+  background: var(--bg);
+  border-bottom: 1px solid var(--line);
+}
+
+.topbar-title {
+  font-weight: 700;
+  font-size: 1.05rem;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.topbar-button,
+.nav-toggle,
+.nav-close {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--tap);
+  height: var(--tap);
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-s);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 1.25rem;
+  line-height: 1;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.topbar-button:focus-visible,
+.nav-toggle:focus-visible,
+.nav-close:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.menu-shade {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 25;
+  background: var(--overlay);
 }
 
 .nav {
+  display: none;
   position: fixed;
-  inset: auto 0 0 0;
-  z-index: 10;
-  display: flex;
-  height: calc(var(--nav-h) + env(safe-area-inset-bottom));
-  padding-bottom: env(safe-area-inset-bottom);
+  inset: 0 auto 0 0;
+  z-index: 30;
+  width: min(20rem, 85vw);
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: calc(0.75rem + env(safe-area-inset-top)) 0.75rem calc(0.75rem + env(safe-area-inset-bottom));
+  overflow-y: auto;
+  overscroll-behavior: contain;
   background: var(--surface);
-  border-top: 1px solid var(--line);
+  border-right: 1px solid var(--line);
+  box-shadow: 0 0 2rem var(--shadow);
 }
 
-/* Название и кнопка сворачивания меню — только на компьютере */
+.menu-open .nav {
+  display: flex;
+}
+
+.menu-open .menu-shade {
+  display: block;
+}
+
+/* Под выехавшим меню экран не прокручивается */
+body:has(.menu-open) {
+  overflow: hidden;
+}
+
 .nav-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0 0 0.5rem 0.75rem;
+}
+
+.brand {
+  font-size: 1.3rem;
+  font-weight: 800;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+/* Сворачивание в значки — только на компьютере; ✕ — только на телефоне и планшете */
+.nav-toggle {
   display: none;
 }
 
 .nav-item {
-  flex: 1 1 0;
+  flex: none;
   display: flex;
-  flex-direction: column;
   align-items: center;
-  justify-content: center;
-  gap: 2px;
+  gap: 0.75rem;
   min-height: var(--tap);
-  color: var(--muted);
+  padding: 0.25rem 0.5rem;
+  border-radius: var(--radius-s);
+  color: var(--text);
   text-decoration: none;
-  font-size: 0.8rem;
+  font-size: 1rem;
 }
 
 .nav-item[aria-current='page'] {
-  color: var(--text);
-  font-weight: 600;
+  background: var(--surface-2);
+  font-weight: 650;
 }
 
 .nav-icon {
-  font-size: 1.3rem;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 0.6rem;
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 0.95rem;
+  font-weight: 800;
   line-height: 1;
+}
+
+.nav-item[aria-current='page'] .nav-icon {
+  background: var(--button);
+  color: var(--button-text);
+}
+
+.nav-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.nav-room-name,
+.nav-room-sub {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.nav-room-sub {
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: var(--muted);
+}
+
+.nav-room-sub.win {
+  color: var(--yes);
+}
+
+.nav-room-sub.loss {
+  color: var(--no);
+}
+
+.nav-room.closed .nav-room-name {
+  color: var(--muted);
+}
+
+/* Счётчик «ждут вас» у комнаты */
+.nav-count {
+  flex: none;
+  min-width: 1.4rem;
+  padding: 0.05rem 0.4rem;
+  border-radius: 999px;
+  background: var(--no);
+  color: var(--on-color);
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-align: center;
+}
+
+.nav-section {
+  padding: 0.75rem 0.5rem 0.25rem;
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.nav-rooms {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+/* Низ меню: «Настройки» (потом — «Справка», «Что нового») */
+.nav-foot {
+  margin-top: auto;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+/* «Мои комнаты» на телефоне: заголовок — в шапке */
+.rooms .list > h1 {
+  display: none;
 }
 
 .screen {
@@ -200,7 +386,7 @@ a {
   min-width: 0;
 }
 
-/* «Список + открытое»: на телефоне — одно под другим */
+/* «Мои комнаты»: список или открытое (ниже, .rooms.open) — на любой ширине */
 .split {
   display: flex;
   flex-direction: column;
@@ -223,7 +409,8 @@ a {
   min-width: 0;
 }
 
-/* Телефон: открытое — отдельным экраном с «Назад»; список — когда ничего не открыто */
+/* Открытое — отдельным экраном (на телефоне — с «Назад»); список — когда ничего не открыто. На
+   компьютере так же: комнаты — в меню слева, рядом с открытым списка нет (#167) */
 .rooms:not(.open) .detail,
 .rooms.open .list {
   display: none;
@@ -1930,11 +2117,9 @@ h3 {
 
 @media (min-width: 1024px) {
   :root {
-    --nav-w: 15rem; /* меню развёрнуто */
+    --nav-w: 16.25rem; /* меню развёрнуто, ≈ 260 px — по макету Р-50: название комнаты и баланс */
     --nav-w-collapsed: 4.5rem; /* свёрнуто до значков */
-    --list-w: 21.25rem; /* список комнат, ≈ 340 px */
     --content-max: 100rem; /* область содержимого, ≈ 1600 px: шире строки и график не читаются */
-    --split-gap: 1.5rem;
   }
 
   .app {
@@ -1946,50 +2131,37 @@ h3 {
     grid-template-columns: var(--nav-w-collapsed) minmax(0, 1fr);
   }
 
-  .nav {
+  /* Шапки, затемнения и ✕ нет: меню стоит колонкой всегда */
+  .topbar,
+  .nav-close,
+  .menu-open .menu-shade {
+    display: none;
+  }
+
+  body:has(.menu-open) {
+    overflow: visible;
+  }
+
+  .nav,
+  .menu-open .nav {
+    display: flex;
     position: sticky;
     top: 0;
     inset: auto;
+    z-index: auto;
+    width: auto;
     height: 100dvh;
-    flex-direction: column;
-    gap: 0.25rem;
     padding: 1.25rem 0.75rem;
-    border-top: 0;
-    border-right: 1px solid var(--line);
+    box-shadow: none;
   }
 
   .nav-head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 0.5rem;
     padding: 0 0 1rem 0.75rem;
   }
 
-  .brand {
-    font-size: 1.3rem;
-    font-weight: 800;
-    color: var(--text);
-    white-space: nowrap;
-    overflow: hidden;
-  }
-
   .nav-toggle {
-    flex: none;
     display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: var(--tap);
-    height: var(--tap);
-    padding: 0;
-    border: 1px solid var(--line);
-    border-radius: 10px;
-    background: transparent;
     color: var(--muted);
-    font: inherit;
-    font-size: 1.2rem;
-    line-height: 1;
-    cursor: pointer;
   }
 
   .nav-toggle:hover {
@@ -1997,33 +2169,15 @@ h3 {
     color: var(--text);
   }
 
-  .nav-toggle:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 2px;
-  }
-
-  .nav-item {
-    flex: 0 0 auto;
-    flex-direction: row;
-    justify-content: flex-start;
-    gap: 0.75rem;
-    padding: 0 0.75rem;
-    border-radius: 10px;
-    font-size: 1rem;
-    white-space: nowrap;
-  }
-
   .nav-item:hover {
     background: var(--surface-2);
   }
 
-  .nav-item[aria-current='page'] {
-    background: var(--surface-2);
-  }
-
-  /* Свёрнуто: только значки, подпись — всплывающая (title) и для чтеца экрана (aria-label) */
+  /* Свёрнуто: только значки, подпись — всплывающая (title) и для чтеца экрана (aria-label); счётчик
+     «ждут вас» — в углу значка */
   .nav-collapsed .brand,
-  .nav-collapsed .nav-label {
+  .nav-collapsed .nav-label,
+  .nav-collapsed .nav-section {
     display: none;
   }
 
@@ -2033,8 +2187,32 @@ h3 {
   }
 
   .nav-collapsed .nav-item {
+    position: relative;
     justify-content: center;
     padding: 0;
+  }
+
+  .nav-collapsed .nav-count {
+    position: absolute;
+    top: 0;
+    right: 8%;
+    min-width: 1.1rem;
+    padding: 0 0.25rem;
+    font-size: 0.65rem;
+  }
+
+  .nav-collapsed .nav-rooms {
+    padding-top: 0.5rem;
+    border-top: 1px solid var(--line);
+  }
+
+  /* «Мои комнаты» — заголовок на месте (шапки нет); список — не во всю ширину области */
+  .rooms .list > h1 {
+    display: block;
+  }
+
+  .rooms .list {
+    max-width: 45rem;
   }
 
   /* Область содержимого: окно минус меню минус поля 2 rem; не шире --content-max, на мониторе
@@ -2046,20 +2224,7 @@ h3 {
     padding: 2rem;
   }
 
-  /* «Список + открытое» — рядом: список ≈ 340 px, открытое — всё остальное место области */
-  .split {
-    display: grid;
-    grid-template-columns: minmax(16rem, var(--list-w)) minmax(0, 1fr);
-    align-items: start;
-    gap: var(--split-gap);
-  }
-
-  /* Список и открытое видны оба; «Назад» не нужен */
-  .rooms:not(.open) .detail,
-  .rooms.open .list {
-    display: flex;
-  }
-
+  /* Комната и формы входа — во всю область; «Назад» к списку не нужен: комнаты — в меню слева */
   .back {
     display: none;
   }
@@ -2105,17 +2270,7 @@ h3 {
     border-top: 1px solid var(--line);
   }
 
-  /* Событие и новое событие — во всю ширину области: список комнат прячется, как на телефоне,
-     «Назад» ведёт в комнату. Рядом со списком на 1024–1279 px событию осталось бы ≈ 360–610 px,
-     а ему нужно ≥ 640 (#18). Не ячейкой сетки, а блоком — от расчёта сетки не зависит */
-  .rooms.wide .split {
-    display: block;
-  }
-
-  .rooms.wide .list {
-    display: none;
-  }
-
+  /* Событие, пари, лот, выбор, их формы, «Расчёт» и «История» — «Назад» ведёт в комнату и виден */
   .rooms.wide .back {
     display: inline-flex;
   }

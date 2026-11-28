@@ -100,33 +100,26 @@ export async function eventWidth(cdp: Cdp, startServer: ServerModule['startServe
       }
       await nav(false)
     }
-    // Комната — «список + открытое» рядом: список ≈ 340 px, открытое — остаток области
+    // Комната — во всю область (#167): списка комнат рядом нет, комнаты — в меню слева
     for (const size of [SIZES[1], EVENT_WIDTHS[2], EVENT_WIDTHS[5]]) {
       await host.resize(size)
       await open(`${SITE}#/room/${room.roomId}`, 'Участники')
-      const split = await host.eval<{ list: number; detail: number; room: number; gap: number; scroll: number } | null>(`(() => {
-        const list = document.querySelector('.rooms .list')
+      const split = await host.eval<{ list: boolean; menu: boolean; detail: number; room: number; scroll: number }>(`(() => {
         const detail = document.querySelector('.rooms .detail')
-        if (list.offsetParent === null) return null
         const main = document.querySelector('.main')
         const style = getComputedStyle(main)
-        const l = list.getBoundingClientRect()
-        const d = detail.getBoundingClientRect()
         return {
-          list: Math.round(l.width),
-          detail: Math.round(d.width),
+          list: document.querySelector('.rooms .list').offsetParent !== null,
+          menu: [...document.querySelectorAll('.nav-rooms a')].some((a) => a.offsetParent !== null && a.getAttribute('aria-current') === 'page'),
+          detail: Math.round(detail.getBoundingClientRect().width),
           room: Math.round(main.getBoundingClientRect().width - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight)),
-          gap: Math.round(d.left - l.right),
           scroll: document.documentElement.scrollWidth - document.documentElement.clientWidth,
         }
       })()`)
       console.log(`  комната, ${size.width} px: ${JSON.stringify(split)}`)
-      if (!split) {
-        problems.push(`комната, ${size.width} px: список комнат пропал`)
-        continue
-      }
-      if (Math.abs(split.list - 340) > 1) problems.push(`комната, ${size.width} px: список ${split.list}, а нужно ≈ 340`)
-      if (Math.abs(split.list + split.gap + split.detail - split.room) > 1) problems.push(`комната, ${size.width} px: открытое не на всё место области`)
+      if (split.list) problems.push(`комната, ${size.width} px: рядом с комнатой — список комнат`)
+      if (!split.menu) problems.push(`комната, ${size.width} px: открытой комнаты нет в меню`)
+      if (Math.abs(split.detail - split.room) > 1) problems.push(`комната, ${size.width} px: открытое ${split.detail}, а область ${split.room}`)
       if (split.room > CONTENT_MAX + 1) problems.push(`комната, ${size.width} px: область ${split.room} шире ${CONTENT_MAX}`)
       if (split.scroll > 0) problems.push(`комната, ${size.width} px: прокрутка вбок ${split.scroll} px`)
       if (size.width === 1440) await host.shot('37-komnata-shirina')

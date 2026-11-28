@@ -90,6 +90,16 @@ export function awaitsMyVote(out: WithCourt, me: string, now?: number): boolean 
 // В комнате на устройстве есть суд, где участник ещё не голосовал (события, пари и лоты последнего ответа;
 // у лота суд — прямо в нём, Р-38)
 export function roomAwaitsMyVote(room: SavedRoom, events: readonly EventView[], offers: readonly OfferView[], lots: readonly LotView[] = []): boolean {
+  return myVotesAwaited(room, events, offers, lots) > 0
+}
+
+// Сколько судов комнаты ждут голоса участника — счётчик «ждут вас» у комнаты в меню (#167; полный
+// счётчик «ждут вас» — своей задачей)
+export function myVotesAwaited(room: SavedRoom, events: readonly EventView[], offers: readonly OfferView[], lots: readonly LotView[] = []): number {
   const me = room.memberId
-  return events.some((e) => awaitsMyVote(e.outcome, me)) || offers.some((o) => awaitsMyVote(o.outcome, me)) || lots.some((l) => awaitsMyVote(l, me))
+  return (
+    events.filter((e) => awaitsMyVote(e.outcome, me)).length +
+    offers.filter((o) => awaitsMyVote(o.outcome, me)).length +
+    lots.filter((l) => awaitsMyVote(l, me)).length
+  )
 }
