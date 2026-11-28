@@ -66,6 +66,7 @@ import { promises } from './shots/promises.ts'
 import { settle } from './shots/settle.ts'
 import { scenario } from './shots/start.ts'
 import { subjects } from './shots/subjects.ts'
+import { summary } from './shots/summary.ts'
 import { theme } from './shots/theme.ts'
 
 // Что нужно сценарию: Chrome, общий сервер снимков (его берут start и layout) и запуск своего
@@ -286,6 +287,11 @@ const SCENARIOS: Scenario[] = [
     name: 'theme',
     about: 'тема в «Настройках»: как в системе, другая тема сразу и после перезагрузки без вспышки, «Мои комнаты» в ней, снова как в системе (T1–T3)',
     perSize: (c, size) => theme(c.cdp, size),
+  },
+  {
+    name: 'summary',
+    about: '«Сводка» по копиям комнат: с делами (порядок по сроку, баланс по валютам, «Скоро закроется», счётчики в меню), пустая, со старой комнатой (S1–S3)',
+    perSize: (c, size) => summary(c.cdp, size),
   },
   {
     name: 'layout',

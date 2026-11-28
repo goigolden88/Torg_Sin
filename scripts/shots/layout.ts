@@ -101,11 +101,11 @@ export async function layout(cdp: Cdp, size: Size, server: RoomsServer) {
     if (other === roomHash) throw new Error('Телефон: из меню не открылась другая комната')
     const s = await seen()
     if (s.top[1] !== 'Футбол по средам') throw new Error('Телефон: в шапке не название комнаты — ' + JSON.stringify(s.top))
-    // «Мои комнаты» — главный экран со списком
+    // Главный экран — «Сводка» над «Моими комнатами» (#168): в шапке — «Сводка», список на месте
     await host.goto(SITE + '#/')
     await host.waitText('Дача 2026')
     const home = await seen()
-    if (!home.list || home.top[1] !== 'Мои комнаты') throw new Error('Телефон: «Мои комнаты» — ' + JSON.stringify(home))
+    if (!home.list || home.top[1] !== 'Сводка') throw new Error('Телефон: «Сводка» и «Мои комнаты» — ' + JSON.stringify(home))
     await host.shot('23-moi-komnaty')
     return
   }

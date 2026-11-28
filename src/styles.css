@@ -374,9 +374,143 @@ body:has(.menu-open) {
   gap: 0.25rem;
 }
 
-/* «Мои комнаты» на телефоне: заголовок — в шапке */
-.rooms .list > h1 {
+/* «Сводка» на телефоне: заголовок — в шапке, время копий — строкой */
+.summary-head h1 {
   display: none;
+}
+
+/* «Сводка» (Р-50, #168): над «Моими комнатами» — баланс, «Ждут вас», «Скоро закроется»; по копиям комнат */
+.summary {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.summary h2,
+.list-head {
+  margin: 0.5rem 0 0;
+}
+
+.summary-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.25rem 0.75rem;
+}
+
+.fresh {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.summary-balance {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.summary-total {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.summary-total b {
+  font-size: 1.35rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.summary-total .win {
+  color: var(--yes);
+}
+
+.summary-total .loss {
+  color: var(--no);
+}
+
+/* Карточки дел и «Скоро закроется»: на телефоне — столбиком, шире — сеткой */
+.summary-grid {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.75rem;
+}
+
+.summary-grid > li {
+  display: flex;
+  min-width: 0;
+}
+
+.summary-task,
+.summary-soon {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.summary-task {
+  border-color: var(--warn);
+}
+
+.summary-task p {
+  margin: 0;
+}
+
+.summary-task .button {
+  margin-top: auto;
+  align-self: flex-start;
+}
+
+/* Срок дела по копии прошёл: приглушено — «срок прошёл — откройте комнату» */
+.summary-task.overdue {
+  border-color: var(--line);
+  background: var(--surface-2);
+  color: var(--muted);
+}
+
+.summary-soon {
+  color: var(--text);
+  text-decoration: none;
+}
+
+.summary-meta {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 0.25rem 0.5rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.summary-title {
+  font-weight: 700;
+}
+
+/* Копия комнаты старше недели: «данные от … — откройте, чтобы обновить» */
+.room-item.stale {
+  border-color: var(--warn);
+  background: var(--warn-soft);
+}
+
+.room-stale {
+  color: var(--warn);
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+/* Планшет: карточки «Сводки» — по две в ряд (компьютер — ниже, от 1024 px) */
+@media (min-width: 600px) {
+  .summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 .screen {
@@ -2206,13 +2340,18 @@ h3 {
     border-top: 1px solid var(--line);
   }
 
-  /* «Мои комнаты» — заголовок на месте (шапки нет); список — не во всю ширину области */
-  .rooms .list > h1 {
+  /* «Сводка» — заголовок на месте (шапки нет); «Мои комнаты» — не во всю ширину области */
+  .summary-head h1 {
     display: block;
   }
 
   .rooms .list {
     max-width: 45rem;
+  }
+
+  /* «Сводка» — сеткой карточек: три в ряд на 1280 px, на мониторе шире — больше */
+  .summary-grid {
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 17rem), 1fr));
   }
 
   /* Область содержимого: окно минус меню минус поля 2 rem; не шире --content-max, на мониторе

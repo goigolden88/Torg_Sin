@@ -129,7 +129,7 @@ export async function courts(cdp: Cdp, size: Size, startServer: ServerModule['st
     await j.reload()
     await j.waitIn('.room-list', 'вы в суде')
     await j.shot('83-moi-komnaty-vy-v-sude')
-    // Меню (#167): у комнаты — счётчик «ждут вас» (пока — суды без вашего голоса)
+    // Меню (#167, #168): у комнаты — счётчик «ждут вас» (дела по копии комнаты; у присяжного — один суд)
     const counter = await j.eval<string | null>(`document.querySelector('.nav-rooms .nav-count')?.textContent ?? null`)
     if (counter !== '1') throw new Error('В меню у комнаты нет счётчика «ждут вас»: ' + counter)
     if (size.width < 1024) {
